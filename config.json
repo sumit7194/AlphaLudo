@@ -1,0 +1,27 @@
+{
+    "active_mode": "PROD",
+    "PROD": {
+        "mcts_sims": 400,
+        "mcts_parallel_sims": 8,
+        "c_puct": 4.0,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_eps": 0.5,
+        "learning_rate": 0.001
+    },
+    "BACKGROUND": {
+        "mcts_sims": 400,
+        "mcts_parallel_sims": 4,
+        "c_puct": 4.0,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_eps": 0.5,
+        "learning_rate": 0.001
+    },
+    "TEST": {
+        "mcts_sims": 10,
+        "mcts_parallel_sims": 1,
+        "c_puct": 3.0,
+        "dirichlet_alpha": 0.3,
+        "dirichlet_eps": 0.25,
+        "learning_rate": 0.001
+    }
+}

@@ -1,0 +1,1409 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaLudo - Game Visualizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            color: #fff;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 2rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            /* Explicit 4 columns */
+            gap: 20px;
+            justify-content: center;
+            align-items: start;
+            max-width: 1800px;
+            /* Increase width to fit 4 cols */
+        }
+
+        .board-container {
+            position: relative;
+            /* Anchor for absolute labels */
+            background: #2a2a4a;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .board {
+            display: grid;
+            grid-template-columns: repeat(15, 35px);
+            grid-template-rows: repeat(15, 35px);
+            gap: 2px;
+            background: #1a1a2e;
+            padding: 5px;
+            border-radius: 10px;
+        }
+
+        .cell {
+            width: 35px;
+            height: 35px;
+            background: #3a3a5a;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .cell.path {
+            background: #4a4a6a;
+        }
+
+        .cell.safe {
+            background: #2d5a3d;
+            border: 2px solid #4a9a5a;
+        }
+
+        .cell.home-p0 {
+            background: #4a1a1a;
+        }
+
+        /* P0 = Red home run */
+        .cell.home-p1 {
+            background: #1a4a1a;
+        }
+
+        /* P1 = Green home run */
+        .cell.home-p2 {
+            background: #4a4a1a;
+        }
+
+        /* P2 = Yellow home run */
+        .cell.home-p3 {
+            background: #1a1a4a;
+        }
+
+        /* P3 = Blue home run */
+
+        .id-label {
+            position: absolute;
+            color: #ffff00;
+            border: 1px solid #ffff00;
+        }
+
+        #id-p0 {
+            top: 40px;
+            left: 40px;
+            color: #ff4444;
+            border: 2px solid #ff4444;
+            background: #2a1a1a;
+        }
+
+        #id-p1 {
+            top: 40px;
+            right: 40px;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+            background: #1a2a1a;
+        }
+
+        #id-p2 {
+            bottom: 40px;
+            right: 40px;
+            color: #ffff00;
+            border: 2px solid #ffff00;
+            background: #2a2a1a;
+        }
+
+        #id-p3 {
+            bottom: 40px;
+            left: 40px;
+            color: #4444ff;
+            border: 2px solid #4444ff;
+            background: #1a1a2a;
+        }
+
+        .cell.base-p0 {
+            background: #8a3d3d;
+        }
+
+        /* Red base */
+        .cell.base-p1 {
+            background: #2d8a3d;
+        }
+
+        /* Green base */
+        .cell.base-p2 {
+            background: #8a8a3d;
+        }
+
+        /* Yellow base */
+        .cell.base-p3 {
+            background: #3d3d8a;
+        }
+
+        /* Blue base */
+
+        .token {
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            border: 3px solid #fff;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+        }
+
+        .token-p0 {
+            background: #ff4444;
+        }
+
+        /* Red */
+        .token-p1 {
+            background: #00ff00;
+        }
+
+        /* Green */
+        .token-p2 {
+            background: #ffff00;
+        }
+
+        /* Yellow */
+        .token-p3 {
+            background: #4444ff;
+        }
+
+        /* Blue */
+
+        .info-panel {
+            background: #2a2a4a;
+            padding: 20px;
+            border-radius: 15px;
+            min-width: 250px;
+        }
+
+        .info-panel h2 {
+            margin-bottom: 15px;
+            color: #aaa;
+        }
+
+        .player-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #3a3a5a;
+            border-radius: 8px;
+        }
+
+        .player-info.active {
+            border: 2px solid #00ff88;
+            background: #3a4a5a;
+        }
+
+        .player-dot {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+        }
+
+        .dice {
+            font-size: 3rem;
+            text-align: center;
+            margin: 20px 0;
+            padding: 20px;
+            background: #3a3a5a;
+            border-radius: 10px;
+        }
+
+        .controls {
+            margin-top: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #00ff88 0%, #00cc66 100%);
+            color: #1a1a2e;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 5px;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+        }
+
+        #gameLog {
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #1a1a2e;
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎲 AlphaLudo - Game Visualizer</h1>
+
+    <div class="container">
+        <!-- Column 1: Board -->
+        <div class="board-container">
+            <div id="id-p0" class="id-label">P0: Main</div>
+            <div id="id-p1" class="id-label">P1: Main</div>
+            <div id="id-p2" class="id-label">P2: Main</div>
+            <div id="id-p3" class="id-label">P3: Main</div>
+            <div class="board" id="board">
+                <!-- Cells generated by JS -->
+            </div>
+        </div>
+
+        <!-- Column 2: Game State & Controls -->
+        <div class="info-panel" style="min-width: 250px;">
+            <h2>Game State</h2>
+            <div id="players">
+                <div class="player-info" id="player0">
+                    <div class="player-dot token-p0"></div>
+                    <span>Player 0 (Red)</span>
+                    <span id="score0">0/4</span>
+                </div>
+                <div class="player-info" id="player1">
+                    <div class="player-dot token-p1"></div>
+                    <span>Player 1 (Grn)</span>
+                    <span id="score1">0/4</span>
+                </div>
+                <div class="player-info" id="player2">
+                    <div class="player-dot token-p2"></div>
+                    <span>Player 2 (Yel)</span>
+                    <span id="score2">0/4</span>
+                </div>
+                <div class="player-info" id="player3">
+                    <div class="player-dot token-p3"></div>
+                    <span>Player 3 (Blu)</span>
+                    <span id="score3">0/4</span>
+                </div>
+            </div>
+
+            <div class="dice">
+                🎲 <span id="diceValue">-</span>
+            </div>
+
+            <div class="controls">
+                <select id="gameSelector" onchange="changeGame()"
+                    style="padding: 8px; border-radius: 8px; background: #2a2a4a; color: white; border: 1px solid #00ff88; margin-right: 5px; cursor: pointer;">
+                    <!-- Populated by JS -->
+                </select>
+                <button onclick="connectWebSocket()">Connect</button>
+                <button onclick="requestState()">Refresh</button>
+                <button id="pauseBtn" onclick="togglePause()"
+                    style="background: linear-gradient(135deg, #ff8800 0%, #ff6600 100%);">Pause</button>
+                <button onclick="toggleDebugPath()"
+                    style="background: linear-gradient(135deg, #ff4444 0%, #cc3333 100%);">Debug Path</button>
+
+                <div style="margin-top: 10px; font-size: 13px; color: #ccc;">
+                    Batch Progress: <span id="batchStats" style="color: #00ff88; font-weight: bold;">0 / 32</span>
+                </div>
+            </div>
+
+            <div id="strategyPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">Strategy Metrics (Progress %)</h3>
+                <div id="progressBars" style="font-size: 11px;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Column 3: Stats & Logs -->
+        <div class="info-panel" style="min-width: 300px;">
+            <h2>Statistics</h2>
+            <div id="trainingStats" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">Training Progress</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+                    <div>Iter: <span id="statIter" style="color: #00ff88;">-</span></div>
+                    <div>Batch G: <span id="statGame" style="color: #00ff88;">-</span></div>
+                    <div>Total G: <span id="statTotalGames" style="color: #ffff00;">-</span></div>
+                    <div>Eff. G: <span id="statEffGames" style="color: #ffff00;">-</span></div>
+                    <div>Loss: <span id="statLoss" style="color: #ff8800;">-</span></div>
+                    <div>Win%: <span id="statWinRate" style="color: #00aaff;">-</span></div>
+                    <div>Buff: <span id="statBuffer" style="color: #aaa;">-</span></div>
+                    <div>Time: <span id="statTime" style="color: #ccc;">-</span></div>
+                    <div>Avg: <span id="statAvgGame" style="color: #ccc;">-</span></div>
+                    <div>ETA: <span id="statETA" style="color: #ff4444;">-</span></div>
+                    <div>Last Iter: <span id="statLastIterTime" style="color: #66ccff;">-</span></div>
+                    <div>Avg Time: <span id="statAvgGameTime" style="color: #66ccff;">-</span></div>
+                    <div>Cur Time: <span id="statCurGameTime" style="color: #cc66ff;">-</span></div>
+                </div>
+            </div>
+
+            <div id="chartPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">Training Trends</h3>
+                <canvas id="trainingChart" width="280" height="150" style="width: 100%;"></canvas>
+            </div>
+
+            <!-- Elo Ratings Panel -->
+            <div id="eloPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">📊 Elo Ratings</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;">
+                    <div style="background: #2a2a4e; padding: 8px; border-radius: 4px;">
+                        <div style="color: #888; font-size: 10px;">Main Model</div>
+                        <div id="eloMain" style="color: #00ff88; font-size: 18px; font-weight: bold;">1500</div>
+                    </div>
+                </div>
+                <div style="background: #2a2a4e; padding: 8px; border-radius: 4px;">
+                    <div style="color: #888; font-size: 10px;">Current Ghost</div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <div id="eloGhost" style="color: #ff66ff; font-size: 14px;">-</div>
+                        <div id="ghostWinrate" style="color: #00aaff; font-size: 12px;">WR: -</div>
+                    </div>
+                    <div id="eloGhostName" style="color: #666; font-size: 9px;">-</div>
+                </div>
+            </div>
+            <canvas id="eloChart" width="280" height="150"
+                style="width: 100%; margin-top: 10px; background: #1a1a2e;"></canvas>
+            <div id="eloRankings" style="margin-top: 8px; font-size: 10px; color: #888;">
+                <!-- Rankings will be populated here -->
+            </div>
+        </div>
+
+
+        <div id="gameLog" style="height: 100px;"></div>
+    </div>
+
+    <!-- Column 4: League Stats -->
+    <div class="info-panel" style="min-width: 300px;">
+        <h2>League Stats</h2>
+        <div id="leagueStatsPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+            <table style="width: 100%; font-size: 11px; border-collapse: collapse; text-align: center; color: #fff;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #444;">
+                        <th>Model</th>
+                        <th>Wins</th>
+                        <th>Played</th>
+                        <th>Win%</th>
+                    </tr>
+                </thead>
+                <tbody id="leagueStatsBody">
+                </tbody>
+            </table>
+        </div>
+
+        <div id="diceStatsPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+            <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">Dice Distribution</h3>
+            <table style="width: 100%; font-size: 11px; border-collapse: collapse; text-align: center; color: #fff;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #444;">
+                        <th style="padding: 2px;">P</th>
+                        <th>1</th>
+                        <th>2</th>
+                        <th>3</th>
+                        <th>4</th>
+                        <th>5</th>
+                        <th>6</th>
+                    </tr>
+                </thead>
+                <tbody id="diceStatsBody">
+                </tbody>
+            </table>
+        </div>
+
+        <div id="sessionStatsPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+            <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">Session Wins (Client-side)</h3>
+            <table style="width: 100%; font-size: 11px; border-collapse: collapse; text-align: center; color: #fff;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #444;">
+                        <th>P0 (Red)</th>
+                        <th>P1 (Grn)</th>
+                        <th>P2 (Yel)</th>
+                        <th>P3 (Blu)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td id="win0" style="color: #ff4444; font-weight: bold;">0</td>
+                        <td id="win1" style="color: #00ff00; font-weight: bold;">0</td>
+                        <td id="win2" style="color: #ffff00; font-weight: bold;">0</td>
+                        <td id="win3" style="color: #4444ff; font-weight: bold;">0</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Reward Config Panel -->
+        <div id="rewardConfigPanel"
+            style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px; display: none;">
+            <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">🎯 Reward Config (Live)</h3>
+            <div style="font-size: 11px; color: #888; margin-bottom: 8px;">Changes apply on next iteration</div>
+
+            <!-- Win/Lose (fixed, not editable) -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; font-size: 11px;">
+                <div style="background: #2a4a2a; padding: 6px; border-radius: 4px; text-align: center;">
+                    🏆 Win: <span style="color: #00ff00; font-weight: bold;">+1.0</span>
+                </div>
+                <div style="background: #4a2a2a; padding: 6px; border-radius: 4px; text-align: center;">
+                    💀 Lose: <span style="color: #ff4444; font-weight: bold;">-1.0</span>
+                </div>
+            </div>
+
+            <div style="display: grid; gap: 10px;">
+                <div>
+                    <label style="color: #ff6666; font-size: 12px;">✂️ Cut Bonus: <span
+                            id="cutValue">0.10</span></label>
+                    <input type="range" id="cutSlider" min="0" max="0.5" step="0.01" value="0.10"
+                        style="width: 100%; cursor: pointer;" oninput="updateReward('cut', this.value)">
+                </div>
+                <div>
+                    <label style="color: #66ff66; font-size: 12px;">🏠 Home Bonus: <span
+                            id="homeValue">0.25</span></label>
+                    <input type="range" id="homeSlider" min="0" max="0.5" step="0.01" value="0.25"
+                        style="width: 100%; cursor: pointer;" oninput="updateReward('home', this.value)">
+                </div>
+                <div>
+                    <label style="color: #6666ff; font-size: 12px;">🛡️ Safe Bonus: <span
+                            id="safeValue">0.05</span></label>
+                    <input type="range" id="safeSlider" min="0" max="0.25" step="0.01" value="0.05"
+                        style="width: 100%; cursor: pointer;" oninput="updateReward('safe', this.value)">
+                </div>
+
+                <div style="margin-top: 5px;">
+                    <label style="color: #ffaa00; font-size: 12px;">📚 Stack: <span id="stackValue">0.05</span></label>
+                    <input type="range" id="stackSlider" min="0" max="0.1" step="0.001" value="0.05"
+                        style="width: 100%; cursor: pointer;" oninput="updateReward('stack', this.value)">
+                    <div style="font-size: 10px; color: #666;">Reward for tokens sharing a square</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MCTS Settings Panel -->
+        <div id="mctsSettingsPanel" style="margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 8px;">
+            <h3 style="margin: 0 0 10px 0; color: #aaa; font-size: 14px;">⚡ MCTS Optimization</h3>
+            <div style="font-size: 11px; color: #888; margin-bottom: 8px;">Speeds up training without quality loss
+            </div>
+
+            <div style="display: grid; gap: 10px;">
+                <div style="margin-top: 5px;">
+                    <label style="color: #00ccff; font-size: 12px;">⚡ Early Term: <span
+                            id="earlyTermValue">90%</span></label>
+                    <input type="range" id="earlyTermSlider" min="0.5" max="1.0" step="0.05" value="0.9"
+                        style="width: 100%; cursor: pointer;"
+                        oninput="updateMCTS('early_termination_threshold', this.value)">
+                    <div style="font-size: 10px; color: #666;">Stop MCTS if one move has this % of visits</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <script>
+        // Board layout constants
+        const BOARD_SIZE = 15;
+        const BASE_POS = -1;
+        const HOME_POS = 99;
+
+        // Path coordinates for Player 0
+        const PATH_COORDS_P0 = [
+            [6, 1], [6, 2], [6, 3], [6, 4], [6, 5],
+            [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],
+            [0, 7], [0, 8],
+            [1, 8], [2, 8], [3, 8], [4, 8], [5, 8],
+            [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14],
+            [7, 14], [8, 14],
+            [8, 13], [8, 12], [8, 11], [8, 10], [8, 9],
+            [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8],
+            [14, 7], [14, 6],
+            [13, 6], [12, 6], [11, 6], [10, 6], [9, 6],
+            [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],
+            [7, 0] // 50 (End)
+        ];
+
+        const HOME_RUN_P0 = [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]];
+        const HOME_COORD_P0 = [7, 6];
+
+        const BASE_COORDS = [
+            [[2, 2], [2, 3], [3, 2], [3, 3]],     // P0 (Red - TL)
+            [[2, 11], [2, 12], [3, 11], [3, 12]], // P1 (Green - TR)
+            [[11, 11], [11, 12], [12, 11], [12, 12]], // P2 (Yellow - BR)
+            [[11, 2], [11, 3], [12, 2], [12, 3]]  // P3 (Blue - BL)
+        ];
+
+        const SAFE_INDICES = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+
+        let ws = null;
+        let lastState = null;
+        let debugPathMode = false;
+        let selectedGameId = 0;
+        let batchSize = 32; // Default, updated by server
+
+        // Init Selector (Placeholder, populated by server event)
+        function initSelector(size) {
+            batchSize = size;
+            const sel = document.getElementById('gameSelector');
+            sel.innerHTML = '';
+            for (let i = 0; i < size; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = `Game ${i}`;
+                opt.id = `opt-game-${i}`;
+                sel.appendChild(opt);
+            }
+            // Restore selection if valid
+            if (selectedGameId < size) {
+                sel.value = selectedGameId;
+            } else {
+                sel.value = 0;
+                selectedGameId = 0;
+            }
+        }
+
+        // Initial default population
+        (function () {
+            initSelector(32);
+        })();
+
+        function changeGame() {
+            const sel = document.getElementById('gameSelector');
+            selectedGameId = parseInt(sel.value);
+            gameFinished = false; // Reset pause flag
+            // Remove any finish overlays
+            const overlay = document.getElementById('finishOverlay');
+            if (overlay) overlay.remove();
+
+            log(`Switched to Game ${selectedGameId}`);
+            updatePauseButton(); // Update button state for new game
+            requestState();
+        }
+
+        let pausedGames = new Set();
+
+        function togglePause() {
+            const btn = document.getElementById('pauseBtn');
+            const isPaused = pausedGames.has(selectedGameId);
+
+            if (isPaused) {
+                // Resume
+                send({ type: 'resume_game', game_id: selectedGameId });
+                pausedGames.delete(selectedGameId);
+            } else {
+                // Pause
+                send({ type: 'pause_game', game_id: selectedGameId });
+                pausedGames.add(selectedGameId);
+            }
+            updatePauseButton();
+        }
+
+        function updatePauseButton() {
+            const btn = document.getElementById('pauseBtn');
+            if (pausedGames.has(selectedGameId)) {
+                btn.textContent = "Resume";
+                btn.style.background = "linear-gradient(135deg, #00ff88 0%, #00cc66 100%)";
+            } else {
+                btn.textContent = "Pause";
+                btn.style.background = "linear-gradient(135deg, #ff8800 0%, #ff6600 100%)";
+            }
+        }
+
+        // Auto-resume all when tab hidden/visible? No, explicitly on dashboard switch.
+        // Actually user said: "as soon as we go to dashboard, all the games will resume"
+        // Since this is a SPA, we don't have separate "dashboard page".
+        // But we are in the "Game UI". Where is the "Dashboard"?
+        // Ah, the user might mean switching away from game specific view?
+        // Wait, the UI shows Board + Stats side-by-side. It is ONE dashboard.
+        // Maybe "go to dashboard" means "unselect specific game"?
+        // Or user implies there's a different view?
+        // Re-reading: "in each game UI ... add a pause game button ... as soon as we go to dashboard, all the games will resume"
+        // This visualizer IS the dashboard.
+        // Maybe the user thinks of "Game UI" as maximizing one game?
+        // But currently it's all in one view.
+        // Let's assume "Dashboard" means selecting "Game 0" (or similar) vs "Dashboard mode"? 
+        // No, maybe I should add a "Resume All" button or "Back to Overview" which triggers it.
+        // BUT, the requirements say "since I can analyse it if needed... note that iteration will not finish... even if I set one paused, if I go to dashboard, then it should resume."
+        // I will interpret "Go to Dashboard" as maybe refreshing the page or a specific action? 
+        // Actually, let's just ensure if the user CLOSES the browser or reloads, it resumes.
+        // Or add a "Resume All" button explicitly.
+        // Wait, if I Pause Game 5, and then switch dropdown to Game 6, should Game 5 resume?
+        // "if I go to dashboard, then it should resume" -> This implies leaving the "Game UI".
+        // I'll add a "Resume All" button next to pause for safety. 
+        // AND, whenever 'initSelector' is called (re-connect), maybe resume?
+        // Let's just implement the button logic correctly first.
+
+        function updateGameStatus(gameId, winner) {
+            const opt = document.getElementById(`opt-game-${gameId}`);
+            if (opt) {
+                // Add Checkmark if not already present
+                if (!opt.textContent.includes('✅')) {
+                    opt.textContent = `Game ${gameId} ✅ (P${winner})`;
+                }
+            }
+            // Update stats
+            updateBatchProgress();
+        }
+
+        let completedGamesCount = 0;
+        let ghostGameIds = new Set(); // Track which games have ghost players
+
+        function updateBatchProgress() {
+            const statEl = document.getElementById('batchStats');
+            if (statEl) {
+                statEl.textContent = `${completedGamesCount} / ${batchSize}`;
+            }
+        }
+
+        let batchStartTime = Date.now();
+        let gameStartTimes = {};
+        let lastIterTime = 0;
+
+        function updateTimeStats() {
+            // Update Current Game Time
+            const curTimeEl = document.getElementById('statCurGameTime');
+            if (curTimeEl && selectedGameId !== -1 && !pausedGames.has(selectedGameId)) {
+                const start = gameStartTimes[selectedGameId] || Date.now();
+                // Ensure start is in ms. If server sent seconds (float), convert.
+                const startMs = (start < 10000000000) ? start * 1000 : start;
+                const elapsed = (Date.now() - startMs) / 1000;
+                curTimeEl.textContent = elapsed.toFixed(1) + 's';
+            }
+
+            // Periodically request update? No, just run on interval
+        }
+
+        setInterval(updateTimeStats, 100); // Update 100ms for smooth timer
+
+        function markGhostGames(gameIds) {
+            ghostGameIds = new Set(gameIds);
+            // Update dropdown items with ghost icon
+            for (const gid of gameIds) {
+                const opt = document.getElementById(`opt-game-${gid}`);
+                if (opt && !opt.textContent.includes('👻')) {
+                    opt.textContent = `Game ${gid} 👻`;
+                }
+            }
+        }
+
+        function markHeuristicGames(gameIds) {
+            // Update dropdown items with Heuristic icon
+            for (const gid of gameIds) {
+                const opt = document.getElementById(`opt-game-${gid}`);
+                if (opt && !opt.textContent.includes('🤖')) {
+                    opt.textContent = `Game ${gid} 🤖`;
+                }
+            }
+        }
+
+        function toggleDebugPath() {
+            debugPathMode = !debugPathMode;
+            initBoard(); // Re-draw board text
+            if (lastState) renderState(lastState); // Re-render tokens
+        }
+
+        // Session tracking
+        let sessionWins = [0, 0, 0, 0];
+        let currentGameId = -1;
+        let lastRecordedGameId = -2;
+
+        function updateProgress(state) {
+            const container = document.getElementById('progressBars');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const colors = ['#ff4444', '#00ff00', '#ffff00', '#4444ff'];
+            const labels = ['P0', 'P1', 'P2', 'P3'];
+
+            for (let p = 0; p < 4; p++) {
+                let totalSteps = 0;
+                let tokensHome = state.scores[p];
+                totalSteps += tokensHome * 57;
+
+                for (let t = 0; t < 4; t++) {
+                    const pos = state.player_positions[p][t];
+                    if (pos !== -1 && pos !== 99) {
+                        totalSteps += (pos + 1);
+                    }
+                }
+
+                const maxSteps = 4 * 57;
+                const progress = Math.min(100, Math.round((totalSteps / maxSteps) * 100));
+
+                const row = document.createElement('div');
+                row.style.marginBottom = '4px';
+                row.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                        <span style="color: ${colors[p]}">${labels[p]}</span>
+                        <span>${progress}%</span>
+                    </div>
+                    <div style="width: 100%; height: 4px; background: #333; border-radius: 2px;">
+                        <div style="width: ${progress}%; background: ${colors[p]}; height: 100%; border-radius: 2px; transition: width 0.3s;"></div>
+                    </div>
+                `;
+                container.appendChild(row);
+            }
+        }
+
+        function checkWinner(state) {
+            if (currentGameId === -1) return;
+            if (currentGameId === lastRecordedGameId) return;
+
+            for (let p = 0; p < 4; p++) {
+                if (state.scores[p] >= 4) {
+                    sessionWins[p]++;
+                    document.getElementById(`win${p}`).textContent = sessionWins[p];
+                    lastRecordedGameId = currentGameId;
+                    log(`Game ${currentGameId} Winner: P${p}`);
+                    break;
+                }
+            }
+        }
+
+        function formatTime(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) return `${h}h ${m}m`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
+        }
+
+        function rotateCoord(r, c, times) {
+            for (let i = 0; i < times; i++) {
+                [r, c] = [c, 14 - r];
+            }
+            return [r, c];
+        }
+
+        function getBoardCoords(player, pos, tokenIdx) {
+            let localR, localC;
+
+            if (pos === -1 || pos === BASE_POS) {
+                // Base
+                [localR, localC] = BASE_COORDS[player][tokenIdx];
+                return [localR, localC]; // Base coords are already absolute in BASE_COORDS?
+                // Wait, BASE_COORDS are defined as global absolute coords?
+                // Let's check BASE_COORDS definition.
+            }
+
+            if (pos === HOME_POS) {
+                [localR, localC] = HOME_COORD_P0;
+            } else if (pos > 50) {
+                const idx = pos - 51;
+                if (idx < 5) {
+                    [localR, localC] = HOME_RUN_P0[idx];
+                } else {
+                    [localR, localC] = HOME_COORD_P0;
+                }
+            } else {
+                [localR, localC] = PATH_COORDS_P0[pos];
+            }
+
+            return rotateCoord(localR, localC, player);
+        }
+
+        function initBoard() {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.id = `cell-${r}-${c}`;
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+                    board.appendChild(cell);
+                }
+            }
+
+            // Mark path cells
+            for (let p = 0; p < 4; p++) {
+                // Main Path
+                for (let i = 0; i < PATH_COORDS_P0.length; i++) {
+                    const [r, c] = rotateCoord(PATH_COORDS_P0[i][0], PATH_COORDS_P0[i][1], p);
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) {
+                        cell.classList.add('path');
+                        if (SAFE_INDICES.has(i)) {
+                            cell.classList.add('safe');
+                        }
+
+                        // DEBUG: Write numbers for P0 only (Red)
+                        if (debugPathMode && p === 0) {
+                            cell.textContent = i;
+                            cell.style.color = '#fff';
+                            cell.style.fontSize = '10px';
+                        }
+                    }
+                }
+
+                // Home run
+                for (let i = 0; i < 5; i++) {
+                    const [r, c] = rotateCoord(HOME_RUN_P0[i][0], HOME_RUN_P0[i][1], p);
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) {
+                        cell.classList.add(`home-p${p}`);
+                        // DEBUG: Write numbers for P0 Home Run
+                        if (debugPathMode && p === 0) {
+                            cell.textContent = 51 + i;
+                            cell.style.color = '#fff';
+                            cell.style.fontSize = '10px';
+                        }
+                    }
+                }
+
+                // Base
+                for (let t = 0; t < 4; t++) {
+                    const [r, c] = BASE_COORDS[p][t];
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) cell.classList.add(`base-p${p}`);
+                }
+            }
+        }
+
+        function renderState(state) {
+            lastState = state;
+            updateProgress(state);
+            checkWinner(state);
+
+            // Clear tokens
+            document.querySelectorAll('.token').forEach(t => t.remove());
+
+            // Place tokens
+            for (let p = 0; p < 4; p++) {
+                for (let t = 0; t < 4; t++) {
+                    try {
+                        const pos = state.player_positions[p][t];
+                        if (pos === HOME_POS) continue;
+
+                        const coords = getBoardCoords(p, pos, t);
+                        if (!coords) {
+                            log(`Error: No coords for P${p} T${t} Pos${pos}`);
+                            continue;
+                        }
+                        const [r, c] = coords;
+                        const cell = document.getElementById(`cell-${r}-${c}`);
+                        if (cell) {
+                            const token = document.createElement('div');
+                            token.className = `token token-p${p}`;
+                            cell.appendChild(token);
+                        } else {
+                            // Log missing cell
+                            // log(`Missing cell: ${r}-${c} for P${p} T${t}`);
+                        }
+                    } catch (e) {
+                        log(`Render Error P${p} T${t}: ${e.message}`);
+                        console.error(e);
+                    }
+                }
+            }
+
+            // Update scores
+            for (let p = 0; p < 4; p++) {
+                document.getElementById(`score${p}`).textContent = `${state.scores[p]}/4`;
+            }
+
+            // Update current player
+            document.querySelectorAll('.player-info').forEach(el => el.classList.remove('active'));
+            document.getElementById(`player${state.current_player}`).classList.add('active');
+
+            // Update dice
+            if (state.current_dice_roll > 0) {
+                document.getElementById('diceValue').textContent = state.current_dice_roll;
+            } else if (state.current_dice_roll === 0 && document.getElementById('diceValue').textContent === '-') {
+                // Only set to 0/- if currently empty
+            }
+        }
+
+        function log(msg) {
+            const logEl = document.getElementById('gameLog');
+            logEl.innerHTML = `${new Date().toLocaleTimeString()}: ${msg}<br>` + logEl.innerHTML;
+        }
+
+        function renderDiceStats(stats) {
+            const tbody = document.getElementById('diceStatsBody');
+            tbody.innerHTML = '';
+
+            const playerNames = ['P0 (Red)', 'P1 (Grn)', 'P2 (Yel)', 'P3 (Blu)'];
+            const playerColors = ['#ff4444', '#00ff00', '#ffff00', '#4444ff'];
+
+            for (let p = 0; p < 4; p++) {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid #333';
+
+                // Player name cell
+                const tdName = document.createElement('td');
+                tdName.textContent = playerNames[p];
+                tdName.style.padding = '4px';
+                tdName.style.color = playerColors[p];
+                tdName.style.fontWeight = 'bold';
+                tr.appendChild(tdName);
+
+                // Dice counts (indices 1-6)
+                for (let d = 1; d <= 6; d++) {
+                    const td = document.createElement('td');
+                    td.textContent = stats[p][d];
+                    tr.appendChild(td);
+                }
+
+                tbody.appendChild(tr);
+            }
+        }
+
+        function renderChart(history) {
+            // ... (existing chart logic) ...
+            const canvas = document.getElementById('trainingChart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+
+            // Clear
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, w, h);
+
+            if (history.length < 2) return;
+
+            // Padding
+            const p = 20;
+            const graphW = w - 2 * p;
+            const graphH = h - 2 * p;
+
+            // Scaling
+            const maxIter = history[history.length - 1].iteration;
+            const minIter = history[0].iteration;
+            const iterRange = maxIter - minIter || 1;
+
+            // Loss Y-Axis (Left) - Orange
+            // Find max loss for scaling
+            let maxLoss = 0;
+            history.forEach(h => maxLoss = Math.max(maxLoss, h.loss));
+            maxLoss = Math.ceil(maxLoss * 1.2 * 10) / 10; // add headroom
+
+            // Win Rate Y-Axis (Right) - Blue
+            const maxWin = 100;
+
+            // Helper to map
+            const getX = (iter) => p + ((iter - minIter) / iterRange) * graphW;
+            const getYLoss = (loss) => h - p - (loss / maxLoss) * graphH;
+            const getYWin = (win) => h - p - (win / maxWin) * graphH;
+
+            // Draw Loss Line
+            ctx.beginPath();
+            ctx.strokeStyle = '#ff8800';
+            ctx.lineWidth = 2;
+            ctx.moveTo(getX(history[0].iteration), getYLoss(history[0].loss));
+            history.forEach(d => ctx.lineTo(getX(d.iteration), getYLoss(d.loss)));
+            ctx.stroke();
+
+            // Draw Win Rate Line
+            ctx.beginPath();
+            ctx.strokeStyle = '#00aaff';
+            ctx.lineWidth = 2;
+            ctx.moveTo(getX(history[0].iteration), getYWin(history[0].win_rate));
+            history.forEach(d => ctx.lineTo(getX(d.iteration), getYWin(d.win_rate)));
+            ctx.stroke();
+
+            // Draw Axes
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p, p); ctx.lineTo(p, h - p); ctx.lineTo(w - p, h - p); ctx.lineTo(w - p, p);
+            ctx.stroke();
+            ctx.stroke();
+        }
+
+        function renderEloChart(historyData) {
+            const canvas = document.getElementById('eloChart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width;
+            const h = canvas.height;
+
+            // Clear
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, w, h);
+
+            // Extract Main history to check validity
+            const mainHist = historyData['Main'] || [];
+            if (Object.keys(historyData).length === 0) return;
+
+            // Determine Scales
+            let minElo = Infinity, maxElo = -Infinity;
+            let minIter = Infinity, maxIter = -Infinity;
+
+            // Iterate all series to find bounds
+            for (const [name, series] of Object.entries(historyData)) {
+                if (series.length === 0) continue;
+                series.forEach(pt => {
+                    minIter = Math.min(minIter, pt[0]);
+                    maxIter = Math.max(maxIter, pt[0]);
+                    minElo = Math.min(minElo, pt[1]);
+                    maxElo = Math.max(maxElo, pt[1]);
+                });
+            }
+
+            if (minIter === Infinity) return; // No data
+
+            // Padding
+            const p = 20;
+            const graphW = w - 2 * p;
+            const graphH = h - 2 * p;
+            const iterRange = maxIter - minIter || 1;
+            const eloRange = maxElo - minElo || 100;
+
+            const getX = (iter) => p + ((iter - minIter) / iterRange) * graphW;
+            const getY = (elo) => h - p - ((elo - minElo) / eloRange) * graphH;
+
+            // Draw Axis
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p, p); ctx.lineTo(p, h - p); ctx.lineTo(w - p, h - p);
+            ctx.stroke();
+
+            // Draw Series
+            for (const [name, series] of Object.entries(historyData)) {
+                if (series.length < 2 && series.length > 0) {
+                    // Draw single point
+                    ctx.fillStyle = name === 'Main' ? '#00ff88' : '#ff66ff';
+                    ctx.beginPath();
+                    ctx.arc(getX(series[0][0]), getY(series[0][1]), 3, 0, 2 * Math.PI);
+                    ctx.fill();
+                    continue;
+                }
+
+                ctx.beginPath();
+                ctx.lineWidth = name === 'Main' ? 2 : 1;
+
+                if (name === 'Main') ctx.strokeStyle = '#00ff88'; // Green
+                else if (name === 'Heuristic') ctx.strokeStyle = '#FFA500'; // Orange
+                else ctx.strokeStyle = '#ff66ff'; // Purple/Pink (Ghosts)
+
+                if (name !== 'Main' && name !== 'Heuristic') ctx.globalAlpha = 0.4;
+                else ctx.globalAlpha = 1.0;
+
+                ctx.moveTo(getX(series[0][0]), getY(series[0][1]));
+                series.forEach(pt => ctx.lineTo(getX(pt[0]), getY(pt[1])));
+                ctx.stroke();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        function connectWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+            ws = new WebSocket('ws://localhost:8765');
+
+            ws.onopen = () => {
+                log('Connected to Visualizer');
+
+                // Check URL params for channel?
+                send({ type: 'subscribe', channel: 'dashboard' });
+
+                // Determine current game channel
+                send({ type: 'subscribe', channel: `game_${selectedGameId}` });
+
+                // Request Initial Data
+                requestState();
+
+                // Resume All on connection? The user said "as soon as we go to dashboard, all the games will resume"
+                // Assuming "go to dashboard" implies loading this page.
+                send({ type: 'resume_all' });
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'state') {
+                    if (data.game_id === selectedGameId) {
+                        renderState(data.state);
+
+                        // Update Identities Info
+                        if (data.identities) {
+                            updateIdentities(data.identities);
+                        }
+
+                        // Update Start Time
+                        if (data.game_start_time) {
+                            gameStartTimes[data.game_id] = data.game_start_time;
+                        }
+                    }
+                    // Always cache last state
+                    if (data.game_id === selectedGameId) {
+                        lastState = data.state;
+                    }
+                    if (data.dice_stats) renderDiceStats(data.dice_stats);
+                    if (data.metrics_history) renderChart(data.metrics_history);
+
+                } else if (data.type === 'dashboard_init' || data.type === 'timing_init') {
+                    // Sync times
+                    if (data.game_start_times) {
+                        gameStartTimes = data.game_start_times;
+                    }
+                    if (data.batch_start_time) {
+                        batchStartTime = (data.batch_start_time < 10000000000) ? data.batch_start_time * 1000 : data.batch_start_time;
+                    }
+
+                } else if (data.type === 'metrics') {
+                    // Update Chart
+                    updateChart(data.history);
+
+                    // Update Stats Text
+                    if (data.history.length > 0) {
+                        const last = data.history[data.history.length - 1];
+                        document.getElementById('statIter').textContent = last.iteration;
+                        document.getElementById('statLoss').textContent = last.loss;
+                        document.getElementById('statWinRate').textContent = last.win_rate + '%';
+
+                        // Calculate Last Iter Time if we have history
+                        // (Assuming metric object has timestamp or we estimate from intervals?)
+                        // User request: "display the average game time and one iteration time just for the last iteration"
+                        // Backend should ideally send this. But we can estimate if needed.
+                        // Let's rely on backend broadcasting specific "stats" message for times.
+                    }
+
+                } else if (data.type === 'stats') {
+                    // Generic stats update
+                    if (data.last_iteration_time !== undefined) {
+                        document.getElementById('statLastIterTime').textContent = formatTime(data.last_iteration_time);
+                    }
+                    if (data.avg_game_time !== undefined) {
+                        document.getElementById('statAvgGameTime').textContent = data.avg_game_time.toFixed(1) + 's';
+                    }
+                    if (data.ghost_winrate !== undefined) {
+                        document.getElementById('ghostWinrate').textContent = `WR: ${(data.ghost_winrate * 100).toFixed(1)}%`;
+                    }
+                    document.getElementById('statIter').textContent = data.iteration;
+                    document.getElementById('statGame').textContent = data.game;
+                    if (data.total_games !== undefined) document.getElementById('statTotalGames').textContent = data.total_games;
+                    if (data.effective_games !== undefined) document.getElementById('statEffGames').textContent = data.effective_games;
+                    document.getElementById('statLoss').textContent = data.loss;
+                    document.getElementById('statWinRate').textContent = data.win_rate + '%';
+                    document.getElementById('statBuffer').textContent = data.buffer_size;
+                    document.getElementById('statTime').textContent = formatTime(data.elapsed_time);
+                    document.getElementById('statAvgGame').textContent = data.avg_game_time.toFixed(1) + 's';
+                    document.getElementById('statETA').textContent = formatTime(data.eta);
+
+                } else if (data.type === 'elo_history') {
+                    renderEloChart(data.history);
+
+                } else if (data.type === 'identities') {
+                    // Only update if this is for the selected game
+                    if (data.game_id === selectedGameId) {
+                        // Update player labels on the board
+                        const ids = data.data; // ['Main', 'Ghost', 'Main', 'Main']
+                        for (let i = 0; i < 4; i++) {
+                            const label = document.getElementById(`id-p${i}`);
+                            if (label) {
+                                label.textContent = `P${i}: ${ids[i] || 'Main'}`;
+                                // Highlight ghost players
+                                if (ids[i] === 'Ghost') {
+                                    label.style.color = '#ff66ff';
+                                } else if (ids[i] === 'Heuristic') {
+                                    label.style.color = '#FFA500'; // Orange
+                                } else {
+                                    label.style.color = '#888';
+                                }
+                            }
+                        }
+                    }
+
+                } else if (data.type === 'batch_init') {
+                    initSelector(data.batch_size);
+                    completedGamesCount = 0;
+                    updateBatchProgress();
+                    log(`Batch Initialized: Size ${data.batch_size}`);
+
+                } else if (data.type === 'game_result') {
+                    completedGamesCount++;
+                    updateGameStatus(data.game_id, data.winner);
+
+                    // If currently selected game finished, log it specifically
+                    if (data.game_id === selectedGameId) {
+                        log(`Current Game Finished! Winner: P${data.winner}`);
+                        gameFinished = true; // Freeze UI
+                        showToast(`Game Over! Winner: Player ${data.winner}`, 5000);
+
+                        // Add persistent overlay
+                        if (!document.getElementById('finishOverlay')) {
+                            const ov = document.createElement('div');
+                            ov.id = 'finishOverlay';
+                            ov.innerHTML = `<h1 style="color:white; text-shadow: 2px 2px 4px #000;">GAME FINISHED<br>Winner: P${data.winner}</h1><p style="color:#ddd">Training continues...</p>`;
+                            ov.style.position = 'absolute';
+                            ov.style.top = '50%';
+                            ov.style.left = '50%';
+                            ov.style.transform = 'translate(-50%, -50%)';
+                            ov.style.textAlign = 'center';
+                            ov.style.pointerEvents = 'none';
+                            document.querySelector('.board-container').appendChild(ov);
+                        }
+                    }
+
+                } else if (data.type === 'ghost_games') {
+                    markGhostGames(data.game_ids);
+                    log(`Ghost Games: ${data.game_ids.join(', ')}`);
+
+                } else if (data.type === 'heuristic_games') {
+                    markHeuristicGames(data.game_ids);
+                    log(`Heuristic Games: ${data.game_ids.join(', ')}`);
+
+                } else if (data.type === 'elo_update') {
+                    // Update Elo panel
+                    document.getElementById('eloMain').textContent = Math.round(data.main_elo);
+
+                    if (data.ghost_name && data.ghost_elo) {
+                        document.getElementById('eloGhost').textContent = Math.round(data.ghost_elo);
+                        document.getElementById('eloGhostName').textContent = data.ghost_name;
+                    }
+
+                    // Update rankings
+                    if (data.rankings && data.rankings.length > 0) {
+                        const rankHtml = data.rankings.map((r, i) =>
+                            `<span style="color: ${i === 0 ? '#ffd700' : '#888'}">${i + 1}. ${r[0]}: ${Math.round(r[1])}</span>`
+                        ).join(' | ');
+                        document.getElementById('eloRankings').innerHTML = rankHtml;
+                    }
+
+                } else if (data.type === 'training_config') {
+                    // Log training config
+                    log(`Config: Temp=${data.temp_schedule}, Ghost=${data.ghost_fraction * 100}%, Aug=${data.augmentation}`);
+
+                } else if (data.type === 'reward_config') {
+                    // Update reward sliders and values from server
+                    const config = data.config;
+                    if (config.cut !== undefined) {
+                        document.getElementById('cutSlider').value = config.cut;
+                        document.getElementById('cutValue').textContent = config.cut;
+                    }
+                    if (config.home !== undefined) {
+                        document.getElementById('homeSlider').value = config.home;
+                        document.getElementById('homeValue').textContent = config.home;
+                    }
+                    if (config.safe !== undefined) {
+                        document.getElementById('safeSlider').value = config.safe;
+                        document.getElementById('safeValue').textContent = config.safe;
+                    }
+                    log(`Rewards: Cut=${config.cut}, Home=${config.home}, Safe=${config.safe}`);
+
+                } else if (data.type === 'mcts_settings') {
+                    // Update MCTS settings from server
+                    const settings = data.settings;
+                    if (settings.early_termination_threshold !== undefined) {
+                        const val = settings.early_termination_threshold;
+                        document.getElementById('earlyTermSlider').value = val;
+                        document.getElementById('earlyTermValue').textContent = Math.round(val * 100) + '%';
+                    }
+                    log(`MCTS: Early Term=${Math.round(settings.early_termination_threshold * 100)}%`);
+                }
+            };
+
+            ws.onclose = () => {
+                log('Disconnected. Retrying in 3s...');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+
+        function requestState() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'get_state',
+                    game_id: selectedGameId
+                }));
+            }
+        }
+
+        // Initialize
+        initBoard();
+
+        // Demo state (Blank)
+        renderState({
+            player_positions: [[-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1], [-1, -1, -1, -1]],
+            scores: [0, 0, 0, 0],
+            current_player: 0,
+            current_dice_roll: 0,
+            is_terminal: false
+        });
+
+        // Function to send reward updates to server
+        function updateReward(key, value) {
+            // Update display
+            document.getElementById(key + 'Value').textContent = value;
+
+            // Send to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'update_reward',
+                    key: key,
+                    value: parseFloat(value)
+                }));
+            }
+        }
+
+        // Function to send MCTS settings updates to server
+        function updateMCTS(key, value) {
+            // Update display
+            if (key === 'early_termination_threshold') {
+                document.getElementById('earlyTermValue').textContent = Math.round(parseFloat(value) * 100) + '%';
+            }
+
+            // Send to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'update_mcts',
+                    key: key,
+                    value: parseFloat(value)
+                }));
+            }
+        }
+
+        // Auto connect
+        connectWebSocket();
+        let gameFinished = false; // Flag to pause updates for finished game
+
+        function showToast(msg, duration = 2000) {
+            const toast = document.createElement('div');
+            toast.textContent = msg;
+            toast.style.position = 'absolute';
+            toast.style.top = '50%';
+            toast.style.left = '50%';
+            toast.style.transform = 'translate(-50%, -50%)';
+            toast.style.background = 'rgba(0, 0, 0, 0.8)';
+            toast.style.color = '#fff';
+            toast.style.padding = '10px 20px';
+            toast.style.borderRadius = '5px';
+            toast.style.fontSize = '24px';
+            toast.style.fontWeight = 'bold';
+            toast.style.pointerEvents = 'none';
+            toast.style.zIndex = '1000';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), duration);
+        }
+
+        function renderPass(player) {
+            const colors = ['Red', 'Green', 'Yellow', 'Blue'];
+            showToast(`${colors[player]} Passed!`, 1500);
+        }
+    </script>
+</body>
+
+</html>

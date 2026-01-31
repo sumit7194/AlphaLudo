@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaLudo Game Stream</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+
+            /* Enhanced Palette */
+            --color-red: #ef4444;
+            --color-green: #22c55e;
+            --color-yellow: #eab308;
+            --color-blue: #3b82f6;
+
+            --bg-glass: rgba(20, 20, 25, 0.65);
+            --bg-glass-heavy: rgba(10, 10, 12, 0.85);
+            --bg-glass-light: rgba(255, 255, 255, 0.05);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-highlight: rgba(255, 255, 255, 0.15);
+
+            --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.3);
+            --glow-red: 0 0 20px rgba(239, 68, 68, 0.3);
+            --glow-green: 0 0 20px rgba(34, 197, 94, 0.3);
+            --glow-yellow: 0 0 20px rgba(234, 179, 8, 0.3);
+            --glow-blue: 0 0 20px rgba(59, 130, 246, 0.3);
+
+            --cell-size: 42px;
+            /* Responsive grid */
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: radial-gradient(circle at 50% 0%, #1c1c20 0%, #09090b 100%);
+            color: #ffffff;
+            font-family: var(--font-sans);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Glass Utility */
+        .glass-panel {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            backdrop-filter: blur(28px);
+            -webkit-backdrop-filter: blur(28px);
+            border-radius: 20px;
+            box-shadow: var(--shadow-glass);
+        }
+
+        /* Layout */
+        .header {
+            flex-shrink: 0;
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-glass);
+            background: rgba(9, 9, 11, 0.4);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            gap: 24px;
+            padding: 24px;
+            overflow: hidden;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* BOARD STYLES */
+        .board-container {
+            position: relative;
+            padding: 20px;
+            background: var(--bg-glass-heavy);
+            border-radius: 24px;
+            border: 1px solid var(--border-glass);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        #board {
+            display: grid;
+            grid-template-columns: repeat(15, var(--cell-size));
+            grid-template-rows: repeat(15, var(--cell-size));
+            gap: 2px;
+        }
+
+        .cell {
+            width: var(--cell-size);
+            height: var(--cell-size);
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* Path Coloring */
+        .cell.path {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .cell.safe {
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .cell.safe::after {
+            content: '★';
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 14px;
+        }
+
+        /* Bases */
+        .cell.base-p0 {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        /* Red */
+        .cell.base-p1 {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        /* Green */
+        .cell.base-p2 {
+            background: rgba(234, 179, 8, 0.15);
+            border: 1px solid rgba(234, 179, 8, 0.3);
+        }
+
+        /* Yellow */
+        .cell.base-p3 {
+            background: rgba(59, 130, 246, 0.15);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
+        /* Blue */
+
+        /* Home Runs */
+        .cell.home-p0 {
+            background: rgba(239, 68, 68, 0.4);
+        }
+
+        .cell.home-p1 {
+            background: rgba(34, 197, 94, 0.4);
+        }
+
+        .cell.home-p2 {
+            background: rgba(234, 179, 8, 0.4);
+        }
+
+        .cell.home-p3 {
+            background: rgba(59, 130, 246, 0.4);
+        }
+
+        /* Home Center */
+        .cell.home-center {
+            background: conic-gradient(var(--color-green) 0deg 90deg,
+                    var(--color-yellow) 90deg 180deg,
+                    var(--color-blue) 180deg 270deg,
+                    var(--color-red) 270deg 360deg);
+            opacity: 0.8;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5) inset;
+        }
+
+        /* TOKENS - Absolute Positioning */
+        .token {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            position: absolute;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            transition: left 0.2s linear, top 0.2s linear, transform 0.2s ease;
+            z-index: 10;
+            pointer-events: none;
+            /* Let clicks pass through */
+        }
+
+        /* Token Colors */
+        .token-p0 {
+            background: var(--color-red);
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+        }
+
+        .token-p1 {
+            background: var(--color-green);
+            box-shadow: 0 0 10px rgba(34, 197, 94, 0.6);
+        }
+
+        .token-p2 {
+            background: var(--color-yellow);
+            box-shadow: 0 0 10px rgba(234, 179, 8, 0.6);
+        }
+
+        .token-p3 {
+            background: var(--color-blue);
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
+        }
+
+        /* Stacking Grid within Cell (handled by JS transform, but base css) */
+
+        /* INFO PANELS */
+        .col-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            width: 320px;
+        }
+
+        .timer-badge {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: fit-content;
+        }
+
+        /* Progress Bars */
+        .progress-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .progress-label {
+            width: 50px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .progress-track {
+            flex: 1;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+
+
+        /* INFO PANEL */
+        .info-panel {
+            width: 380px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .player-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid transparent;
+            background: var(--bg-glass-light);
+            transition: all 0.3s;
+        }
+
+        .player-card.active {
+            background: rgba(255, 255, 255, 0.08);
+            /* Highlight */
+            border-color: rgba(255, 255, 255, 0.4);
+            transform: translateX(4px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .player-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: #fff;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+            background: #333;
+            /* Fallback */
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        /* Dice Animation */
+        .dice-box {
+            width: 60px;
+            height: 60px;
+            background: var(--bg-glass-light);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            font-weight: 700;
+            border: 1px solid var(--border-glass);
+            transition: all 0.1s;
+        }
+
+        .dice-box.rolling {
+            animation: shake 0.5s infinite;
+            color: #fff !important;
+        }
+
+        @keyframes shake {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            25% {
+                transform: rotate(5deg);
+            }
+
+            50% {
+                transform: rotate(-5deg);
+            }
+
+            75% {
+                transform: rotate(5deg);
+            }
+
+            100% {
+                transform: rotate(0deg);
+            }
+        }
+
+        /* Log */
+        .log-container {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            padding: 16px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            overflow-y: auto;
+            border: 1px solid var(--border-glass);
+        }
+
+        .log-item {
+            margin-bottom: 6px;
+            padding-left: 8px;
+            border-left: 2px solid #555;
+            opacity: 0.7;
+        }
+
+        .log-item.new {
+            opacity: 1;
+        }
+
+        .btn-glass {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: var(--font-sans);
+            font-weight: 500;
+        }
+
+        .btn-glass:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 1000px) {
+            :root {
+                /* Dynamic cell size based on viewport width, minus padding */
+                --cell-size: calc((100vw - 44px) / 15);
+            }
+
+            body {
+                height: auto;
+                min-height: 100vh;
+                overflow-y: auto;
+            }
+
+            .main-content {
+                flex-direction: column;
+                padding: 12px;
+                gap: 16px;
+                height: auto;
+                overflow: visible;
+            }
+
+            .col-panel,
+            .info-panel {
+                width: 100% !important;
+                height: auto !important;
+            }
+
+            .board-container {
+                padding: 10px;
+                box-shadow: none;
+                background: rgba(10, 10, 12, 0.5);
+                width: 100%;
+                display: flex;
+                justify-content: center;
+            }
+
+            /* Hide some decorative glows for performance */
+            .cell.home-center {
+                box-shadow: none;
+            }
+
+            /* Adjust header */
+            .header {
+                padding: 12px 16px;
+                flex-direction: column;
+                gap: 12px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <div style="display: flex; align-items: center; gap: 20px;">
+            <a href="index.html"
+                style="text-decoration:none; color:rgba(255,255,255,0.6); display:flex; align-items:center; gap:8px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+                Dashboard
+            </a>
+            <div style="width:1px; height:20px; background:rgba(255,255,255,0.1);"></div>
+            <h1 style="font-size:18px; font-weight:500;" id="gameTitle">Game Stream</h1>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size:12px; color:rgba(255,255,255,0.4);" id="connStatus">Connecting...</span>
+            <button class="btn-glass" id="pauseBtn" onclick="togglePause()">Pause</button>
+        </div>
+    </div>
+
+    <div class="main-content">
+
+        <!-- Column 1: Game Board (Center Left) -->
+        <div class="board-container">
+            <div id="board" style="position: relative;">
+                <!-- Cells generated by JS -->
+                <!-- Tokens appended here directly -->
+            </div>
+        </div>
+
+        <!-- Column 2: Turn & Players -->
+        <div class="col-panel glass-panel" style="padding: 24px; height: 740px;">
+
+            <!-- Timer & ID -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                <div class="timer-badge">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M12 6v6l4 2" />
+                    </svg>
+                    <span id="gameTimer">00:00</span>
+                </div>
+                <div style="font-size:12px; color:rgba(255,255,255,0.4);">ID: <span id="displayGameId">0</span></div>
+            </div>
+
+            <!-- Header: Turn & Dice -->
+            <div
+                style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 1px solid var(--border-glass);">
+                <div>
+                    <div
+                        style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:rgba(255,255,255,0.4);">
+                        Current Turn</div>
+                    <div style="font-size:24px; font-weight:700; margin-top:4px;" id="turnText">Waiting...</div>
+                </div>
+                <div class="dice-box" id="diceDisplay">
+                    <span style="opacity:0.3; font-size:16px;">-</span>
+                </div>
+            </div>
+
+            <!-- Player List -->
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+                <h3 style="font-size:12px; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-bottom:4px;">
+                    Players</h3>
+                <div class="player-card" id="p0-card">
+                    <div class="player-avatar" style="background:#ef4444;">R</div>
+                    <div style="flex:1;">
+                        <div style="font-size:14px; font-weight:500;">Red</div>
+                        <div style="font-size:11px; opacity:0.5; font-family:var(--font-mono);" id="p0-id">Agent</div>
+                    </div>
+                </div>
+                <div class="player-card" id="p1-card">
+                    <div class="player-avatar" style="background:#22c55e;">G</div>
+                    <div style="flex:1;">
+                        <div style="font-size:14px; font-weight:500;">Green</div>
+                        <div style="font-size:11px; opacity:0.5; font-family:var(--font-mono);" id="p1-id">Agent</div>
+                    </div>
+                </div>
+                <div class="player-card" id="p2-card">
+                    <div class="player-avatar" style="background:#eab308;">Y</div>
+                    <div style="flex:1;">
+                        <div style="font-size:14px; font-weight:500;">Yellow</div>
+                        <div style="font-size:11px; opacity:0.5; font-family:var(--font-mono);" id="p2-id">Agent</div>
+                    </div>
+                </div>
+                <div class="player-card" id="p3-card">
+                    <div class="player-avatar" style="background:#3b82f6;">B</div>
+                    <div style="flex:1;">
+                        <div style="font-size:14px; font-weight:500;">Blue</div>
+                        <div style="font-size:11px; opacity:0.5; font-family:var(--font-mono);" id="p3-id">Agent</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top:auto; font-size:11px; color:rgba(255,255,255,0.2); text-align:center;">
+                AlphaLudo Real-time Viewer
+            </div>
+        </div>
+
+        <!-- Column 3: Stats & Logs -->
+        <div class="col-panel glass-panel" style="padding: 24px; height: 740px;">
+            <!-- Progress Section -->
+            <div style="margin-bottom: 24px;">
+                <h3 style="font-size:12px; text-transform:uppercase; color:rgba(255,255,255,0.4); margin-bottom:16px;">
+                    Game Progress</h3>
+
+                <div class="progress-row">
+                    <span class="progress-label" style="color:var(--color-red)">Red</span>
+                    <div class="progress-track">
+                        <div class="progress-fill" style="background:var(--color-red)" id="prog-0"></div>
+                    </div>
+                    <span style="font-size:10px; font-family:var(--font-mono); width:24px;" id="perc-0">0%</span>
+                </div>
+                <div class="progress-row">
+                    <span class="progress-label" style="color:var(--color-green)">Green</span>
+                    <div class="progress-track">
+                        <div class="progress-fill" style="background:var(--color-green)" id="prog-1"></div>
+                    </div>
+                    <span style="font-size:10px; font-family:var(--font-mono); width:24px;" id="perc-1">0%</span>
+                </div>
+                <div class="progress-row">
+                    <span class="progress-label" style="color:var(--color-yellow)">Yell</span>
+                    <div class="progress-track">
+                        <div class="progress-fill" style="background:var(--color-yellow)" id="prog-2"></div>
+                    </div>
+                    <span style="font-size:10px; font-family:var(--font-mono); width:24px;" id="perc-2">0%</span>
+                </div>
+                <div class="progress-row">
+                    <span class="progress-label" style="color:var(--color-blue)">Blue</span>
+                    <div class="progress-track">
+                        <div class="progress-fill" style="background:var(--color-blue)" id="prog-3"></div>
+                    </div>
+                    <span style="font-size:10px; font-family:var(--font-mono); width:24px;" id="perc-3">0%</span>
+                </div>
+            </div>
+
+            <!-- Activity Log -->
+            <div style="flex:1; display:flex; flex-direction:column; gap:8px; overflow:hidden;">
+                <div style="font-size:11px; text-transform:uppercase; letter-spacing:1px; color:rgba(255,255,255,0.4);">
+                    Activity Log</div>
+                <div class="log-container" id="gameLog"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- Game Logic Constants ---
+        const BOARD_SIZE = 15;
+        const PATH_COORDS_P0 = [
+            [6, 1], [6, 2], [6, 3], [6, 4], [6, 5],
+            [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],
+            [0, 7], [0, 8],
+            [1, 8], [2, 8], [3, 8], [4, 8], [5, 8],
+            [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14],
+            [7, 14], [8, 14],
+            [8, 13], [8, 12], [8, 11], [8, 10], [8, 9],
+            [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8],
+            [14, 7], [14, 6],
+            [13, 6], [12, 6], [11, 6], [10, 6], [9, 6],
+            [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],
+            [7, 0]
+        ];
+        const HOME_RUN_P0 = [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]];
+        const BASE_COORDS = [
+            [[2, 2], [2, 3], [3, 2], [3, 3]],     // P0
+            [[2, 11], [2, 12], [3, 11], [3, 12]], // P1
+            [[11, 11], [11, 12], [12, 11], [12, 12]], // P2
+            [[11, 2], [11, 3], [12, 2], [12, 3]]  // P3
+        ];
+        const HOME_COORD_P0 = [7, 6]; // Center area target for home
+        const SAFE_INDICES = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+        const COLORS = ['#ef4444', '#22c55e', '#eab308', '#3b82f6'];
+        const PLAYER_NAMES = ['Red', 'Green', 'Yellow', 'Blue'];
+
+        const params = new URLSearchParams(window.location.search);
+        const GAME_ID = params.get('id') || '0';
+        document.getElementById('gameTitle').textContent = `Game Stream #${GAME_ID}`;
+
+        // --- Helpers ---
+        function rotateCoord(r, c, p) {
+            for (let i = 0; i < p; i++) [r, c] = [c, 14 - r];
+            return [r, c];
+        }
+
+        // --- Init Board ---
+        function initBoard() {
+            const board = document.getElementById('board');
+            board.innerHTML = '';
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.id = `cell-${r}-${c}`;
+                    board.appendChild(cell);
+                }
+            }
+            // Apply Layout Logic
+            for (let p = 0; p < 4; p++) {
+                // Path
+                PATH_COORDS_P0.forEach((pos, i) => {
+                    const [r, c] = rotateCoord(pos[0], pos[1], p);
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) {
+                        cell.classList.add('path');
+                        if (SAFE_INDICES.has(i)) cell.classList.add('safe');
+                    }
+                });
+                // Home Run
+                HOME_RUN_P0.forEach((pos, i) => {
+                    const [r, c] = rotateCoord(pos[0], pos[1], p);
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) cell.classList.add(`home-p${p}`);
+                });
+                // Base
+                BASE_COORDS[p].forEach(([r, c]) => {
+                    const cell = document.getElementById(`cell-${r}-${c}`);
+                    if (cell) cell.classList.add(`base-p${p}`);
+                });
+            }
+            // Center
+            const center = document.getElementById('cell-7-7');
+            if (center) center.classList.add('home-center');
+        }
+
+        initBoard();
+
+        // Persistent Tokens
+        const tokenElements = []; // [p][tIdx] -> HTMLElement
+
+        function initTokens() {
+            // Create 16 tokens attached to #board
+            const board = document.getElementById('board');
+            for (let p = 0; p < 4; p++) {
+                tokenElements[p] = [];
+                for (let t = 0; t < 4; t++) {
+                    const el = document.createElement('div');
+                    el.className = `token token-p${p}`;
+                    el.id = `t-${p}-${t}`;
+                    // Initial off-screen or base
+                    el.style.display = 'none';
+                    board.appendChild(el);
+                    tokenElements[p].push(el);
+                }
+            }
+        }
+        initTokens();
+
+        // --- WebSocket ---
+        const socket = new WebSocket('ws://localhost:8765');
+        let gameState = null;
+        let gameStartTime = Date.now(); // Reset on state Rx
+
+        socket.onopen = () => {
+            document.getElementById('connStatus').textContent = "Live";
+            document.getElementById('connStatus').style.color = "#4ade80";
+            socket.send(JSON.stringify({ type: 'subscribe', channel: `game_${GAME_ID}` }));
+            socket.send(JSON.stringify({ type: 'get_state', game_id: parseInt(GAME_ID) }));
+            startTimer();
+        };
+
+        socket.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'state') {
+                if (msg.game_id == GAME_ID) {
+                    gameState = msg.state;
+                    updateTokens(msg.state);
+                    updateUI(msg);
+                    updateProgress(msg.state);
+                }
+            } else if (msg.type === 'move') {
+                if (msg.game_id == GAME_ID) {
+                    logMove(msg);
+                    animateDice(msg.dice, msg.player);
+                }
+            } else if (msg.type === 'identities') {
+                if (msg.game_id == GAME_ID) {
+                    msg.data.forEach((name, i) => {
+                        document.getElementById(`p${i}-id`).textContent = name;
+                    });
+                    document.getElementById(`displayGameId`).textContent = GAME_ID;
+                }
+            }
+        };
+
+        // State for animations
+        const animatingTokens = new Set(); // "p-t" keys
+        const previousPosMap = {}; // "p-t" -> pos
+
+        // Helper: Get {r,c} for a given position
+        function getPosCoords(p, pos) {
+            let r, c;
+            if (pos === -1) { return null; }
+            if (pos === 99) { [r, c] = rotateCoord(7, 6, p); }
+            else if (pos > 50) {
+                const idx = pos - 51;
+                if (idx < 5) [r, c] = rotateCoord(HOME_RUN_P0[idx][0], HOME_RUN_P0[idx][1], p);
+                else[r, c] = rotateCoord(7, 6, p);
+            } else {
+                const coords = PATH_COORDS_P0[pos];
+                if (coords) [r, c] = rotateCoord(coords[0], coords[1], p);
+            }
+            return { r, c };
+        }
+
+        // Helper: Get Pixel Coords for (r, c)
+        function getCellPixel(r, c) {
+            const cell = document.getElementById(`cell-${r}-${c}`);
+            if (!cell) return { x: 0, y: 0 };
+            return {
+                x: cell.offsetLeft + cell.offsetWidth / 2,
+                y: cell.offsetTop + cell.offsetHeight / 2
+            };
+        }
+
+        // Helper: Move Token Element to (r, c) with stacking offset
+        function setTokenPos(p, tIdx, r, c, stackIndex = 0, stackCount = 1) {
+            const el = tokenElements[p][tIdx];
+            const px = getCellPixel(r, c);
+
+            // Stacking Logic
+            let scale = 1.0;
+            let offsets = [{ x: 0, y: 0 }];
+
+            if (stackCount > 1) {
+                if (stackCount === 2) {
+                    scale = 0.7;
+                    offsets = [{ x: -6, y: -6 }, { x: 6, y: 6 }];
+                } else if (stackCount === 3) {
+                    scale = 0.6;
+                    offsets = [{ x: 0, y: -8 }, { x: -7, y: 6 }, { x: 7, y: 6 }];
+                } else {
+                    scale = 0.55;
+                    offsets = [{ x: -7, y: -7 }, { x: 7, y: -7 }, { x: -7, y: 7 }, { x: 7, y: 7 }];
+                }
+            }
+
+            const off = offsets[stackIndex % offsets.length];
+            const left = px.x - 14 + off.x; // 14 is half token size
+            const top = px.y - 14 + off.y;
+
+            el.style.display = 'block';
+            el.style.left = `${left}px`;
+            el.style.top = `${top}px`;
+            el.style.transform = `scale(${scale})`;
+            el.style.zIndex = 10 + stackIndex;
+        }
+
+        async function updateTokens(state) {
+            // 1. Identify Target Positions
+            const cellMap = {};
+
+            // Build Cell Map for FINAL state (stacking)
+            for (let p = 0; p < 4; p++) {
+                state.player_positions[p].forEach((pos, tIdx) => {
+                    let r, c;
+                    if (pos === -1) [r, c] = BASE_COORDS[p][tIdx];
+                    else {
+                        const coords = getPosCoords(p, pos);
+                        if (coords) { r = coords.r; c = coords.c; }
+                    }
+
+                    if (r !== undefined) {
+                        const key = `${r}-${c}`;
+                        if (!cellMap[key]) cellMap[key] = [];
+                        cellMap[key].push({ p, tIdx });
+                    }
+                });
+            }
+
+            // 2. Process Moves
+            const promises = [];
+
+            for (let p = 0; p < 4; p++) {
+                // If we are init, just set previous
+                if (!previousPosMap[`${p}-0`]) {
+                    state.player_positions[p].forEach((pos, t) => previousPosMap[`${p}-${t}`] = pos);
+                }
+
+                for (let t = 0; t < 4; t++) {
+                    const targetPos = state.player_positions[p][t];
+                    const oldPos = previousPosMap[`${p}-${t}`];
+                    const key = `${p}-${t}`;
+
+                    if (targetPos !== oldPos) {
+                        // Check if animating already?
+                        if (animatingTokens.has(key)) continue;
+
+                        // Detect Move Type
+                        if (oldPos !== -1 && targetPos > oldPos && (targetPos - oldPos) < 15) {
+                            // Forward Move (not spawn, not kill, not huge jump)
+                            promises.push(animateTokenPath(p, t, oldPos, targetPos));
+                        } else {
+                            // Spawn, Kill, or Init -> Instant/Direct
+                            // Ensure previousPos is updated
+                        }
+                        previousPosMap[key] = targetPos;
+                    }
+                }
+            }
+
+            // Render Static ones immediately
+            Object.entries(cellMap).forEach(([k, tokens]) => {
+                const [r, c] = k.split('-').map(Number);
+                tokens.forEach((tk, idx) => {
+                    const key = `${tk.p}-${tk.tIdx}`;
+                    if (!animatingTokens.has(key)) {
+                        setTokenPos(tk.p, tk.tIdx, r, c, idx, tokens.length);
+                    }
+                });
+            });
+        }
+
+        async function animateTokenPath(p, tIdx, startPos, endPos) {
+            const key = `${p}-${tIdx}`;
+            animatingTokens.add(key);
+            const el = tokenElements[p][tIdx];
+            el.style.zIndex = 50; // Fly above
+            el.style.transform = `scale(1.1)`; // Slight pop
+
+            // Generate Path
+            // Start+1 ... End
+            for (let step = startPos + 1; step <= endPos; step++) {
+                const coords = getPosCoords(p, step);
+                if (coords) {
+                    const px = getCellPixel(coords.r, coords.c);
+                    el.style.left = `${px.x - 14}px`;
+                    el.style.top = `${px.y - 14}px`;
+                    // Wait for CSS transition (0.2s)
+                    await new Promise(r => setTimeout(r, 200));
+                }
+            }
+
+            animatingTokens.delete(key);
+            el.style.zIndex = 10;
+            // Final setTokenPos call might happen on next state update
+            // Or we can let it stay here, but stacking won't adjust until next update.
+            // Given 100ms update rate, next updateTokens will likely run during or just after animation 
+            // and trigger the "Static Render" block which calls setTokenPos with stacking.
+        }
+
+        function updateProgress(state) {
+            // Max path is ~57? 
+            // 0-50 (51 steps) + 51-55 (5 steps) + 56 (Home) = 57 steps total
+            const totalSteps = 57;
+
+            for (let p = 0; p < 4; p++) {
+                // Calculate average progress of all 4 tokens? Or max? 
+                // Usually sum of distances / max possible sum
+                let score = 0;
+                state.player_positions[p].forEach(pos => {
+                    if (pos === 99) score += totalSteps;
+                    else if (pos > 50) score += (51 + (pos - 51));
+                    else if (pos >= 0) score += (pos + 1);
+                    // -1 is 0
+                });
+
+                const percent = Math.min(100, Math.round((score / (totalSteps * 4)) * 100));
+
+                document.getElementById(`prog-${p}`).style.width = `${percent}%`;
+                document.getElementById(`perc-${p}`).textContent = `${percent}%`;
+            }
+        }
+
+        function startTimer() {
+            // Simple elapsed timer since page load (or connection)
+            const start = Date.now();
+            const el = document.getElementById('gameTimer');
+            setInterval(() => {
+                const diff = Math.floor((Date.now() - start) / 1000);
+                const m = Math.floor(diff / 60).toString().padStart(2, '0');
+                const s = (diff % 60).toString().padStart(2, '0');
+                el.textContent = `${m}:${s}`;
+            }, 1000);
+        }
+
+        function updateUI(msg) {
+            const p = msg.state.current_player;
+            document.getElementById('turnText').textContent = PLAYER_NAMES[p] + "'s Turn";
+            document.getElementById('turnText').style.color = COLORS[p];
+
+            [0, 1, 2, 3].forEach(i => {
+                const c = document.getElementById(`p${i}-card`);
+                if (i === p) c.classList.add('active');
+                else c.classList.remove('active');
+            });
+
+            if (msg.state.current_dice_roll > 0) {
+                const d = document.getElementById('diceDisplay');
+                d.textContent = msg.state.current_dice_roll;
+                d.style.color = COLORS[p];
+                // d.style.textShadow = `0 0 10px ${COLORS[p]}80`;
+                d.style.borderColor = COLORS[p];
+            }
+        }
+
+        function animateDice(val, player) {
+            const d = document.getElementById('diceDisplay');
+            d.classList.add('rolling');
+            setTimeout(() => {
+                d.classList.remove('rolling');
+                d.textContent = val;
+                d.style.color = COLORS[player];
+                d.style.borderColor = COLORS[player];
+            }, 300);
+        }
+
+        function logMove(m) {
+            const log = document.getElementById('gameLog');
+            const div = document.createElement('div');
+            div.className = 'log-item new';
+            div.style.borderLeftColor = COLORS[m.player];
+            div.innerHTML = `<span style="color:${COLORS[m.player]}">${PLAYER_NAMES[m.player]}</span> rolled <b>${m.dice}</b>`;
+            log.prepend(div); // Newest top
+        }
+
+        function togglePause() {
+            const btn = document.getElementById('pauseBtn');
+            if (btn.textContent === 'Pause') {
+                socket.send(JSON.stringify({ type: 'pause_game', game_id: parseInt(GAME_ID) }));
+                btn.textContent = 'Resume';
+                btn.style.background = 'rgba(74, 222, 128, 0.2)';
+            } else {
+                socket.send(JSON.stringify({ type: 'resume_game', game_id: parseInt(GAME_ID) }));
+                btn.textContent = 'Pause';
+                btn.style.background = 'rgba(255, 255, 255, 0.1)';
+            }
+        }
+
+    </script>
+</body>
+
+</html>

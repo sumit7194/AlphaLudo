@@ -1,0 +1,6 @@
+numpy
+torch
+pybind11
+websockets
+psutil
+requests

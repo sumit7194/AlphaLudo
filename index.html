@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaLudo Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            --color-green: #4ade80;
+            --color-blue: #60a5fa;
+            --color-purple: #c084fc;
+            --color-red: #f87171;
+            --color-yellow: #facc15;
+
+            /* Premium Glass */
+            --bg-glass: rgba(20, 20, 25, 0.6);
+            --bg-glass-lighter: rgba(255, 255, 255, 0.05);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-highlight: rgba(255, 255, 255, 0.15);
+
+            --shadow-glow-green: 0 0 15px rgba(74, 222, 128, 0.3);
+            --shadow-glow-blue: 0 0 15px rgba(96, 165, 250, 0.3);
+            --shadow-glow-purple: 0 0 15px rgba(192, 132, 252, 0.3);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            outline: none;
+        }
+
+        body {
+            background: #09090b;
+            /* Zinc 950 base */
+            background: radial-gradient(circle at 15% 15%, #18181b 0%, #09090b 100%);
+            color: #ffffff;
+            font-family: var(--font-sans);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Layout Utils */
+        .flex {
+            display: flex;
+        }
+
+        .flex-col {
+            flex-direction: column;
+        }
+
+        .items-center {
+            align-items: center;
+        }
+
+        .items-baseline {
+            align-items: baseline;
+        }
+
+        .justify-between {
+            justify-content: space-between;
+        }
+
+        .justify-center {
+            justify-content: center;
+        }
+
+        .gap-2 {
+            gap: 8px;
+        }
+
+        .gap-3 {
+            gap: 12px;
+        }
+
+        .gap-4 {
+            gap: 16px;
+        }
+
+        .gap-6 {
+            gap: 24px;
+        }
+
+        .flex-1 {
+            flex: 1;
+            min-height: 0;
+        }
+
+        .w-full {
+            width: 100%;
+        }
+
+        /* Typography */
+        .text-xs {
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .text-sm {
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .text-base {
+            font-size: 14px;
+        }
+
+        .text-lg {
+            font-size: 18px;
+            line-height: 1.2;
+        }
+
+        .text-xl {
+            font-size: 20px;
+            font-weight: 500;
+            letter-spacing: -0.01em;
+        }
+
+        .text-3xl {
+            font-size: 32px;
+            font-weight: 300;
+            letter-spacing: -0.02em;
+        }
+
+        .text-5xl {
+            font-size: 48px;
+            font-weight: 300;
+            letter-spacing: -0.03em;
+        }
+
+        .font-light {
+            font-weight: 300;
+        }
+
+        .font-mono {
+            font-family: var(--font-mono);
+        }
+
+        .uppercase {
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 500;
+        }
+
+        .text-white-30 {
+            color: rgba(255, 255, 255, 0.3);
+        }
+
+        .text-white-40 {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .text-white-50 {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .text-white-60 {
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .text-white-70 {
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .text-white-90 {
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .text-green {
+            color: var(--color-green);
+        }
+
+        .text-red {
+            color: var(--color-red);
+        }
+
+        /* Components */
+        :root {
+            --bg-glass: rgba(20, 20, 23, 0.6);
+            --bg-glass-lighter: rgba(255, 255, 255, 0.03);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-highlight: rgba(255, 255, 255, 0.2);
+            --color-green: #4ade80;
+            --color-blue: #60a5fa;
+            --color-red: #f87171;
+            --color-purple: #c084fc;
+            --shadow-glow-green: 0 0 10px rgba(74, 222, 128, 0.4);
+            --shadow-glow-blue: 0 0 10px rgba(96, 165, 250, 0.4);
+            --shadow-glow-purple: 0 0 10px rgba(192, 132, 252, 0.4);
+            --font-mono: "JetBrains Mono", monospace;
+        }
+
+        .glass-panel {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            backdrop-filter: blur(24px);
+            /* Deep blur */
+            border-radius: 16px;
+            /* Smooth corners */
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .game-card {
+            aspect-ratio: 1;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .game-card:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .panel-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-glass);
+            background: rgba(255, 255, 255, 0.02);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .pill {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-glass);
+            border-radius: 999px;
+            padding: 4px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        .pill:hover {
+            background: rgba(255, 255, 255, 0.09);
+            border-color: var(--border-highlight);
+        }
+
+        .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .dot.pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.6;
+                transform: scale(0.9);
+            }
+
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .btn-icon {
+            background: transparent;
+            border: none;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 50%;
+            transition: all 0.2s;
+            display: flex;
+        }
+
+        .btn-icon:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            transform: scale(1.1);
+        }
+
+        .btn-icon:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .btn-stop {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+
+        .btn-stop:hover {
+            background: rgba(239, 68, 68, 0.25);
+            color: #fff;
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .btn-stop:active {
+            transform: scale(0.96);
+        }
+
+        /* Grid */
+        .game-grid {
+            display: grid;
+            /* grid-template-columns set by JS dynamically */
+            /* grid-template-columns: repeat(8, 1fr);  <-- REMOVED */
+            gap: 12px;
+            padding: 4px;
+            /* Space for hover expansion */
+            align-content: start;
+        }
+
+        .game-card {
+            aspect-ratio: 1;
+            border-radius: 12px;
+            background: var(--bg-glass-lighter);
+            border: 1px solid var(--border-glass);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .game-card:hover {
+            transform: scale(1.08);
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.08);
+            border-color: var(--border-highlight);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+        }
+
+        .game-card.active-self {
+            border-color: rgba(74, 222, 128, 0.3);
+            background: rgba(74, 222, 128, 0.05);
+        }
+
+        .game-card.active-eval {
+            border-color: rgba(96, 165, 250, 0.3);
+            background: rgba(96, 165, 250, 0.05);
+        }
+
+        .game-card.active-ghost {
+            border-color: rgba(192, 132, 252, 0.3);
+            background: rgba(192, 132, 252, 0.05);
+        }
+
+        .game-card.finished {
+            opacity: 0.4;
+            pointer-events: none;
+        }
+
+        /* Lists in sidebar */
+        .list-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--bg-glass-lighter);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            transition: background 0.2s;
+        }
+
+        .list-row:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .list-row.highlight {
+            background: rgba(96, 165, 250, 0.1);
+            border-left: 3px solid var(--color-blue);
+            border-color: rgba(96, 165, 250, 0.2);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Slider */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 14px;
+            width: 14px;
+            border-radius: 50%;
+            background: white;
+            margin-top: -5px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+            transition: transform 0.1s;
+        }
+
+        input[type=range]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            body {
+                height: auto;
+                min-height: 100vh;
+                overflow-y: auto;
+            }
+
+            /* Top Bar */
+            .glass-panel>div.flex {
+                flex-direction: column !important;
+                gap: 16px;
+                padding: 16px !important;
+            }
+
+            .glass-panel>div.flex>div.flex {
+                width: 100%;
+                justify-content: space-between;
+                flex-wrap: wrap;
+            }
+
+            .pill {
+                font-size: 12px;
+            }
+
+            /* Main Layout */
+            body>div.flex.flex-1 {
+                flex-direction: column !important;
+                padding: 12px !important;
+                gap: 12px !important;
+            }
+
+            /* Metrics Row */
+            div[style*="height: 300px"] {
+                height: auto !important;
+                flex-direction: column !important;
+            }
+
+            /* Sidebar */
+            div[style*="width: 340px"] {
+                width: 100% !important;
+            }
+
+            /* Grid */
+            .game-grid {
+                grid-template-columns: repeat(4, 1fr) !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Top Bar -->
+    <div class="glass-panel"
+        style="border-radius: 0; border-top: 0; border-left: 0; border-right: 0; margin-bottom: 0;">
+        <div class="flex items-center justify-between" style="padding: 12px 24px;">
+            <div class="flex items-center gap-6">
+                <!-- Branding -->
+                <div class="flex items-center gap-3">
+                    <!-- Simple Logo Icon -->
+                    <div
+                        style="width:24px; height:24px; background:linear-gradient(135deg, #3b82f6, #a855f7); border-radius:6px; box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);">
+                    </div>
+                    <div class="text-xl text-white-90 tracking-tight">AlphaLudo</div>
+                    <!-- Config Badge -->
+                    <div id="configBadge" class="pill"
+                        style="display:none; font-size:10px; font-weight:700; padding:2px 8px; border-radius:4px; letter-spacing:1px;">
+                        PROD</div>
+                </div>
+
+                <div class="pill">
+                    <div class="dot pulse"
+                        style="background: var(--color-green); box-shadow: var(--shadow-glow-green);"></div>
+                    <span class="font-mono text-sm text-white-70" id="sessionTime">00:00:00</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <!-- Learner Control Pill -->
+                <div class="pill" style="padding-right: 6px;">
+                    <div class="dot" id="learnerDot" style="background: var(--color-green); margin-right: 8px;"></div>
+                    <span class="text-xs text-white-50 uppercase mr-2" id="learnerLabel">Learner</span>
+                    <div style="border-left: 1px solid rgba(255,255,255,0.1); padding-left: 8px; margin-left: 4px;">
+                        <button class="btn-icon" id="btnToggleLearner" onclick="toggleLearner()" title="Stop Learner">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2.5">
+                                <rect x="6" y="6" width="12" height="12" rx="2" ry="2" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="pill" style="padding-right: 6px;">
+                    <span class="text-xs text-white-50 uppercase mr-2">Actors</span>
+                    <span class="font-mono text-sm text-white-90" id="actorCount">0</span>
+                    <div class="flex gap-1"
+                        style="margin-left: 12px; padding-left: 12px; border-left: 1px solid rgba(255,255,255,0.1);">
+                        <button class="btn-icon" onclick="spawn()" title="Spawn"><svg width="16" height="16"
+                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <path d="M12 5v14M5 12h14" />
+                            </svg></button>
+                        <button class="btn-icon" onclick="kill()" title="Kill"><svg width="16" height="16"
+                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <path d="M5 12h14" />
+                            </svg></button>
+                    </div>
+                </div>
+                <button class="btn-stop" id="btnSession" onclick="toggleConnection()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <circle cx="12" cy="12" r="10" />
+                        <rect x="9" y="9" width="6" height="6" />
+                    </svg>
+                    <span>Stop</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex flex-1 gap-4 p-4 overflow-hidden" style="padding: 24px;">
+
+        <!-- Center/Left Area -->
+        <div class="flex flex-col flex-1 gap-4 overflow-hidden">
+            <!-- Metrics Row -->
+            <div class="flex gap-4" style="height: 300px;">
+                <!-- Elo Chart -->
+                <div class="glass-panel flex-1 flex flex-col relative" style="flex:2;">
+                    <div class="panel-header" style="background:transparent; border-bottom:none;">
+                        <div>
+                            <div class="text-xs text-white-40 uppercase tracking-wide mb-1">Main Elo</div>
+                            <div class="flex items-baseline gap-3">
+                                <span class="text-5xl text-white-90 transition-all font-light" id="mainElo">--</span>
+                                <div class="pill"
+                                    style="padding: 2px 10px; font-size: 11px; background: rgba(34,197,94,0.1); border-color:rgba(34,197,94,0.2);">
+                                    <span class="text-green" id="eloTrend">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex-1 min-h-0 relative w-full px-4 pb-4">
+                        <canvas id="eloChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Secondary Metrics -->
+                <div class="flex flex-col gap-4 flex-1">
+                    <!-- Loss -->
+                    <div class="glass-panel flex-1 flex flex-col">
+                        <div class="panel-header" style="background:transparent; border-bottom:none; padding-bottom:0;">
+                            <div class="text-xs text-white-40 uppercase tracking-wide">Loss</div>
+                        </div>
+                        <div class="px-5 pb-2">
+                            <div class="flex items-baseline gap-2">
+                                <span class="text-3xl font-light text-white-90" id="currLoss">--</span>
+                            </div>
+                        </div>
+                        <div class="flex-1 min-h-0 relative px-4 pb-4">
+                            <canvas id="lossChart"></canvas>
+                        </div>
+                    </div>
+                    <!-- Win Rate -->
+                    <div class="glass-panel flex flex-col justify-center px-6 py-5" style="height: 140px;">
+                        <div class="text-xs text-white-40 uppercase tracking-wide mb-2">Win Rate</div>
+                        <div class="text-3xl font-light text-white-90 mb-3" id="winRate">--%</div>
+                        <div
+                            style="background: rgba(255,255,255,0.1); height: 6px; border-radius: 3px; overflow: hidden; position:relative;">
+                            <div id="winBar"
+                                style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); box-shadow: var(--shadow-glow-blue); transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);">
+                            </div>
+                        </div>
+                        <div class="text-xs text-white-50 mt-2" id="winLabel">Waiting data...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Games -->
+            <div class="glass-panel flex-1 flex flex-col overflow-hidden">
+                <div class="panel-header">
+                    <div>
+                        <div class="text-sm text-white-40 uppercase tracking-wide">Live Games</div>
+                        <div class="text-xs text-white-30 mt-1"><span id="activeCount">0</span> active</div>
+                    </div>
+                    <div class="flex gap-5 text-xs">
+                        <div class="flex items-center gap-2">
+                            <div class="dot" style="background:var(--color-green); box-shadow:var(--shadow-glow-green)">
+                            </div><span class="text-white-50">Self-Play</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <div class="dot" style="background:var(--color-blue); box-shadow:var(--shadow-glow-blue)">
+                            </div><span class="text-white-50">Eval</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <div class="dot"
+                                style="background:var(--color-purple); box-shadow:var(--shadow-glow-purple)"></div><span
+                                class="text-white-50">Ghost</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-6 overflow-y-auto flex-1 bg-black/10">
+                    <div id="gamesGrid" class="game-grid"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Sidebar -->
+        <div class="flex flex-col gap-4" style="width: 340px;">
+            <!-- Leaderboard -->
+            <div class="glass-panel flex flex-col" style="max-height: 35%;">
+                <div class="panel-header">
+                    <div class="text-xs text-white-40 uppercase tracking-wide">Leaderboard</div>
+                </div>
+                <div class="p-4 overflow-y-auto" id="eloList"></div>
+            </div>
+
+            <!-- Training Stats -->
+            <div class="glass-panel p-0">
+                <div class="panel-header">
+                    <div class="text-xs text-white-40 uppercase tracking-wide">Training Stats</div>
+                </div>
+                <div class="p-4" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div class="list-row" style="margin-bottom:0;">
+                        <div class="flex items-center gap-3 text-xs text-white-60">
+                            <span style="opacity:0.5">#</span> Iteration
+                        </div>
+                        <div class="font-mono text-xs text-white-90" id="iterNum">0</div>
+                    </div>
+                    <div class="list-row" style="margin-bottom:0;">
+                        <div class="flex items-center gap-3 text-xs text-white-60">
+                            <span style="opacity:0.5">🎮</span> Games
+                        </div>
+                        <div class="font-mono text-xs text-white-90" id="totalGames">0</div>
+                    </div>
+                    <div class="list-row" style="margin-bottom:0;">
+                        <div class="flex items-center gap-3 text-xs text-white-60">
+                            <span style="opacity:0.5">💾</span> Buffer
+                        </div>
+                        <div class="font-mono text-xs text-white-90" id="bufferSize">0</div>
+                    </div>
+                    <div class="list-row" style="margin-bottom:0;">
+                        <div class="flex items-center gap-3 text-xs text-white-60">
+                            <span style="opacity:0.5">⏱️</span> Avg Game
+                        </div>
+                        <div class="font-mono text-xs text-white-90" id="avgGameTime">0.00s</div>
+                    </div>
+                    <div class="list-row" style="margin-bottom:0;">
+                        <div class="flex items-center gap-3 text-xs text-white-60">
+                            <span style="opacity:0.5">⚡</span> Avg Iter
+                        </div>
+                        <div class="font-mono text-xs text-white-90" id="avgIterTime">0.000s</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System Health -->
+            <div class="glass-panel flex-1 flex flex-col overflow-hidden">
+                <div class="panel-header">
+                    <div class="text-xs text-white-40 uppercase tracking-wide">System Health</div>
+                </div>
+                <div class="p-4 flex flex-col gap-2 overflow-hidden flex-1">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                        <div class="list-row flex-col items-start gap-1"
+                            style="height:auto; padding:12px; margin:0; background:rgba(255,255,255,0.02);">
+                            <div class="text-xs text-white-40 flex items-center gap-1">CPU</div>
+                            <div class="text-lg font-light text-white-90" id="sysCpu">0%</div>
+                            <div class="w-full bg-white-50 h-1 rounded-full mt-2 overflow-hidden">
+                                <div id="barCpu" class="h-full bg-green-500" style="width:0%; transition: width 0.5s;">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="list-row flex-col items-start gap-1"
+                            style="height:auto; padding:12px; margin:0; background:rgba(255,255,255,0.02);">
+                            <div class="text-xs text-white-40 flex items-center gap-1">RAM</div>
+                            <div class="text-lg font-light text-white-90" id="sysRam">0 MB</div>
+                            <div class="w-full bg-white-50 h-1 rounded-full mt-2 overflow-hidden">
+                                <div id="barRam" class="h-full bg-blue-500" style="width:0%; transition: width 0.5s;">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex-1 overflow-y-auto mt-2" id="procList" style="padding-right:4px;">
+                        <div class="text-xs text-white-30 text-center mt-4">Waiting for actors...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auto-Tuner Status -->
+            <div class="glass-panel p-4 bg-glass-lighter" id="tunerPanel" style="display:none; margin-bottom: 16px;">
+                <div class="flex justify-between items-center mb-3">
+                    <div class="text-xs text-white-40 uppercase tracking-wide">Auto-Tuner</div>
+                    <div class="pill" id="tunerStatePill"
+                        style="font-size:10px; padding:2px 8px; background:rgba(255,255,255,0.1);">
+                        OFF
+                    </div>
+                </div>
+
+                <div class="flex flex-col gap-2">
+                    <div class="grid grid-cols-2 gap-2" style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <div class="list-row flex-col items-start gap-1" style="margin:0; padding:8px;">
+                            <div class="text-[10px] text-white-40 uppercase">Noise</div>
+                            <div class="font-mono text-xs text-white-90" id="tunerEps">--</div>
+                        </div>
+                        <div class="list-row flex-col items-start gap-1" style="margin:0; padding:8px;">
+                            <div class="text-[10px] text-white-40 uppercase">CPUCT</div>
+                            <div class="font-mono text-xs text-white-90" id="tunerCpuct">--</div>
+                        </div>
+                    </div>
+
+                    <!-- Last Eval -->
+                    <div
+                        style="background:rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius:8px; padding:10px;">
+                        <div class="flex justify-between text-[10px] mb-2">
+                            <span class="text-white-40 uppercase">Latest Eval</span>
+                            <span class="text-white-30" id="tunerTime">--</span>
+                        </div>
+                        <div class="flex justify-between items-baseline">
+                            <div class="text-xl font-light text-white-90" id="tunerWinRate">--%</div>
+                            <div class="text-xs text-white-50 font-mono">H: <span id="tunerEntropy"
+                                    class="text-white-90">--</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MCTS Control -->
+            <div class="glass-panel p-5">
+                <div class="flex justify-between mb-3">
+                    <div class="text-xs text-white-40 uppercase tracking-wide">MCTS Threshold</div>
+                    <div class="font-mono text-xs text-white-70" id="mctsVal">0.75</div>
+                </div>
+                <input type="range" min="0.5" max="1.0" step="0.01" value="0.75" oninput="updMCT(this.value)"
+                    style="background: linear-gradient(to right, #3b82f6 50%, rgba(255,255,255,0.1) 50%);"
+                    id="mctsRange">
+            </div>
+        </div>
+    </div>
+
+    <!-- Logic -->
+    <script>
+        const $ = id => document.getElementById(id);
+
+        // --- WebSocket & Connection ---
+        let socket = null;
+        let isConnected = false;
+
+        function connect() {
+            const btn = $('btnSession');
+            if (btn) {
+                btn.innerHTML = `<svg class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg><span>Conn...</span>`;
+                btn.style.background = 'rgba(255,255,255,0.1)';
+            }
+
+            // Dynamic URL Logic
+            const isLocal = location.hostname === 'localhost' && (location.port === '8000' || location.port === '63342' || location.port === '');
+            const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+            const url = isLocal ? 'ws://localhost:8765' : (protocol + location.host);
+
+            console.log("Connecting to:", url);
+            try {
+                socket = new WebSocket(url);
+                socket.onopen = onSocketOpen;
+                socket.onmessage = onSocketMessage;
+                socket.onclose = onSocketClose;
+            } catch (e) {
+                console.error(e);
+                onSocketClose();
+            }
+        }
+
+        function onSocketClose() {
+            console.log("Disconnected");
+            isConnected = false;
+            const btn = $('btnSession');
+            if (btn) {
+                btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M2 12h20" /></svg><span>Connect</span>`;
+                btn.className = 'btn-stop'; // Base class
+                btn.style.background = 'rgba(34, 197, 94, 0.2)'; // Green tint
+                btn.style.color = '#4ade80';
+                btn.style.borderColor = 'rgba(34, 197, 94, 0.3)';
+                btn.onclick = toggleConnection;
+            }
+        }
+
+        let startTime = Date.now();
+        let games = {}, ghostIds = new Set(), heurIds = new Set();
+        let currentBatchSize = 16;
+
+        // --- Charts ---
+        Chart.defaults.color = 'rgba(255,255,255,0.3)';
+        Chart.defaults.borderColor = 'rgba(255,255,255,0.05)';
+        Chart.defaults.font.family = '"Inter", sans-serif';
+        Chart.defaults.font.size = 11;
+
+        const commonOpt = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(20,20,23,0.95)',
+                    titleColor: '#fff',
+                    bodyColor: '#e4e4e7',
+                    borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 8,
+                    displayColors: false,
+                    bodyFont: { family: 'JetBrains Mono', size: 12 },
+                    titleFont: { family: 'Inter', size: 11 }
+                },
+                zoom: {
+                    pan: {
+                        enabled: true,
+                        mode: 'x',  // Pan horizontally
+                        modifierKey: null,  // No modifier needed, just drag
+                    },
+                    zoom: {
+                        wheel: {
+                            enabled: true,
+                            speed: 0.1
+                        },
+                        pinch: {
+                            enabled: true  // For touch devices
+                        },
+                        mode: 'x',  // Zoom horizontally
+                        drag: {
+                            enabled: false  // Disable drag-to-zoom (conflicts with pan)
+                        }
+                    },
+                    limits: {
+                        x: { minRange: 10 }  // Minimum 10 data points visible
+                    }
+                }
+            },
+            scales: {
+                x: { display: false },
+                y: { grid: { display: false }, ticks: { display: false } }
+            },
+            elements: { point: { radius: 0, hitRadius: 20 } }
+        };
+
+        const eloCtx = $('eloChart').getContext('2d');
+        const grad = eloCtx.createLinearGradient(0, 0, 0, 300);
+        grad.addColorStop(0, 'rgba(59, 130, 246, 0.4)');
+        grad.addColorStop(1, 'rgba(59, 130, 246, 0)');
+
+        const eloChart = new Chart(eloCtx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    borderColor: '#3b82f6',
+                    backgroundColor: grad,
+                    borderWidth: 2,
+                    data: [],
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: { ...commonOpt, scales: { x: { display: false }, y: { position: 'right', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: 'rgba(255,255,255,0.3)' } } } }
+        });
+
+        const lossChart = new Chart($('lossChart').getContext('2d'), {
+            type: 'line',
+            data: { datasets: [{ borderColor: '#f87171', borderWidth: 2, data: [], tension: 0.3 }] },
+            options: commonOpt
+        });
+
+        // --- Socket ---
+        function onSocketOpen() {
+            console.log("Connected");
+            isConnected = true;
+            const btn = $('btnSession');
+            if (btn) {
+                btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" /><rect x="9" y="9" width="6" height="6" /></svg><span>Stop</span>`;
+                btn.className = 'btn-stop';
+                btn.style.background = ''; // Revert to CSS
+                btn.style.color = '';
+                btn.style.borderColor = '';
+                btn.onclick = toggleConnection;
+            }
+
+            socket.send(JSON.stringify({ type: 'subscribe', channel: 'dashboard' }));
+            socket.send(JSON.stringify({ type: 'resume_all' }));
+
+            // Initial Fetch
+            fetchManualData();
+        };
+
+        function onSocketMessage(e) {
+            const d = JSON.parse(e.data);
+
+            if (d.type === 'tuner_update') {
+                handleTunerUpdate(d.history);
+            }
+
+            if (d.type === 'metrics') {
+                const hist = d.history;
+                if (hist.length > 0) {
+                    const last = hist[hist.length - 1];
+                    $('currLoss').textContent = last.loss.toFixed(4);
+                    const win = last.win_rate;
+                    $('winRate').textContent = win.toFixed(1) + '%';
+                    $('winBar').style.width = win + '%';
+
+                    if (win < 40) $('winLabel').textContent = 'Low Performance (Needs optimization)';
+                    else if (win > 70) $('winLabel').textContent = 'High Dominance (Target achieved)';
+                    else $('winLabel').textContent = 'Optimal Learning Range';
+
+                    $('iterNum').textContent = last.iteration.toLocaleString();
+                    // $('totalGames').textContent = (last.iteration * 128).toLocaleString(); // REMOVED
+
+                    if (last.avg_game_time) $('avgGameTime').textContent = last.avg_game_time.toFixed(2) + 's';
+                    if (last.avg_iter_time) $('avgIterTime').textContent = last.avg_iter_time.toFixed(3) + 's';
+
+                    // Optimize chart updates (limit points)
+                    const sub = hist.slice(-100);
+                    lossChart.data.labels = sub.map(x => x.iteration);
+                    lossChart.data.datasets[0].data = sub.map(x => x.loss);
+                    lossChart.update('none'); // No animation
+                }
+            }
+            else if (d.type === 'stats') {
+                if (d.total_games !== undefined) $('totalGames').textContent = d.total_games.toLocaleString();
+
+                const buff = d.buffer_size || 0;
+                let buffText = buff;
+                if (buff > 1000000) buffText = (buff / 1000000).toFixed(2) + 'M';
+                else if (buff > 1000) buffText = (buff / 1000).toFixed(1) + 'K';
+                if ($('bufferSize')) $('bufferSize').textContent = buffText;
+            }
+            else if (d.type === 'elo_update') {
+                $('mainElo').textContent = Math.round(d.main_elo);
+                renderRankings(d.rankings || []);
+            }
+            else if (d.type === 'elo_history') {
+                if (d.history && d.history['Main']) {
+                    const data = d.history['Main'];
+                    // Limit points
+                    const sub = data.slice(-100);
+                    eloChart.data.labels = sub.map(x => x[0]);
+                    eloChart.data.datasets[0].data = sub.map(x => x[1]);
+                    eloChart.update('none');
+
+                    if (data.length > 5) {
+                        const diff = data[data.length - 1][1] - data[data.length - 5][1];
+                        const el = $('eloTrend');
+                        el.textContent = (diff >= 0 ? '+' : '') + diff.toFixed(1);
+                        el.className = diff >= 0 ? 'text-green' : 'text-red';
+                        el.parentElement.style.background = diff >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)';
+                        el.parentElement.style.borderColor = diff >= 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)';
+                    }
+                }
+            }
+            else if (d.type === 'game_result') {
+                markGameDone(d.game_id, d.winner, d.winner_identity, d.main_won);
+            }
+            else if (d.type === 'config_mode') {
+                const badge = $('configBadge');
+                if (badge) {
+                    badge.style.display = 'inline-block';
+                    badge.innerText = d.mode;
+                    if (d.mode === 'TEST') {
+                        badge.style.background = 'rgba(234, 179, 8, 0.2)'; // Yellow/Orange
+                        badge.style.border = '1px solid rgba(234, 179, 8, 0.3)';
+                        badge.style.color = '#facc15';
+                    } else {
+                        badge.style.background = 'rgba(56, 189, 248, 0.2)'; // Cyan
+                        badge.style.border = '1px solid rgba(56, 189, 248, 0.3)';
+                        badge.style.color = '#38bdf8';
+                    }
+                }
+            }
+            else if (d.type === 'batch_init') {
+                currentBatchSize = d.batch_size || 16;
+                initGrid(currentBatchSize);
+            }
+            else if (d.type === 'ghost_games') { d.game_ids.forEach(x => ghostIds.add(x)); refreshGridStyles(); }
+            else if (d.type === 'heuristic_games') { d.game_ids.forEach(x => heurIds.add(x)); refreshGridStyles(); }
+            else if (d.type === 'system_stats') {
+                updateSystem(d);
+            }
+            else if (d.type === 'game_progress') {
+                updateGameProgress(d.game_id, d.state);
+            }
+        };
+
+        // --- Grid ---
+        function initGrid(size) {
+            const el = $('gamesGrid');
+            el.innerHTML = '';
+            games = {};
+            // If size is 0 or undefined, default to 16
+            const count = size || 16;
+            $('activeCount').textContent = count;
+            el.dataset.count = count;
+
+            for (let i = 0; i < count; i++) {
+                const div = document.createElement('div');
+                div.className = 'game-card';
+                div.id = `g-${i}`;
+                div.title = `Watch Game ${i}`;
+                div.onclick = () => window.open(`game.html?id=${i}`, '_blank');
+                div.innerHTML = `
+                    <div class="flex items-center justify-between w-full" style="margin-bottom:2px;">
+                        <div class="dot" id="d-${i}" style="background:rgba(255,255,255,0.2); transition:0.3s; width:4px; height:4px;"></div>
+                        <div style="font-family:var(--font-mono); font-size:8px; color:rgba(255,255,255,0.4);">#${i}</div>
+                    </div>
+                    <div id="prog-${i}" style="display:flex; flex-direction:column; gap:1px; width:100%;">
+                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-0" style="width:0%; height:100%; background:#f87171; transition:width 0.5s;"></div></div>
+                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-1" style="width:0%; height:100%; background:#4ade80; transition:width 0.5s;"></div></div>
+                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-2" style="width:0%; height:100%; background:#fbbf24; transition:width 0.5s;"></div></div>
+                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-3" style="width:0%; height:100%; background:#60a5fa; transition:width 0.5s;"></div></div>
+                    </div>
+                `;
+                el.appendChild(div);
+                games[i] = { active: true };
+            }
+            resizeGrid();
+            refreshGridStyles();
+        }
+
+        function resizeGrid() {
+            const el = $('gamesGrid');
+            const count = parseInt(el.dataset.count || 16);
+            if (!count) return;
+
+            const parent = el.parentElement;
+            // Subtract padding (p-6 = 24px * 2 = 48px)
+            const w = parent.clientWidth - 48;
+            const h = parent.clientHeight - 48;
+
+            if (w <= 0 || h <= 0) return;
+
+            // Optimal columns C = sqrt(count * W / H)
+            let cols = Math.ceil(Math.sqrt(count * (w / h)));
+            cols = Math.max(4, Math.min(count, cols)); // Min 4 cols
+
+            // Check if items become too small
+            const estimatedWidth = w / cols;
+            if (estimatedWidth < 50) {
+                // Too small, fallback to auto-fill
+                el.style.gridTemplateColumns = `repeat(auto-fill, minmax(50px, 1fr))`;
+            } else {
+                el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+            }
+        }
+
+        window.addEventListener('resize', resizeGrid);
+
+        function refreshGridStyles() {
+            Object.keys(games).forEach(k => {
+                const i = parseInt(k);
+                const div = $(`g-${i}`);
+                const dot = $(`d-${i}`);
+                if (!div) return;
+
+                div.className = 'game-card';
+
+                if (ghostIds.has(i)) {
+                    div.classList.add('active-ghost');
+                    dot.style.background = 'var(--color-purple)';
+                    dot.style.boxShadow = '0 0 8px var(--color-purple)';
+                } else if (heurIds.has(i)) {
+                    div.classList.add('active-eval');
+                    dot.style.background = 'var(--color-blue)';
+                    dot.style.boxShadow = '0 0 8px var(--color-blue)';
+                } else {
+                    div.classList.add('active-self');
+                    dot.style.background = 'var(--color-green)';
+                    dot.style.boxShadow = '0 0 8px var(--color-green)';
+                }
+            });
+        }
+
+        function markGameDone(id, winner, winnerIdentity, mainWon) {
+            const div = $(`g-${id}`);
+            if (div) {
+                div.classList.add('finished');
+                div.style.background = 'transparent';
+
+                // Color border based on whether Main model won
+                if (mainWon) {
+                    div.style.border = '1px solid rgba(74, 222, 128, 0.4)'; // Green for Main win
+                    div.style.boxShadow = '0 0 8px rgba(74, 222, 128, 0.2)';
+                } else {
+                    div.style.border = '1px solid rgba(239, 68, 68, 0.3)'; // Red for loss
+                }
+
+                const dot = $(`d-${id}`);
+                const colors = ['#f87171', '#4ade80', '#fbbf24', '#60a5fa'];
+                dot.style.boxShadow = 'none';
+                dot.style.background = colors[winner] || '#fff';
+
+                // Add winner identity badge
+                if (winnerIdentity) {
+                    // Create or update winner label
+                    let label = div.querySelector('.winner-label');
+                    if (!label) {
+                        label = document.createElement('div');
+                        label.className = 'winner-label';
+                        label.style.cssText = `
+                            position: absolute; bottom: 3px; left: 0; right: 0;
+                            font-size: 9px; font-weight: 500; text-align: center;
+                            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                            padding: 0 2px;
+                        `;
+                        div.style.position = 'relative';
+                        div.appendChild(label);
+                    }
+
+                    // Color code by identity
+                    const identityColors = {
+                        'Main': '#4ade80',      // Green
+                        'Ghost': '#c084fc',      // Purple
+                        'Heuristic': '#60a5fa',  // Blue
+                        'Aggressive': '#f87171', // Red
+                        'Defensive': '#fbbf24',  // Yellow  
+                        'Racing': '#fb923c'      // Orange
+                    };
+                    label.style.color = identityColors[winnerIdentity] || 'rgba(255,255,255,0.6)';
+                    label.textContent = mainWon ? '✓ Main' : winnerIdentity;
+                }
+            }
+        }
+
+        // --- Progress Bars for Game Cards ---
+        function updateGameProgress(gameId, state) {
+            if (!state || !state.player_positions || !state.scores) return;
+            const maxSteps = 4 * 57; // 4 tokens * 57 steps each
+            for (let p = 0; p < 4; p++) {
+                let totalSteps = state.scores[p] * 57; // Tokens home
+                for (let t = 0; t < 4; t++) {
+                    const pos = state.player_positions[p][t];
+                    if (pos !== -1 && pos !== 99) totalSteps += (pos + 1);
+                }
+                const progress = Math.min(100, Math.round((totalSteps / maxSteps) * 100));
+                const bar = $(`bar-${gameId}-${p}`);
+                if (bar) bar.style.width = progress + '%';
+            }
+        }
+
+        // --- Renderers ---
+        function renderRankings(list) {
+            const el = $('eloList');
+            if (!list || list.length === 0) {
+                el.innerHTML = '<div class="text-xs text-white-30 text-center py-4">No rankings yet</div>';
+                return;
+            }
+            el.innerHTML = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">' + list.map((x, i) => `
+                <div class="list-row ${x[0].includes('Main') ? 'highlight' : ''}" style="margin-bottom:0;">
+                    <div class="flex items-center gap-2">
+                        <span class="font-mono text-xs text-white-40" style="width:20px;">#${i + 1}</span>
+                         ${i === 0 ? '<span style="font-size:14px; margin-right:4px;">🏆</span>' : ''}
+                        <span class="text-xs ${x[0].includes('Main') ? 'text-white-90 font-medium' : 'text-white-60'}">${x[0]}</span>
+                    </div>
+                    <span class="font-mono text-xs text-white-70">${Math.round(x[1])}</span>
+                </div>
+            `).join('') + '</div>';
+        }
+
+        function updateSystem(data) {
+            // Unpack
+            const overall = data.overall || {};
+            const procs = data.processes || {};
+            const list = Array.isArray(procs) ? procs : Object.values(procs);
+
+            // 1. Update Global Indicators using 'overall' from psutil
+            if (overall.cpu_percent !== undefined) {
+                $('sysCpu').textContent = overall.cpu_percent.toFixed(1) + '%';
+                $('barCpu').style.width = Math.min(100, overall.cpu_percent) + '%';
+            }
+
+            if (overall.ram_used_gb !== undefined) {
+                const gb = overall.ram_used_gb;
+                const total = overall.ram_total_gb || 16;
+                $('sysRam').textContent = gb.toFixed(1) + ' GB';
+                $('barRam').style.width = Math.min(100, (gb / total) * 100) + '%';
+            }
+
+            // 2. Update Process List
+            let html = '';
+
+            // Check if Learner exists
+            const learner = list.find(p => (p.label === 'Learner' || p.name === 'Learner'));
+
+            // Update Top Bar Control State
+            const btnToggle = $('btnToggleLearner');
+            const learnerDot = $('learnerDot');
+            const learnerLabel = $('learnerLabel');
+
+            if (learner) {
+                // RUNNING State
+                learnerDot.style.background = 'var(--color-green)';
+                learnerDot.classList.remove('pulse-red');
+                learnerLabel.textContent = 'RUNNING';
+
+                // Reset transition if we were waiting for spawn and it arrived
+                if (isLearnerTransitioning && btnToggle.title === 'Start Learner') isLearnerTransitioning = false;
+
+                if (!isLearnerTransitioning) {
+                    btnToggle.title = "Stop Learner";
+                    btnToggle.disabled = false;
+                    btnToggle.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="6" y="6" width="12" height="12" rx="2" ry="2"/></svg>`;
+                    btnToggle.onclick = toggleLearner;
+                }
+
+                // Render in List
+                let colHex = '#4ade80';
+                html += `
+                <div class="list-row group" style="padding: 8px 12px; transition: background 0.2s;">
+                    <div class="flex-1">
+                        <div class="flex justify-between mb-1.5 align-middle">
+                            <span class="text-xs text-white-60 font-medium">Learner (PID ${learner.pid})</span>
+                            <div class="flex gap-3 items-center">
+                                <span class="font-mono text-[10px] text-white-40">${Math.round(learner.ram_mb)} MB</span>
+                                <button class="opacity-0 group-hover:opacity-100 transition-opacity text-white-40 hover:text-red-400" onclick="killLearner()" title="Stop Process">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="flex gap-2 items-center" style="height:4px;">
+                             <div class="bg-white-50 flex-1 rounded-full overflow-hidden" style="height:4px;">
+                                <div style="background-color:${colHex}; width:${Math.min(100, learner.cpu_percent)}%; height:100%;"></div>
+                             </div>
+                        </div>
+                    </div>
+                </div>`;
+            } else {
+                // STOPPED State
+                learnerDot.style.background = '#f87171'; // Red
+                learnerDot.classList.add('pulse-red'); // Custom animation if wanted
+                learnerLabel.textContent = 'STOPPED';
+
+                // Reset transition if we were waiting for kill and it died
+                if (isLearnerTransitioning && btnToggle.title === 'Stop Learner') isLearnerTransitioning = false;
+
+                if (!isLearnerTransitioning) {
+                    btnToggle.title = "Start Learner";
+                    btnToggle.disabled = false;
+                    // Play Icon
+                    btnToggle.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+                    btnToggle.onclick = toggleLearner;
+                }
+
+                // Placeholder in List
+                html += `
+                <div class="list-row" style="padding: 12px; border: 1px dashed rgba(255,255,255,0.1); justify-content: center;">
+                    <span class="text-xs text-white-30">Learner Process Offline</span>
+                </div>`;
+            }
+
+            // Render Actors
+            const actors = list.filter(p => (p.label || p.name || '').toLowerCase().includes('actor'));
+            actors.forEach(p => {
+                let colHex = '#4ade80';
+                if (p.cpu_percent > 80) colHex = '#f87171';
+                else if (p.cpu_percent > 50) colHex = '#facc15';
+
+                const actorId = p.label ? p.label.split(' ')[1] : '?';
+                const label = `Actor ${actorId}`;
+                const mem = Math.round(p.ram_mb || 0) + ' MB';
+
+                html += `
+                <div class="list-row group" style="padding: 8px 12px;">
+                    <div class="flex-1">
+                        <div class="flex justify-between mb-1.5 align-middle">
+                            <span class="text-xs text-white-60 font-medium">${label} (PID ${p.pid})</span>
+                            <div class="flex gap-3 items-center">
+                                <span class="font-mono text-[10px] text-white-40">${mem}</span>
+                                <button class="opacity-0 group-hover:opacity-100 transition-opacity text-white-40 hover:text-red-400" onclick="killActor(${actorId})" title="Kill Process">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="flex gap-2 items-center" style="height:4px;">
+                             <div class="bg-white-50 flex-1 rounded-full overflow-hidden" style="height:4px;">
+                                <div style="background-color:${colHex}; width:${Math.min(100, p.cpu_percent)}%; height:100%;"></div>
+                             </div>
+                        </div>
+                    </div>
+                </div>`;
+            });
+
+            if (html === '') {
+                html = '<div class="text-xs text-white-30 text-center mt-4">System Offline</div>';
+            }
+
+            $('procList').innerHTML = html;
+            $('actorCount').textContent = actors.length;
+        }
+
+        // --- Controls ---
+        // --- Controls ---
+        function toggleConnection() {
+            if (isConnected) {
+                // Already connected -> Action is STOP SESSION
+                if (confirm("Stop Training Session? This kills all actors.")) {
+                    api('stop_training');
+                }
+            } else {
+                // Disconnected -> Action is CONNECT
+                connect();
+            }
+        }
+
+        function fetchManualData() {
+            // Request whatever data isn't stream pushed or ensure fresh start
+            // Our socket 'subscribe' triggers push. 
+            // We can ask for replay buffer stats explicitly if endpoint exists?
+            // Usually 'subscribe' is enough.
+            console.log("Fetching updated data...");
+        }
+
+        async function api(type, data = {}) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type, ...data }));
+            }
+        }
+
+        function spawn() { api('spawn_actor'); }
+        function kill() { api('kill_actor', { actor_id: getHighestActorId() }); }
+
+        // Granular Controls
+        // Global State
+        let isLearnerTransitioning = false;
+
+        function toggleLearner() {
+            const label = $('learnerLabel').textContent;
+            const btn = $('btnToggleLearner');
+
+            if (label === 'RUNNING') {
+                if (confirm("Gracefully Stop Learner? (Saves Buffer)")) {
+                    isLearnerTransitioning = true;
+                    btn.innerHTML = '<span class="animate-pulse">...</span>';
+                    btn.disabled = true; // Disable immediately
+                    api('kill_learner');
+                    setTimeout(() => isLearnerTransitioning = false, 45000);
+                }
+            } else {
+                // Starting
+                isLearnerTransitioning = true;
+                btn.innerHTML = '<span class="animate-pulse">...</span>';
+                btn.disabled = true; // Disable immediately
+                api('spawn_learner');
+                setTimeout(() => isLearnerTransitioning = false, 10000);
+            }
+        }
+
+        function killLearner() {
+            // Also triggers graceful stop
+            if (confirm("Gracefully Stop Learner? (Saves Buffer)")) {
+                isLearnerTransitioning = true;
+                const btn = $('btnToggleLearner');
+                btn.innerHTML = '<span class="animate-pulse">...</span>';
+                btn.disabled = true;
+                api('kill_learner');
+            }
+        }
+        function killActor(id) { api('kill_actor', { actor_id: id }); }
+
+        function getHighestActorId() {
+            // Placeholder
+            return null;
+        }
+        function updMCT(v) {
+            $('mctsVal').textContent = v;
+            const p = (v - 0.5) / 0.5 * 100;
+            $('mctsRange').style.background = `linear-gradient(to right, #3b82f6 ${p}%, rgba(255,255,255,0.1) ${p}%)`;
+            socket.send(JSON.stringify({ type: 'update_mcts', key: 'early_termination_threshold', value: parseFloat(v) }));
+        }
+
+        // Timer
+        setInterval(() => {
+            const diff = Math.floor((Date.now() - startTime) / 1000);
+            const h = Math.floor(diff / 3600).toString().padStart(2, '0');
+            const m = Math.floor((diff % 3600) / 60).toString().padStart(2, '0');
+            const s = (diff % 60).toString().padStart(2, '0');
+            $('sessionTime').textContent = `${h}:${m}:${s}`;
+        }, 1000);
+
+        // Initial default
+        initGrid(16);
+
+        // Auto-attempt connect
+        connect();
+
+        function handleTunerUpdate(history) {
+            if (!history || history.length === 0) return;
+            const latest = history[history.length - 1];
+
+            const pnl = $('tunerPanel');
+            if (pnl) pnl.style.display = 'block';
+
+            const toFixed = (val, d) => val !== undefined && val !== null ? val.toFixed(d) : '--';
+
+            $('tunerEps').innerText = toFixed(latest.params.eps, 2);
+            $('tunerCpuct').innerText = toFixed(latest.params.cpuct, 1);
+            $('tunerWinRate').innerText = toFixed(latest.win_rate, 1) + '%';
+            $('tunerEntropy').innerText = toFixed(latest.entropy, 2);
+
+            // Format Time
+            if (latest.timestamp) {
+                const date = new Date(latest.timestamp);
+                const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                $('tunerTime').innerText = timeStr;
+            }
+
+            // Update Pill
+            const pill = $('tunerStatePill');
+            const state = latest.state || 'UNKNOWN';
+            pill.innerText = state;
+
+            // Reset styles
+            pill.style.background = 'rgba(255, 255, 255, 0.1)';
+            pill.style.color = '#fff';
+            pill.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+
+            if (state === 'COLLAPSED') {
+                pill.style.background = 'rgba(239, 68, 68, 0.2)';
+                pill.style.color = '#fca5a5';
+                pill.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+            } else if (state === 'REFINING') {
+                pill.style.background = 'rgba(34, 197, 94, 0.2)';
+                pill.style.color = '#4ade80';
+            } else if (state === 'LEARNING') {
+                pill.style.background = 'rgba(250, 204, 21, 0.15)';
+                pill.style.color = '#fde047';
+            }
+        }
+    </script>
+</body>
+
+</html>

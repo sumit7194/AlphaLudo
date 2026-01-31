@@ -1,0 +1,53 @@
+# --- Python & Environment ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.env
+*.egg-info/
+
+# --- Build Artifacts ---
+build/
+dist/
+*.so
+*.dylib
+*.o
+
+# --- Checkpoints & Models ---
+# Ignore all checkpoint folders
+checkpoints*/
+experiment_*/
+training_history.db
+
+# --- Logs & Data ---
+data/
+logs/
+*.log
+training_logs*.txt
+debug_*.txt
+game_debug_*.txt
+remote_session*.log
+fork_output.log
+
+# --- Archives ---
+*.zip
+*.tar.gz
+*.rar
+
+# --- IDE & System ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- Frontend Node Modules ---
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# --- Agent Memory ---
+.agent/
+
+# --- Temporary/Backup Files ---
+*_backup.html
+config.json.bak
