@@ -1,7 +1,7 @@
 {
     "active_mode": "PROD",
     "PROD": {
-        "mcts_sims": 400,
+        "mcts_sims": 800,
         "mcts_parallel_sims": 8,
         "c_puct": 4.0,
         "dirichlet_alpha": 0.3,

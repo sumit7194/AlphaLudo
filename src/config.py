@@ -11,11 +11,11 @@ print(f"[Config] Loading Configuration for Mode: {MODE}")
 DEFAULT_CONFIGS = {
     "PROD": {
         # === MCTS Settings (v3: Improved Exploration) ===
-        "MCTS_SIMS": 400,              # Reduced from 800 (more games > deeper search)
+        "MCTS_SIMS": 800,              # Increased to 800 (Deep Search) for Golden Data
         "MCTS_PARALLEL_SIMS": 8,       # Virtual Loss parallelism per game
-        "C_PUCT": 3.0,                 # Increased for stochastic game exploration
+        "C_PUCT": 4.0,                 # Increased for stochastic game exploration
         "DIRICHLET_ALPHA": 0.3,        # Root exploration noise
-        "DIRICHLET_EPS": 0.25,         # Noise mixing weight
+        "DIRICHLET_EPS": 0.5,          # Tuned 50% noise mixing weight
         
         # === Batch Settings (Hardware-optimized for M4) ===
         "ACTOR_BATCH_SIZE": 16,        # Reduced for less straggler waiting
