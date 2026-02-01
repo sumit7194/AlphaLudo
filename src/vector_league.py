@@ -177,6 +177,7 @@ class VectorLeagueWorker:
             self.cpp_mcts = ludo_cpp.MCTSEngine(batch_size, self.c_puct, 
                                                  self.dirichlet_alpha, self.dirichlet_eps)
             self.cpp_mcts_batch_size = batch_size
+            print(f"[Worker {self.actor_id}] Created MCTSEngine: CPUCT={self.c_puct}, Alpha={self.dirichlet_alpha}, EPS={self.dirichlet_eps}")
 
         # Game layout based on probabilities
         probs = self.probabilities or {'Main': 1.0}

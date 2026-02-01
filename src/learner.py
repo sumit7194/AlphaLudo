@@ -24,7 +24,8 @@ from src.config import (
     ELOS_PATH, 
     GHOST_SAVE_FREQ,
     LEARNING_RATE,
-    LR_WARMUP_STEPS
+    LR_WARMUP_STEPS,
+    BUFFER_SIZE_LIMIT
 )
 from src.game_db import GameDB
 import json
@@ -76,7 +77,7 @@ def learner_loop(data_queue, device_str='mps', viz_queue=None, all_actors_done=N
         trainer.save_checkpoint(MAIN_CKPT_PATH) # Initial save for actors
         
     # Replay Buffer
-    replay_buffer = ReplayBufferMastery(max_size=200000)
+    replay_buffer = ReplayBufferMastery(max_size=BUFFER_SIZE_LIMIT)
     buffer_path = os.path.join(os.path.dirname(MAIN_CKPT_PATH), "replay_buffer.pkl")
     if replay_buffer.load(buffer_path):
         print(f"[Learner] Loaded Replay Buffer from {buffer_path}")

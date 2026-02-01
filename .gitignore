@@ -29,6 +29,9 @@ debug_*.txt
 game_debug_*.txt
 remote_session*.log
 fork_output.log
+AlphaLudo_Export/
+training_log.txt
+training_logs_mastery_v2_cle
 
 # --- Archives ---
 *.zip

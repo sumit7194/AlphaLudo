@@ -119,11 +119,14 @@ def data_worker_loop(rank, data_queue, device='cpu', viz_queue=None, stop_reques
             # 2. Reload Config (Dynamic Tuning)
             if time.time() - last_config_check > 60:
                 reloaded = cfg.load_config_from_json()
+                conf = cfg.CONFIGS[cfg.MODE]
+                new_cpuct = conf.get("C_PUCT", 3.0)
+                new_eps = conf.get("DIRICHLET_EPS", 0.25)
+                
+                # Always log current config state for diagnostics
+                print(f"[Actor {rank}] Config Check: Reload={reloaded}, CPUCT={new_cpuct}, EPS={new_eps}")
+                
                 if reloaded:
-                    # Fetch new dynamic values
-                    conf = cfg.CONFIGS[cfg.MODE]
-                    new_cpuct = conf.get("C_PUCT", 3.0)
-                    new_eps = conf.get("DIRICHLET_EPS", 0.25)
                     worker.update_params(new_cpuct, new_eps)
                 last_config_check = time.time()
 
