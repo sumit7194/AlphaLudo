@@ -51,15 +51,8 @@ def data_worker_loop(rank, data_queue, device='cpu', viz_queue=None, stop_reques
     else:
         print(f"[Actor {rank}] No checkpoint found, starting random.")
     
-    # Probabilities (Same as Master Plan)
-    probabilities = {
-        'Main': 0.50,
-        'Ghost': 0.20,
-        'Heuristic': 0.10,
-        'Aggressive': 0.07,
-        'Defensive': 0.07,
-        'Racing': 0.06
-    }
+    # Probabilities (Loaded from Config)
+    probabilities = cfg.GAME_COMPOSITION
     
     # Initialize Vector League
     # We pass None for elo_tracker for now to simplify, or load readonly.
@@ -122,12 +115,13 @@ def data_worker_loop(rank, data_queue, device='cpu', viz_queue=None, stop_reques
                 conf = cfg.CONFIGS[cfg.MODE]
                 new_cpuct = conf.get("C_PUCT", 3.0)
                 new_eps = conf.get("DIRICHLET_EPS", 0.25)
+                new_probs = conf.get("GAME_COMPOSITION", None)
                 
                 # Always log current config state for diagnostics
                 print(f"[Actor {rank}] Config Check: Reload={reloaded}, CPUCT={new_cpuct}, EPS={new_eps}")
                 
                 if reloaded:
-                    worker.update_params(new_cpuct, new_eps)
+                    worker.update_params(new_cpuct, new_eps, new_probs)
                 last_config_check = time.time()
 
             # Play Batch - this may take several minutes

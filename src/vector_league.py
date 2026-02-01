@@ -50,12 +50,16 @@ class VectorLeagueWorker:
         self.paused_games = set() # Set of game_ids currently paused
         self.visualizer_instance = None # To bridge commands if needed
 
-    def update_params(self, c_puct, dirichlet_eps):
+    def update_params(self, c_puct, dirichlet_eps, probabilities=None):
         """Dynamic Parameter Update from Auto-Tuner"""
         if c_puct != self.c_puct or dirichlet_eps != self.dirichlet_eps:
             print(f"[Worker {self.actor_id}] Updating Params: CPUCT {self.c_puct}->{c_puct}, EPS {self.dirichlet_eps}->{dirichlet_eps}")
             self.c_puct = c_puct
             self.dirichlet_eps = dirichlet_eps
+        
+        if probabilities and probabilities != self.probabilities:
+            print(f"[Worker {self.actor_id}] Updating Game Composition: {probabilities}")
+            self.probabilities = probabilities
 
     def pause_game(self, game_id):
         """Pause a specific game. Enforces only one game paused at a time."""

@@ -37,6 +37,12 @@ DEFAULT_CONFIGS = {
         
         # === Hardware Optimization ===
         "USE_FLOAT16": True,           # Half precision for 2x speedup on M4
+        
+        # === Game Composition (v3: Dynamic) ===
+        "GAME_COMPOSITION": {
+            "Main": 0.50, "Ghost": 0.20,
+            "Heuristic": 0.10, "Aggressive": 0.07, "Defensive": 0.07, "Racing": 0.06
+        }
     },
     
     "BACKGROUND": {
@@ -121,12 +127,12 @@ AUX_LOSS_WEIGHT = CONF.get("AUX_LOSS_WEIGHT", 0.5)
 USE_FLOAT16 = CONF.get("USE_FLOAT16", False)
 
 # Run Name (for forking experiments)
-# Set via: export ALPHALUDO_RUN_NAME=mastery_v3
+# Set via: export ALPHALUDO_RUN_NAME=mastery_v3_prod
 # BACKGROUND mode uses same data as PROD by default
 if MODE == "BACKGROUND":
-    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3")  # Shares PROD data
+    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3_prod")  # Shares PROD data
 elif MODE == "PROD":
-    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3")
+    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3_prod")
 else:
     RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "test_v3")
 
@@ -142,3 +148,8 @@ WC_STATS_PATH = os.path.join(CHECKPOINT_DIR, "wc_stats.json")
 METRICS_PATH = os.path.join(CHECKPOINT_DIR, "training_metrics.json")
 
 print(f"[Config] Run Name: {RUN_NAME} | MCTS Sims: {MCTS_SIMS} | c_puct: {C_PUCT} | Float16: {USE_FLOAT16}")
+
+GAME_COMPOSITION = CONF.get("GAME_COMPOSITION", {
+    "Main": 0.50, "Ghost": 0.20,
+    "Heuristic": 0.10, "Aggressive": 0.07, "Defensive": 0.07, "Racing": 0.06
+})

@@ -6,7 +6,15 @@
         "c_puct": 4.0,
         "dirichlet_alpha": 0.3,
         "dirichlet_eps": 0.5,
-        "learning_rate": 0.001
+        "learning_rate": 0.001,
+        "game_composition": {
+            "Main": 0.50,
+            "Ghost": 0.20,
+            "Heuristic": 0.10,
+            "Aggressive": 0.07,
+            "Defensive": 0.07,
+            "Racing": 0.06
+        }
     },
     "BACKGROUND": {
         "mcts_sims": 400,
@@ -14,7 +22,15 @@
         "c_puct": 4.0,
         "dirichlet_alpha": 0.3,
         "dirichlet_eps": 0.5,
-        "learning_rate": 0.001
+        "learning_rate": 0.001,
+        "game_composition": {
+            "Main": 0.50,
+            "Ghost": 0.20,
+            "Heuristic": 0.10,
+            "Aggressive": 0.07,
+            "Defensive": 0.07,
+            "Racing": 0.06
+        }
     },
     "TEST": {
         "mcts_sims": 10,
@@ -22,6 +38,10 @@
         "c_puct": 3.0,
         "dirichlet_alpha": 0.3,
         "dirichlet_eps": 0.25,
-        "learning_rate": 0.001
+        "learning_rate": 0.001,
+        "game_composition": {
+            "Main": 0.5,
+            "Heuristic": 0.5
+        }
     }
 }
