@@ -498,13 +498,8 @@ class VectorLeagueWorker:
             self.cpp_mcts.set_roots(multi_move_states)
             
              # Determine dynamic simulations
-            if move_counts:
-                 avg_moves = sum(move_counts[i] for i in multi_move_idx_map) / len(multi_move_idx_map)
-                 if avg_moves < 20: current_sims = 50
-                 elif avg_moves < 60: current_sims = 100
-                 else: current_sims = self.mcts_simulations
-            else:
-                 current_sims = self.mcts_simulations
+            # FIXED: Always use full simulations. Early game throttling (50/100) was hurting exploration.
+            current_sims = self.mcts_simulations
 
             # Run Batch MCTS
             # Optimization: Use Leaf Parallelism (Virtual Loss)

@@ -38,7 +38,8 @@ def get_temperature(move_number, schedule='alphazero'):
     
     elif schedule == 'alphazero':
         # AlphaZero style: explore early, exploit late
-        if move_number < 30:
+        # Adjusted for Ludo (long games ~200 moves): Explore first 100 moves
+        if move_number < 100:
             return 1.0
         else:
             return 0.1
