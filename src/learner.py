@@ -216,7 +216,9 @@ def learner_loop(data_queue, device_str='mps', viz_queue=None, all_actors_done=N
                 save_wc_stats(total_games, learner_loop.avg_fps, len(replay_buffer), iteration=trainer.total_epochs)
                 
                 # --- Auto-Tuner Trigger (Redis) ---
-                if trainer.total_epochs > 0 and trainer.total_epochs % 100 == 0:
+                # Skip in TEST mode to prevent unstable models from being optimized
+                mode = os.environ.get('ALPHALUDO_MODE', 'PROD')
+                if trainer.total_epochs > 0 and trainer.total_epochs % 100 == 0 and mode != 'TEST':
                     try:
                         if not hasattr(learner_loop, 'redis_client'):
                             import redis
