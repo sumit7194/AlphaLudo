@@ -745,7 +745,7 @@ class GameVisualizer:
         })
         self._emit_message('dashboard', progress_msg)
     
-    def broadcast_move(self, player, token, dice, game_id=0):
+    def broadcast_move(self, player, token, dice, game_id=0, from_pos=-1, to_pos=-1, token_stats=None):
         """Broadcast_move tagged with game_id to GAME channel."""
         if 1 <= dice <= 6:
             self.dice_stats[int(player)][int(dice)] += 1
@@ -755,7 +755,10 @@ class GameVisualizer:
             'game_id': game_id,
             'player': int(player),
             'token': int(token),
-            'dice': int(dice)
+            'dice': int(dice),
+            'from_pos': int(from_pos),
+            'to_pos': int(to_pos),
+            'token_stats': token_stats
         })
         
         self._emit_message(f'game_{game_id}', message)

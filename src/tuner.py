@@ -1,10 +1,10 @@
-
 import os
 import time
 import json
 import random
 import torch
 import numpy as np
+import redis
 from datetime import datetime
 
 import src.config as cfg
@@ -33,6 +33,15 @@ class AutoTuner:
         if not os.path.exists(HISTORY_FILE):
              with open(HISTORY_FILE, 'w') as f:
                  json.dump([], f)
+        
+        # Redis Connection
+        try:
+            self.redis = redis.Redis(host='localhost', port=6379, db=0)
+            self.pubsub = self.redis.pubsub()
+            self.pubsub.subscribe('tuner_trigger')
+            print("[Tuner] Connected to Redis. Subscribed to 'tuner_trigger'.")
+        except Exception as e:
+            print(f"[Tuner] Warning: Redis connection failed ({e}). Tuner might not run.")
 
     def load_latest_model(self):
         if os.path.exists(cfg.MAIN_CKPT_PATH):
@@ -202,10 +211,17 @@ class AutoTuner:
                 self.log_result(wr, ent, params, new_state)
             
             else:
-                print("[Tuner] Waiting for model checkpoint...")
-            
-            print(f"[Tuner] Sleeping for {CHECK_INTERVAL_SEC}s...")
-            time.sleep(CHECK_INTERVAL_SEC)
+                print("[Tuner] Waiting for trigger...")
+
+            # --- Redis Event Wait ---
+            # Instead of sleeping, we wait for a message
+            print("[Tuner] Listening for 'tuner_trigger' on Redis...")
+            for message in self.pubsub.listen():
+                if message['type'] == 'message':
+                    data = message['data'].decode('utf-8')
+                    if data == 'optimize':
+                        print("[Tuner] Received Optimization Trigger!")
+                        break # Exit inner wait loop to run outer optimization loop
 
 if __name__ == "__main__":
     tuner = AutoTuner()

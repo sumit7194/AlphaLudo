@@ -721,12 +721,49 @@
             startTimer();
         };
 
+        // --- Message Queue for Fluid Playback ---
+        const messageQueue = [];
+        let isProcessingQueue = false;
+
         socket.onmessage = (e) => {
             const msg = JSON.parse(e.data);
+
+            // Immediate handling for non-gameplay messages
+            if (['init', 'pong', 'metrics', 'connection_ack'].includes(msg.type)) {
+                handleMessage(msg);
+                return;
+            }
+
+            // Queue gameplay messages (move, state, identities) to prevent bursts
+            messageQueue.push(msg);
+            processQueue();
+        };
+
+        async function processQueue() {
+            if (isProcessingQueue) return;
+            isProcessingQueue = true;
+
+            while (messageQueue.length > 0) {
+                // Adaptive Speed Control
+                const qLen = messageQueue.length;
+                let animDuration = 250;
+                if (qLen > 5) animDuration = 100;
+                if (qLen > 20) animDuration = 10; // Catch up fast
+
+                const msg = messageQueue.shift();
+
+                // Process the message with duration
+                await handleMessage(msg, animDuration);
+            }
+            isProcessingQueue = false;
+        }
+
+        async function handleMessage(msg, duration = 250) {
             if (msg.type === 'state') {
                 if (msg.game_id == GAME_ID) {
                     gameState = msg.state;
-                    updateTokens(msg.state);
+                    // Pass duration to updateTokens
+                    await updateTokens(msg.state, duration);
                     updateUI(msg);
                     updateProgress(msg.state);
                 }
@@ -738,12 +775,14 @@
             } else if (msg.type === 'identities') {
                 if (msg.game_id == GAME_ID) {
                     msg.data.forEach((name, i) => {
-                        document.getElementById(`p${i}-id`).textContent = name;
+                        const el = document.getElementById(`p${i}-id`);
+                        if (el) el.textContent = name;
                     });
-                    document.getElementById(`displayGameId`).textContent = GAME_ID;
+                    const gidEl = document.getElementById(`displayGameId`);
+                    if (gidEl) gidEl.textContent = GAME_ID;
                 }
             }
-        };
+        }
 
         // State for animations
         const animatingTokens = new Set(); // "p-t" keys
@@ -808,7 +847,7 @@
             el.style.zIndex = 10 + stackIndex;
         }
 
-        async function updateTokens(state) {
+        async function updateTokens(state, duration = 200) {
             // 1. Identify Target Positions
             const cellMap = {};
 
@@ -851,7 +890,7 @@
                         // Detect Move Type
                         if (oldPos !== -1 && targetPos > oldPos && (targetPos - oldPos) < 15) {
                             // Forward Move (not spawn, not kill, not huge jump)
-                            promises.push(animateTokenPath(p, t, oldPos, targetPos));
+                            promises.push(animateTokenPath(p, t, oldPos, targetPos, duration));
                         } else {
                             // Spawn, Kill, or Init -> Instant/Direct
                             // Ensure previousPos is updated
@@ -873,7 +912,7 @@
             });
         }
 
-        async function animateTokenPath(p, tIdx, startPos, endPos) {
+        async function animateTokenPath(p, tIdx, startPos, endPos, duration = 200) {
             const key = `${p}-${tIdx}`;
             animatingTokens.add(key);
             const el = tokenElements[p][tIdx];
@@ -888,8 +927,9 @@
                     const px = getCellPixel(coords.r, coords.c);
                     el.style.left = `${px.x - 14}px`;
                     el.style.top = `${px.y - 14}px`;
-                    // Wait for CSS transition (0.2s)
-                    await new Promise(r => setTimeout(r, 200));
+                    // Wait for CSS transition
+                    el.style.transition = `all ${duration / 1000}s ease-in-out`; // Dynamic CSS transition speed
+                    await new Promise(r => setTimeout(r, duration));
                 }
             }
 
@@ -972,7 +1012,50 @@
             const div = document.createElement('div');
             div.className = 'log-item new';
             div.style.borderLeftColor = COLORS[m.player];
-            div.innerHTML = `<span style="color:${COLORS[m.player]}">${PLAYER_NAMES[m.player]}</span> rolled <b>${m.dice}</b>`;
+
+            // Header
+            let html = `<span style="color:${COLORS[m.player]}">${PLAYER_NAMES[m.player]}</span> rolled <b>${m.dice}</b>`;
+
+            // Rich Context (Token Stats)
+            if (m.token_stats && Array.isArray(m.token_stats)) {
+                html += `<div style="font-size:11px; margin-top:4px; margin-bottom:4px; padding:4px; background:rgba(255,255,255,0.05); border-radius:4px;">`;
+                // html += `<div style="color:#aaa; font-size:10px; margin-bottom:2px;">Board State:</div>`;
+                m.token_stats.forEach(t => {
+                    let status = [];
+                    if (t.safe) status.push('🛡️');
+                    if (t.danger) status.push('⚠️');
+                    if (t.chasing) status.push('⚔️');
+                    if (t.pos === 99) status.push('🏆');
+
+                    let posText = (t.pos === -1 || t.pos === 99) ? (t.pos === -1 ? 'Base' : 'Home') : `Pos ${t.pos}`;
+
+                    // Progress
+                    let progress = 0;
+                    if (t.pos === 99) progress = 100;
+                    else if (t.pos > -1) progress = Math.min(100, Math.round((t.pos / 56) * 100));
+
+                    let color = '#ccc';
+                    if (t.danger) color = '#ef4444';
+                    else if (t.chasing) color = '#facc15';
+                    else if (t.safe) color = '#4ade80';
+
+                    html += `<div style="display:flex; justify-content:space-between; color:${color}; margin-bottom:2px; font-family:monospace;">
+                       <span>T${t.id}: ${posText}</span>
+                       <span>${status.join(' ')} ${progress}%</span>
+                   </div>`;
+                });
+                html += `</div>`;
+            }
+
+            if (m.from_pos !== undefined && m.to_pos !== undefined && m.from_pos !== -1) {
+                const fromStr = m.from_pos === -1 ? 'Base' : m.from_pos;
+                const toStr = m.to_pos === 99 ? 'Home' : m.to_pos;
+                html += `<div style="font-size:12px; font-weight:bold; color:white; margin-top:2px;">Token ${m.token}: ${fromStr} ➔ ${toStr}</div>`;
+            } else {
+                html += `<div style="font-size:10px; color:#aaa; margin-top:2px;">Pass</div>`;
+            }
+
+            div.innerHTML = html;
             log.prepend(div); // Newest top
         }
 

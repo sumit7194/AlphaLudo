@@ -112,15 +112,23 @@ def run_pure_model_game(model, device, model_player_idx, bots):
             if masked_probs.sum() > 0:
                 masked_probs /= masked_probs.sum()
                 action = np.argmax(masked_probs)  # Greedy (best move)
+                print(f"[Turn {total_moves}] Model (P{current_player}) Rolled {state.current_dice_roll} | Probs: {masked_probs.round(2)} | Chose: {action}")
             else:
                 action = random.choice(legal_moves)
+                print(f"[Turn {total_moves}] Model (P{current_player}) Random Fallback (Zero Prob)")
         else:
             # Bot's turn
-            bot, _ = bots[current_player]
+            bot, bot_name = bots[current_player]
             action = bot.select_move(state, legal_moves)
+            print(f"[Turn {total_moves}] Bot {bot_name} (P{current_player}) Rolled {state.current_dice_roll} | Chose: {action}")
         
+        # Log From-To
+        old_pos = state.player_positions[current_player][action]
         # Apply move
         state = ludo_cpp.apply_move(state, action)
+        new_pos = state.player_positions[current_player][action]
+        print(f"   -> Token {action}: {old_pos} -> {new_pos}")
+
         total_moves += 1
         
         # Check if game ended (after move, not from terminal check)
@@ -139,6 +147,7 @@ def run_pure_model_game(model, device, model_player_idx, bots):
         winner = np.argmax(state.scores)
     
     model_won = (winner == model_player_idx)
+    print(f"=== Game Over. Winner: P{winner} ({'Model' if model_won else 'Bot'}) ==\n")
     return winner, model_won, total_moves
 
 

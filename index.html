@@ -661,9 +661,9 @@
         </div>
 
         <!-- Right Sidebar -->
-        <div class="flex flex-col gap-4" style="width: 340px;">
+        <div class="flex flex-col gap-4" style="width: 340px; overflow-y: auto; max-height: 100%;">
             <!-- Leaderboard -->
-            <div class="glass-panel flex flex-col" style="max-height: 35%;">
+            <div class="glass-panel flex flex-col" style="max-height: 35%; flex-shrink: 0 !important;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">Leaderboard</div>
                 </div>
@@ -671,7 +671,7 @@
             </div>
 
             <!-- Training Stats -->
-            <div class="glass-panel p-0">
+            <div class="glass-panel p-0" style="flex-shrink: 0 !important;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">Training Stats</div>
                 </div>
@@ -710,11 +710,11 @@
             </div>
 
             <!-- System Health -->
-            <div class="glass-panel flex-1 flex flex-col overflow-hidden">
+            <div class="glass-panel flex flex-col" style="overflow: visible !important; height: auto; flex: none;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">System Health</div>
                 </div>
-                <div class="p-4 flex flex-col gap-2 overflow-hidden flex-1">
+                <div class="p-4 flex flex-col gap-2 flex-1">
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                         <div class="list-row flex-col items-start gap-1"
                             style="height:auto; padding:12px; margin:0; background:rgba(255,255,255,0.02);">
@@ -735,14 +735,15 @@
                             </div>
                         </div>
                     </div>
-                    <div class="flex-1 overflow-y-auto mt-2" id="procList" style="padding-right:4px;">
+                    <div class="mt-2" id="procList" style="padding-right:4px;">
                         <div class="text-xs text-white-30 text-center mt-4">Waiting for actors...</div>
                     </div>
                 </div>
             </div>
 
             <!-- Auto-Tuner Status -->
-            <div class="glass-panel p-4 bg-glass-lighter" id="tunerPanel" style="display:none; margin-bottom: 16px;">
+            <div class="glass-panel p-4 bg-glass-lighter" id="tunerPanel"
+                style="display:none; margin-bottom: 16px; flex-shrink: 0 !important;">
                 <div class="flex justify-between items-center mb-3">
                     <div class="text-xs text-white-40 uppercase tracking-wide">Auto-Tuner</div>
                     <div class="pill" id="tunerStatePill"
@@ -780,7 +781,7 @@
             </div>
 
             <!-- MCTS Control -->
-            <div class="glass-panel p-5">
+            <div class="glass-panel p-5" style="display:none !important;">
                 <div class="flex justify-between mb-3">
                     <div class="text-xs text-white-40 uppercase tracking-wide">MCTS Threshold</div>
                     <div class="font-mono text-xs text-white-70" id="mctsVal">0.75</div>

@@ -7,6 +7,13 @@ if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
 fi
 
+echo ">>> Checking Redis..."
+if ! redis-cli ping > /dev/null 2>&1; then
+    echo ">> Redis not running. Starting..."
+    redis-server --daemonize yes
+    sleep 1
+fi
+
 echo ">>> Stopping any existing training processes..."
 # Kill main process and ALL spawned children
 # Kill main process and ALL spawned children

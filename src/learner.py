@@ -215,6 +215,19 @@ def learner_loop(data_queue, device_str='mps', viz_queue=None, all_actors_done=N
                 # Save WC Stats
                 save_wc_stats(total_games, learner_loop.avg_fps, len(replay_buffer), iteration=trainer.total_epochs)
                 
+                # --- Auto-Tuner Trigger (Redis) ---
+                if trainer.total_epochs > 0 and trainer.total_epochs % 100 == 0:
+                    try:
+                        if not hasattr(learner_loop, 'redis_client'):
+                            import redis
+                            learner_loop.redis_client = redis.Redis(host='localhost', port=6379, db=0)
+                        
+                        learner_loop.redis_client.publish('tuner_trigger', 'optimize')
+                        print(f"[Learner] Triggered Auto-Tuner via Redis (Iter {trainer.total_epochs})")
+                    except Exception as e:
+                        print(f"[Learner] Failed to trigger Tuner: {e}")
+                iteration_times.clear() # Reset for next avg
+                
                 # Broadcast Metrics to Dashboard
                 if viz_queue:
                     win_rate = (sum(win_history) / len(win_history)) if len(win_history) > 0 else 0.0

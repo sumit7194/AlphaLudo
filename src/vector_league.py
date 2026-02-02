@@ -104,6 +104,60 @@ class VectorLeagueWorker:
             self.ghost_model = None
             self.current_ghost_name = None
 
+    def _get_rich_logs(self, state, p_idx):
+        """Calculate rich context (Danger, Chasing) for visualization logs."""
+        stats = []
+        SAFE_INDICES = [0, 8, 13, 21, 26, 34, 39, 47]
+        my_pos = state.player_positions[p_idx]
+        
+        # 1. Gather Active Opponent Tokens
+        opp_tokens = []
+        for opp_p in range(4):
+            if opp_p == p_idx: continue
+            for t in range(4):
+                pos = int(state.player_positions[opp_p][t])
+                if pos != -1 and pos != 99:
+                    r, c = get_board_coords(opp_p, pos, t if pos == -1 else 0)
+                    opp_tokens.append({'p': opp_p, 'r': r, 'c': c, 'pos': pos})
+
+        # 2. Analyze My Tokens
+        for t in range(4):
+            pos = int(my_pos[t])
+            info = {'id': t, 'pos': pos, 'safe': False, 'danger': False, 'chasing': False, 'chasing_who': [], 'danger_from': []}
+            
+            if pos == -1 or pos == 99:
+                pass
+            elif pos in SAFE_INDICES:
+                 info['safe'] = True
+            else:
+                 # Check Danger (Opponent can hit me in 1-6)
+                 r_me, c_me = get_board_coords(p_idx, pos, 0)
+                 for opp in opp_tokens:
+                      for d in range(1, 7):
+                          target_pos = opp['pos'] + d
+                          if target_pos > 56: continue
+                          tgt_r, tgt_c = get_board_coords(opp['p'], target_pos, 0)
+                          if tgt_r == r_me and tgt_c == c_me:
+                               info['danger'] = True
+                               if opp['p'] not in info['danger_from']:
+                                   info['danger_from'].append(opp['p'])
+            
+            # Check Chasing (I can hit opponent in 1-6)
+            if pos != -1 and pos != 99:
+                 for d in range(1, 7):
+                      target_pos = pos + d
+                      if target_pos > 56: continue
+                      tgt_r, tgt_c = get_board_coords(p_idx, target_pos, 0)
+                      for opp in opp_tokens:
+                           if opp['pos'] in SAFE_INDICES: continue
+                           if opp['r'] == tgt_r and opp['c'] == tgt_c:
+                                info['chasing'] = True
+                                if opp['p'] not in info['chasing_who']:
+                                    info['chasing_who'].append(opp['p'])
+            
+            stats.append(info)
+        return stats
+
     def _load_random_ghost(self):
         """Legacy method - calls _load_ghost with random selection."""
         self._load_ghost(strategy='random')
@@ -186,11 +240,11 @@ class VectorLeagueWorker:
         # Game layout based on probabilities
         probs = self.probabilities or {'Main': 1.0}
         
-        heuristic_prob = probs.get('Heuristic', 0.10)
-        aggressive_prob = probs.get('Aggressive', 0.07)
-        defensive_prob = probs.get('Defensive', 0.07)
-        racing_prob = probs.get('Racing', 0.06)
-        ghost_prob = probs.get('Ghost', 0.20)
+        heuristic_prob = probs.get('Heuristic', 0.0)
+        aggressive_prob = probs.get('Aggressive', 0.0)
+        defensive_prob = probs.get('Defensive', 0.0)
+        racing_prob = probs.get('Racing', 0.0)
+        ghost_prob = probs.get('Ghost', 0.0)
         
         num_ghost = int(batch_size * ghost_prob)
         num_heuristic = int(batch_size * heuristic_prob)
@@ -399,16 +453,17 @@ class VectorLeagueWorker:
                 legal_moves = ludo_cpp.get_legal_moves(state)
                 
                 if len(legal_moves) == 0:
-                     if self.visualize and visualizer:
-                         visualizer.broadcast_move(state.current_player, -1, current_dice, game_id=idx)
-                     state.current_player = (state.current_player + 1) % 4
-                     state.current_dice_roll = 0
-                     if self.visualize and visualizer:
-                         visualizer.broadcast_state(state, game_id=idx)
-                     
-                     # Re-process immediately
-                     processing_queue.append(idx)
-                     continue
+                    if self.visualize and visualizer:
+                        rich_logs = self._get_rich_logs(state, state.current_player)
+                        visualizer.broadcast_move(state.current_player, -1, current_dice, game_id=idx, token_stats=rich_logs)
+                    state.current_player = (state.current_player + 1) % 4
+                    state.current_dice_roll = 0
+                    if self.visualize and visualizer:
+                        visualizer.broadcast_state(state, game_id=idx)
+                    
+                    # Re-process immediately
+                    processing_queue.append(idx)
+                    continue
 
                 # D. Forced / Heuristic / Instant Win Checks
                 current_p = state.current_player
@@ -466,11 +521,16 @@ class VectorLeagueWorker:
                     # Apply
                     prev_state_copy = ludo_cpp.GameState()
                     prev_state_copy.current_dice_roll = state.current_dice_roll # Store for viz
+                    
+                    old_pos = state.player_positions[current_p][forced_action]
                     states[idx] = ludo_cpp.apply_move(state, forced_action)
+                    new_pos = states[idx].player_positions[current_p][forced_action]
+                    
                     move_counts[idx] += 1
                     
                     if self.visualize and visualizer:
-                        visualizer.broadcast_move(current_p, forced_action, prev_state_copy.current_dice_roll, game_id=idx)
+                        rich_logs = self._get_rich_logs(prev_state_copy, current_p)
+                        visualizer.broadcast_move(current_p, forced_action, prev_state_copy.current_dice_roll, game_id=idx, from_pos=old_pos, to_pos=new_pos, token_stats=rich_logs)
                         visualizer.broadcast_state(states[idx], game_id=idx)
                     
                     # Re-process immediately
@@ -582,7 +642,11 @@ class VectorLeagueWorker:
                 
                 # Apply
                 prev_dice = state.current_dice_roll
+                
+                old_pos = state.player_positions[current_p][action]
                 states[batch_idx] = ludo_cpp.apply_move(state, action)
+                new_pos = states[batch_idx].player_positions[current_p][action]
+                
                 move_counts[batch_idx] += 1
                 
                 if self.visualize and visualizer:
@@ -591,7 +655,17 @@ class VectorLeagueWorker:
                     visualizer.broadcast_ghost_games(ghost_game_ids)
                     heuristic_game_ids = [idx for idx, g_id in enumerate(game_identities) if 'Heuristic' in g_id]
                     visualizer.broadcast_heuristic_games(heuristic_game_ids)
-                    visualizer.broadcast_move(current_p, action, prev_dice, game_id=batch_idx)
+                    
+                    # Calculate stats on PREV state (before move)?
+                    # No, logic above modified 'state' already (line 591 apply_move).
+                    # But we want stats BEFORE move?
+                    # Line 591 applies move to 'states[batch_idx]'.
+                    # 'state' variable was the tensor/MCTS input (old state).
+                    # Wait, look at loop: 'state = states[batch_idx]' (Line 549).
+                    # Then line 591: 'states[batch_idx] = ludo_cpp.apply_move(state, action)'.
+                    # So 'state' IS the pre-move state.
+                    rich_logs = self._get_rich_logs(state, current_p)
+                    visualizer.broadcast_move(current_p, action, prev_dice, game_id=batch_idx, from_pos=old_pos, to_pos=new_pos, token_stats=rich_logs)
                     visualizer.broadcast_state(states[batch_idx], game_id=batch_idx)
 
         # End While
