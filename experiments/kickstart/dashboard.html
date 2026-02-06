@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Kickstart Training Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #fff;
+            border-bottom: 2px solid #4caf50;
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .version-tag {
+            background: linear-gradient(90deg, #4caf50, #8bc34a);
+            color: #000;
+            font-size: 0.5em;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+        }
+
+        .card {
+            background: rgba(30, 30, 46, 0.9);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 16px;
+        }
+
+        .metric {
+            font-size: 0.9em;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .value {
+            font-size: 2.2em;
+            font-weight: bold;
+            color: #4caf50;
+        }
+
+        .value.loss {
+            color: #f44336;
+        }
+
+        .sub-value {
+            font-size: 0.75em;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        /* Progress bar for cycles */
+        .progress-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            height: 24px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #8bc34a);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.8em;
+            color: #000;
+        }
+
+        .status-active {
+            color: #4caf50;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.6;
+            }
+        }
+
+        .status-waiting {
+            color: #ff9800;
+        }
+
+        .highlight-card {
+            border-left: 4px solid #4caf50;
+        }
+
+        .cycle-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .cycle-text {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .epoch-text {
+            color: #888;
+            font-size: 1em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🚀 Kickstart Training <span class="version-tag">v2 STREAMING</span></h1>
+
+        <!-- Cycle Progress -->
+        <div class="card highlight-card">
+            <div class="cycle-info">
+                <div>
+                    <span class="cycle-text">Cycle <span id="cycle">0</span> / <span id="total_cycles">100</span></span>
+                    <span class="epoch-text"> | Epoch <span id="epoch">0</span> / <span
+                            id="epochs_per_cycle">2</span></span>
+                </div>
+                <div id="status" class="status-active" style="font-size: 1.2em;">● Initializing...</div>
+            </div>
+            <div class="progress-container">
+                <div id="progress_bar" class="progress-bar" style="width: 0%;">0%</div>
+            </div>
+            <div id="last_update" style="color: #666; font-size: 0.8em; text-align: right;"></div>
+        </div>
+
+        <!-- Main Metrics -->
+        <div class="grid">
+            <div class="card">
+                <div class="metric">Global Steps</div>
+                <div id="step" class="value">0</div>
+            </div>
+            <div class="card">
+                <div class="metric">Speed</div>
+                <div id="sps" class="value">0</div>
+                <div class="sub-value">samples/sec</div>
+            </div>
+            <div class="card">
+                <div class="metric">Total Trained</div>
+                <div id="total_samples" class="value" style="color: #9c27b0;">0</div>
+                <div class="sub-value">samples</div>
+            </div>
+        </div>
+
+        <!-- Loss Metrics -->
+        <div class="grid">
+            <div class="card">
+                <div class="metric">Policy Loss</div>
+                <div id="p_loss" class="value loss">0.0000</div>
+            </div>
+            <div class="card">
+                <div class="metric">Value Loss</div>
+                <div id="v_loss" class="value loss">0.0000</div>
+            </div>
+        </div>
+
+        <!-- Buffer Info -->
+        <div class="grid">
+            <div class="card">
+                <div class="metric">Chunk Size</div>
+                <div id="buf_gb" class="value" style="color: #ff9800;">0.00</div>
+                <div class="sub-value">GB per cycle</div>
+            </div>
+            <div class="card">
+                <div class="metric">Duration</div>
+                <div id="duration" class="value" style="color: #2196f3;">0:00</div>
+                <div class="sub-value">training time</div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        function formatDuration(seconds) {
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            if (hrs > 0) return `${hrs}h ${mins}m`;
+            if (mins > 0) return `${mins}m ${secs}s`;
+            return `${secs}s`;
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toLocaleString();
+        }
+
+        async function updateStats() {
+            try {
+                let response = null;
+                const paths = ['kickstart_stats.json', 'experiments/kickstart/kickstart_stats.json'];
+
+                for (const p of paths) {
+                    try {
+                        const r = await fetch(p + '?t=' + Date.now());
+                        if (r.ok) { response = r; break; }
+                    } catch (e) { }
+                }
+
+                if (!response) throw new Error("Stats file not found");
+
+                const data = await response.json();
+
+                // Core metrics
+                document.getElementById('step').innerText = data.step.toLocaleString();
+                document.getElementById('sps').innerText = Math.round(data.samples_per_sec).toLocaleString();
+                document.getElementById('p_loss').innerText = data.policy_loss.toFixed(4);
+                document.getElementById('v_loss').innerText = data.value_loss.toFixed(4);
+
+                // Cycle/Epoch info
+                if (data.cycle !== undefined) {
+                    document.getElementById('cycle').innerText = data.cycle;
+                    document.getElementById('total_cycles').innerText = data.total_cycles || 100;
+                    document.getElementById('epoch').innerText = data.epoch || 1;
+                    document.getElementById('epochs_per_cycle').innerText = data.epochs_per_cycle || 2;
+
+                    // Progress bar
+                    const progress = ((data.cycle - 1) / (data.total_cycles || 100)) * 100;
+                    document.getElementById('progress_bar').style.width = progress + '%';
+                    document.getElementById('progress_bar').innerText = Math.round(progress) + '%';
+                }
+
+                // Total samples trained
+                if (data.total_samples_trained !== undefined) {
+                    document.getElementById('total_samples').innerText = formatNumber(data.total_samples_trained);
+                }
+
+                // Buffer/Duration
+                if (data.buffer_gb !== undefined) {
+                    document.getElementById('buf_gb').innerText = data.buffer_gb.toFixed(1);
+                }
+                if (data.duration_sec !== undefined) {
+                    document.getElementById('duration').innerText = formatDuration(data.duration_sec);
+                }
+
+                // Status
+                document.getElementById('status').innerText = "● Training Active";
+                document.getElementById('status').className = "status-active";
+
+                const now = new Date();
+                document.getElementById('last_update').innerText = "Updated: " + now.toLocaleTimeString();
+
+            } catch (e) {
+                console.error(e);
+                document.getElementById('status').innerText = "● Connecting...";
+                document.getElementById('status').className = "status-waiting";
+            }
+        }
+
+        setInterval(updateStats, 2000);
+        updateStats();
+    </script>
+</body>
+
+</html>

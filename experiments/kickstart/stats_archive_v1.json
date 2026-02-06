@@ -1,0 +1,1 @@
+{"step": 5300, "policy_loss": 0.30559621334075926, "value_loss": 0.5641825330257416, "samples_per_sec": 527.6149279904619, "duration_sec": 10286.289701223373, "buffer_files": 36, "buffer_gb": 32.95506852399558, "buffer_samples": 1800000, "timestamp": 1770253085.412081}
