@@ -20,10 +20,17 @@ checkpoints*/
 experiment_*/
 training_history.db
 
+# Allow specific production models in mastery_v3_prod
+!checkpoints_mastery/mastery_v3_prod/model_latest.pt
+!checkpoints_mastery/mastery_v3_prod/model_latest_only_self.pt
+!checkpoints_mastery/mastery_v3_prod/training_metrics.json
+
 # --- Logs & Data ---
 data/
 logs/
 *.log
+experiments/kickstart/buffer_current/
+experiments/kickstart/buffer_staging/
 training_logs*.txt
 debug_*.txt
 game_debug_*.txt

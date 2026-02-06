@@ -15,7 +15,7 @@ import ludo_cpp
 from tensor_utils import state_to_tensor
 
 # Hyperparameters
-CPUCT = 1.0  # Exploration constant
+# CPUCT now passed in MCTS.__init__
 
 class MCTSNode:
     """
@@ -72,12 +72,13 @@ class MCTS:
     - Value Head: Neural network evaluates leaf nodes (no random rollouts).
     """
     
-    def __init__(self, model, num_simulations=100, device=None):
+    def __init__(self, model, num_simulations=100, device=None, cpuct=1.0):
         self.model = model
         self.num_simulations = num_simulations
         self.root_player = None  # Track whose perspective we're evaluating from
         # Determine device from model
         self.device = device or next(model.parameters()).device
+        self.cpuct = cpuct
 
     def search(self, root_state):
         """
@@ -139,7 +140,7 @@ class MCTS:
                 q_value = -q_value
             
             # Exploration bonus
-            u_value = CPUCT * child.prior * math.sqrt(total_visits) / (1 + child.visit_count)
+            u_value = self.cpuct * child.prior * math.sqrt(total_visits) / (1 + child.visit_count)
             
             score = q_value + u_value
             if score > best_score:

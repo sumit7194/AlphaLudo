@@ -13,9 +13,9 @@ DEFAULT_CONFIGS = {
         # === MCTS Settings (v3: Improved Exploration) ===
         "MCTS_SIMS": 800,              # Increased to 800 (Deep Search) for Golden Data
         "MCTS_PARALLEL_SIMS": 8,       # Virtual Loss parallelism per game
-        "C_PUCT": 4.0,                 # Increased for stochastic game exploration
+        "C_PUCT": 2.5,                 # Reduced from 4.0 to stabilize policy
         "DIRICHLET_ALPHA": 0.3,        # Root exploration noise
-        "DIRICHLET_EPS": 0.5,          # Tuned 50% noise mixing weight
+        "DIRICHLET_EPS": 0.25,         # Reduced from 0.5 to reduce randomness
         
         # === Batch Settings (Hardware-optimized for M4) ===
         "ACTOR_BATCH_SIZE": 16,        # Reduced for less straggler waiting
@@ -58,7 +58,7 @@ DEFAULT_CONFIGS = {
         "MCTS_SIMS": 10, "MCTS_PARALLEL_SIMS": 1, "C_PUCT": 3.0,
         "DIRICHLET_ALPHA": 0.3, "DIRICHLET_EPS": 0.25,
         "ACTOR_BATCH_SIZE": 16, "INFERENCE_BATCH_SIZE": 32, "TRAINING_BATCH_SIZE": 16,
-        "TRAIN_STEPS": 5, "NUM_ACTORS": 1, "GHOST_SAVE_FREQ": 100,
+        "TRAIN_STEPS": 100000, "NUM_ACTORS": 1, "GHOST_SAVE_FREQ": 100,
         "LEARNING_RATE": 0.001, "LR_WARMUP_STEPS": 100, "BUFFER_SIZE_LIMIT": 1000,
         "TD_LAMBDA": 0.95, "TD_GAMMA": 0.99, "AUX_LOSS_WEIGHT": 0.5, "USE_FLOAT16": False,
     }

@@ -224,8 +224,8 @@ def learner_loop(data_queue, device_str='mps', viz_queue=None, all_actors_done=N
                             import redis
                             learner_loop.redis_client = redis.Redis(host='localhost', port=6379, db=0)
                         
-                        learner_loop.redis_client.publish('tuner_trigger', 'optimize')
-                        print(f"[Learner] Triggered Auto-Tuner via Redis (Iter {trainer.total_epochs})")
+                        # learner_loop.redis_client.publish('tuner_trigger', 'optimize')
+                        # print(f"[Learner] Triggered Auto-Tuner via Redis (Iter {trainer.total_epochs})")
                     except Exception as e:
                         print(f"[Learner] Failed to trigger Tuner: {e}")
                 iteration_times.clear() # Reset for next avg

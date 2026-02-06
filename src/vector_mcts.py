@@ -7,7 +7,7 @@ import ludo_cpp
 from src.tensor_utils_mastery import state_to_tensor_mastery, get_board_coords, BOARD_SIZE
 
 # Hyperparameters
-CPUCT = 1.0
+# CPUCT now passed in init
 
 class MCTSNode:
     """Same node structure as MCTS Mastery, repeated here for dependency clarity."""
@@ -56,10 +56,11 @@ class VectorMCTSMastery:
     """
     Batched MCTS for multiple parallel games.
     """
-    def __init__(self, model, num_simulations=50, device=None):
+    def __init__(self, model, num_simulations=50, device=None, cpuct=1.0):
         self.model = model
         self.num_simulations = num_simulations
         self.device = device or next(model.parameters()).device
+        self.cpuct = cpuct
         
     def search_batch(self, roots):
         """
@@ -238,7 +239,7 @@ class VectorMCTSMastery:
             if child.state.current_player != root_player:
                 q_value = -q_value
             
-            u_value = CPUCT * child.prior * math.sqrt(total_visits) / (1 + child.visit_count)
+            u_value = self.cpuct * child.prior * math.sqrt(total_visits) / (1 + child.visit_count)
             score = q_value + u_value
             
             if score > best_score:
