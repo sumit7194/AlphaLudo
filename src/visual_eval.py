@@ -116,18 +116,7 @@ async def run_visual_eval(websocket):
     except: pass
 
     state = ludo_cpp.create_initial_state()
-    # --- DEBUG STATE OVERRIDE ---
-    print("DEBUG: Overriding state to 'Red Stuck' scenario")
-    new_pos = state.player_positions
-    # Red: T0, T1 Home (99), T2, T3 Base (-1)
-    new_pos[0][0] = 99
-    new_pos[0][1] = 99
-    new_pos[0][2] = -1
-    new_pos[0][3] = -1
-    # Others can be default
-    state.player_positions = new_pos
-    state.scores[0] = 2
-    # ----------------------------
+    # Start from fresh initial state (no debug override)
     
     loop_idx = 0
     max_moves = 500
