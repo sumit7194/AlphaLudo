@@ -1,0 +1,25 @@
+============================================================
+  Total Games:        100
+  Model Wins:         2
+  Model Losses:       98
+  Win Rate:           2.0%
+  Expected (Random):  25.0%
+  Avg Moves/Game:     321.0
+  Total Time:         19.0s
+  Speed:              5.3 games/s
+
+  --- Win Rate by Position ---
+  Position 0: 0/25 (0.0%)
+  Position 1: 1/26 (3.8%)
+  Position 2: 0/17 (0.0%)
+  Position 3: 1/32 (3.1%)
+
+  --- Win Rate vs Bot Type ---
+  vs Aggressive  : 1/59 (1.7%)
+  vs Defensive   : 1/63 (1.6%)
+  vs Heuristic   : 1/52 (1.9%)
+  vs Racing      : 1/70 (1.4%)
+  vs Random      : 2/56 (3.6%)
+============================================================
+
+❌ VERDICT: Model is performing worse than random!
