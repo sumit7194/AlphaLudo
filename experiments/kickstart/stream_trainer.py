@@ -35,15 +35,17 @@ SANDBOX_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SANDBOX_DIR, "model_kickstart.pt")
 CHECKPOINT_PATH = os.path.join(SANDBOX_DIR, "checkpoint.json")
 STATS_PATH = os.path.join(SANDBOX_DIR, "kickstart_stats.json")
+GHOSTS_DIR = os.path.join(SANDBOX_DIR, "ghosts")
 
 BUFFER_DIR_CURRENT = os.path.join(SANDBOX_DIR, "buffer_current")
 BUFFER_DIR_STAGING = os.path.join(SANDBOX_DIR, "buffer_staging")
 
 CHUNK_SIZE_GB = 8.0
 EPOCHS_PER_CYCLE = 2
-TOTAL_CYCLES = 100
+TOTAL_CYCLES = 200
 BATCH_SIZE = 1024
 LEARNING_RATE = CONFIGS["PROD"]["LEARNING_RATE"]
+GHOST_SAVE_INTERVAL = 20  # Save ghost model every N cycles
 
 # --- Graceful Shutdown ---
 shutdown_event = Event()
@@ -131,6 +133,13 @@ def save_model(model, path):
     torch.save({'model_state_dict': model.state_dict()}, tmp_path)
     os.replace(tmp_path, path)
     print(f"💾 Model saved to {path}")
+
+def save_ghost(model, cycle):
+    """Save a ghost model snapshot for comparison."""
+    os.makedirs(GHOSTS_DIR, exist_ok=True)
+    ghost_path = os.path.join(GHOSTS_DIR, f"ghost_cycle_{cycle}.pt")
+    torch.save({'model_state_dict': model.state_dict()}, ghost_path)
+    print(f"👻 Ghost saved: {ghost_path}")
 
 # --- Training Loop ---
 
@@ -227,6 +236,16 @@ def main():
     total_steps = ckpt["total_steps"]
     print(f"Resuming from Cycle {start_cycle}, Step {total_steps}")
     
+    # Check if training is already complete
+    if start_cycle >= TOTAL_CYCLES:
+        print("\n" + "=" * 60)
+        print("✅ Training Already Complete!")
+        print(f"   Total Cycles: {TOTAL_CYCLES}")
+        print(f"   Total Steps: {total_steps}")
+        print("=" * 60)
+        print("\nTo restart from scratch, delete checkpoint.json and run again.")
+        return
+    
     # Ensure directories exist
     os.makedirs(BUFFER_DIR_CURRENT, exist_ok=True)
     os.makedirs(BUFFER_DIR_STAGING, exist_ok=True)
@@ -239,10 +258,13 @@ def main():
         print("✅ Initial buffer ready!")
     
     staging_proc = None
+    last_cycle = start_cycle  # Track last completed cycle
     
     for cycle in range(start_cycle, TOTAL_CYCLES):
         if shutdown_event.is_set():
             break
+        
+        last_cycle = cycle  # Update last completed cycle
             
         print(f"\n{'='*60}")
         print(f"🔄 CYCLE {cycle + 1}/{TOTAL_CYCLES}")
@@ -275,6 +297,10 @@ def main():
         save_model(model, MODEL_PATH)
         save_checkpoint(cycle + 1, total_steps)
         
+        # Save ghost model every N cycles for comparison
+        if (cycle + 1) % GHOST_SAVE_INTERVAL == 0:
+            save_ghost(model, cycle + 1)
+        
         # Wait for staging to complete before swapping
         if staging_proc and staging_proc.poll() is None:
             print("⏳ Waiting for next buffer to finish generating...")
@@ -292,11 +318,11 @@ def main():
     
     # Final save
     save_model(model, MODEL_PATH)
-    save_checkpoint(cycle + 1, total_steps)
+    save_checkpoint(last_cycle + 1, total_steps)
     
     print("\n" + "=" * 60)
     print("✅ Training Complete!")
-    print(f"   Total Cycles: {cycle + 1}")
+    print(f"   Total Cycles: {last_cycle + 1}")
     print(f"   Total Steps: {total_steps}")
     print("=" * 60)
 

@@ -2,6 +2,7 @@
 <html>
 
 <head>
+    <meta charset="UTF-8">
     <title>Kickstart Training Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -208,6 +209,15 @@
             </div>
         </div>
 
+        <!-- Ghost Models -->
+        <div class="card" style="margin-top: 20px;">
+            <div class="metric" style="margin-bottom: 12px;">👻 Ghost Models (Saved Every 20 Cycles)</div>
+            <div id="ghosts_list" style="display: flex; flex-wrap: wrap; gap: 8px;">
+                <!-- Dynamically populated -->
+            </div>
+            <div id="next_ghost" style="color: #666; font-size: 0.85em; margin-top: 12px;"></div>
+        </div>
+
     </div>
 
     <script>
@@ -280,6 +290,34 @@
 
                 const now = new Date();
                 document.getElementById('last_update').innerText = "Updated: " + now.toLocaleTimeString();
+
+                // Ghost Models
+                const GHOST_INTERVAL = 20;
+                const totalCycles = data.total_cycles || 200;
+                const currentCycle = data.cycle || 0;
+
+                // Calculate saved ghosts
+                const ghostsContainer = document.getElementById('ghosts_list');
+                let ghostsHtml = '';
+                for (let c = GHOST_INTERVAL; c <= totalCycles; c += GHOST_INTERVAL) {
+                    const saved = currentCycle >= c;
+                    const style = saved
+                        ? 'background: #4caf50; color: #000;'
+                        : 'background: rgba(255,255,255,0.1); color: #666;';
+                    ghostsHtml += `<span style="padding: 6px 12px; border-radius: 6px; font-size: 0.85em; ${style}">
+                        ${saved ? '✓' : '○'} Cycle ${c}
+                    </span>`;
+                }
+                ghostsContainer.innerHTML = ghostsHtml;
+
+                // Next ghost info
+                const nextGhost = Math.ceil(currentCycle / GHOST_INTERVAL) * GHOST_INTERVAL;
+                if (nextGhost <= totalCycles && currentCycle < nextGhost) {
+                    document.getElementById('next_ghost').innerText =
+                        `Next ghost in ${nextGhost - currentCycle} cycles (at cycle ${nextGhost})`;
+                } else {
+                    document.getElementById('next_ghost').innerText = 'All ghosts saved!';
+                }
 
             } catch (e) {
                 console.error(e);

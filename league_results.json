@@ -1,0 +1,97 @@
+{
+  "total_games": 1050,
+  "elapsed_sec": 493.76143407821655,
+  "games_played": {
+    "Bot Racing": 525,
+    "Bot Aggressive": 525,
+    "Bot Random": 525,
+    "Ghost 120": 525,
+    "Main (169)": 525,
+    "Ghost 140": 525,
+    "Bot Defensive": 525,
+    "Ghost 160": 525
+  },
+  "wins": {
+    "Ghost 120": 152,
+    "Bot Aggressive": 153,
+    "Bot Racing": 131,
+    "Main (169)": 159,
+    "Ghost 140": 161,
+    "Bot Defensive": 145,
+    "Ghost 160": 146,
+    "Bot Random": 3
+  },
+  "head_to_head": {
+    "Ghost 120": {
+      "Bot Racing": 58,
+      "Bot Aggressive": 59,
+      "Bot Random": 81,
+      "Ghost 140": 60,
+      "Ghost 160": 71,
+      "Main (169)": 62,
+      "Bot Defensive": 65
+    },
+    "Bot Aggressive": {
+      "Bot Racing": 71,
+      "Bot Random": 77,
+      "Ghost 120": 70,
+      "Main (169)": 55,
+      "Ghost 140": 66,
+      "Bot Defensive": 60,
+      "Ghost 160": 60
+    },
+    "Bot Racing": {
+      "Bot Random": 70,
+      "Ghost 120": 51,
+      "Bot Aggressive": 53,
+      "Main (169)": 60,
+      "Ghost 140": 54,
+      "Bot Defensive": 52,
+      "Ghost 160": 53
+    },
+    "Main (169)": {
+      "Ghost 140": 54,
+      "Bot Racing": 64,
+      "Bot Aggressive": 70,
+      "Bot Defensive": 65,
+      "Bot Random": 83,
+      "Ghost 160": 71,
+      "Ghost 120": 70
+    },
+    "Ghost 140": {
+      "Main (169)": 65,
+      "Bot Aggressive": 72,
+      "Bot Racing": 72,
+      "Ghost 160": 66,
+      "Ghost 120": 67,
+      "Bot Random": 64,
+      "Bot Defensive": 77
+    },
+    "Bot Defensive": {
+      "Bot Racing": 64,
+      "Bot Aggressive": 59,
+      "Bot Random": 67,
+      "Main (169)": 68,
+      "Ghost 120": 53,
+      "Ghost 140": 66,
+      "Ghost 160": 58
+    },
+    "Ghost 160": {
+      "Bot Aggressive": 58,
+      "Ghost 120": 60,
+      "Ghost 140": 63,
+      "Main (169)": 55,
+      "Bot Random": 80,
+      "Bot Racing": 63,
+      "Bot Defensive": 59
+    },
+    "Bot Random": {
+      "Bot Defensive": 2,
+      "Ghost 120": 2,
+      "Bot Racing": 2,
+      "Main (169)": 1,
+      "Bot Aggressive": 1,
+      "Ghost 140": 1
+    }
+  }
+}
