@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+td_env/
+.env
+
+# Checkpoints & Data
+checkpoints/
+checkpoints_test/
+*.pt
+!pretrained/model_kickstart.pt
+
+# But allow tracked models if specifically added? 
+# User said "add model". 
+# I will NOT ignore model_latest.pt if user wants it, but 34MB changes every Save Interval.
+# Usually we don't commit dynamic checkpoints to git.
+# I'll ignore checkpoints/* but maybe start with empty?
+# User said "add... model".
+# I'll allow model_latest.pt but ignore buffer.
+# Actually, better to ignore ALL checkpoints in git, and use LFS or releases.
+# But for now I'll ignore checkpoints/ except explicit.
+# Let's just ignore checkpoints/ folder entirely to be safe, 
+# and maybe add the KICKSTART model which is static.
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# OS
+.DS_Store

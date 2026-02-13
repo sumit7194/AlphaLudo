@@ -1,0 +1,7 @@
+numpy
+torch
+pybind11
+websockets
+psutil
+requests
+redis>=5.0.0

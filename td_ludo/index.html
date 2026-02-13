@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TD-Ludo Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0a0a0f;
+            --bg-card: #111117;
+            --bg-card-hover: #16161e;
+            --bg-input: #1a1a24;
+            --border: #222230;
+            --text-primary: #e8e8f0;
+            --text-secondary: #8888a0;
+            --text-muted: #555570;
+            --accent-blue: #3b82f6;
+            --accent-green: #22c55e;
+            --accent-red: #ef4444;
+            --accent-amber: #f59e0b;
+            --accent-purple: #a855f7;
+            --accent-cyan: #06b6d4;
+            --glow-blue: 0 0 12px rgba(59, 130, 246, 0.3);
+            --glow-green: 0 0 12px rgba(34, 197, 94, 0.3);
+            --glow-purple: 0 0 12px rgba(168, 85, 247, 0.3);
+            --radius: 12px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ---- Top Bar ---- */
+        .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(17, 17, 23, 0.95);
+            backdrop-filter: blur(8px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-icon-img {
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            /* Optional rounded corners */
+        }
+
+        .brand-name {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-content h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 12px;
+            color: white;
+            background: #555;
+        }
+
+        .badge.mode-prod {
+            background: #ef4444;
+        }
+
+        /* Red for PROD */
+        .badge.mode-test {
+            background: #3b82f6;
+        }
+
+        /* Blue for TEST */
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: var(--glow-green);
+        }
+
+        .dot.offline {
+            background: var(--accent-red);
+            box-shadow: none;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        .dot.pulse {
+            animation: pulse 2s infinite;
+        }
+
+        .mode-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .mode-badge.prod {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        .mode-badge.test {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-amber);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        /* ---- Tabs ---- */
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            background: rgba(17, 17, 23, 0.6);
+        }
+
+        .tab-btn {
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            position: relative;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-secondary);
+        }
+
+        .tab-btn.active {
+            color: var(--text-primary);
+        }
+
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--accent-blue);
+            box-shadow: var(--glow-blue);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* ---- Main Content ---- */
+        .content {
+            padding: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* ---- KPI Cards ---- */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .kpi-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 20px;
+            transition: all 0.2s;
+        }
+
+        .kpi-card:hover {
+            background: var(--bg-card-hover);
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+
+        .kpi-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .kpi-value {
+            font-size: 28px;
+            font-weight: 300;
+            color: var(--text-primary);
+            line-height: 1.1;
+        }
+
+        .kpi-value.accent-blue {
+            color: var(--accent-blue);
+        }
+
+        .kpi-value.accent-green {
+            color: var(--accent-green);
+        }
+
+        .kpi-value.accent-purple {
+            color: var(--accent-purple);
+        }
+
+        .kpi-value.accent-amber {
+            color: var(--accent-amber);
+        }
+
+        .kpi-sub {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* ---- Charts ---- */
+        .chart-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .chart-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+        }
+
+        .chart-card.wide {
+            grid-column: 1 / -1;
+        }
+
+        .chart-title {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 220px;
+        }
+
+        .chart-container.tall {
+            height: 300px;
+        }
+
+        /* ---- League Table ---- */
+        .league-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .league-table th {
+            text-align: left;
+            padding: 10px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .league-table td {
+            padding: 10px 16px;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .league-table tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .rank-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .rank-1 {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-amber);
+        }
+
+        .rank-2 {
+            background: rgba(148, 163, 184, 0.15);
+            color: #94a3b8;
+        }
+
+        .rank-3 {
+            background: rgba(180, 83, 9, 0.15);
+            color: #d97706;
+        }
+
+        .rank-n {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-muted);
+        }
+
+        .elo-bar {
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.08);
+            min-width: 60px;
+        }
+
+        .elo-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            background: var(--accent-blue);
+            transition: width 0.5s;
+        }
+
+        /* ---- Game History ---- */
+        .game-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .game-row {
+            display: grid;
+            grid-template-columns: 60px 1fr 80px 80px 60px;
+            gap: 12px;
+            align-items: center;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            transition: background 0.15s;
+        }
+
+        .game-row:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .game-row .game-num {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .game-row .players {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .game-row .result-win {
+            color: var(--accent-green);
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .game-row .result-loss {
+            color: var(--accent-red);
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .game-row .length {
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .game-row .td-err {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+        .game-header {
+            display: grid;
+            grid-template-columns: 60px 1fr 80px 80px 60px;
+            gap: 12px;
+            padding: 8px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 4px;
+        }
+
+        /* ---- Opponent Breakdown ---- */
+        .opp-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .opp-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+        }
+
+        .opp-name {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }
+
+        .opp-wr {
+            font-size: 32px;
+            font-weight: 300;
+            margin-bottom: 4px;
+        }
+
+        .opp-record {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .wr-bar {
+            margin-top: 12px;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+        }
+
+        .wr-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* ---- Status Badge ---- */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <div class="brand">
+            <img src="logo.png" class="brand-icon-img" alt="Logo">
+            <span class="brand-name">TD-Ludo</span>
+            <span class="mode-badge" id="modeBadge">—</span>
+            <div class="pill">
+                <div class="dot pulse" id="statusDot"></div>
+                <span id="sessionTime">00:00:00</span>
+            </div>
+        </div>
+        <div class="status-bar">
+            <div class="pill">
+                <span id="throughputLabel">— GPM</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+        <button class="tab-btn" onclick="switchTab('elo')">Elo & Rankings</button>
+        <button class="tab-btn" onclick="switchTab('games')">Game History</button>
+        <button class="tab-btn" onclick="switchTab('opponents')">Opponents</button>
+        <button class="tab-btn" onclick="switchTab('spectate')">Live Spectate</button>
+    </div>
+
+    <!-- ====== TAB: Overview ====== -->
+    <div class="tab-content active" id="tab-overview">
+        <div class="content">
+            <div class="kpi-grid" id="kpiGrid">
+                <div class="kpi-card">
+                    <div class="kpi-label">Main Elo</div>
+                    <div class="kpi-value accent-purple" id="kpiElo">—</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Win Rate (100g)</div>
+                    <div class="kpi-value accent-green" id="kpiWR">—</div>
+                    <div class="kpi-sub" id="kpiWRSub"></div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Total Games</div>
+                    <div class="kpi-value" id="kpiGames">—</div>
+                    <div class="kpi-sub" id="kpiDBTotal"></div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">TD Error</div>
+                    <div class="kpi-value accent-amber" id="kpiTD">—</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">CPU Usage</div>
+                    <div class="kpi-value" id="sysCPU">-</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">RAM Usage</div>
+                    <div class="kpi-value" id="sysRAM">-</div>
+                </div>
+                <!-- Row 1 -->
+                <div class="kpi-card">
+                    <div class="kpi-label">Throughput</div>
+                    <div class="kpi-value accent-blue" id="kpiGPM">—</div>
+                    <div class="kpi-sub">games/min</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Best Eval WR</div>
+                    <div class="kpi-value accent-green" id="kpiBestEval">—</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Buffer / Ghosts</div>
+                    <div class="kpi-value" id="kpiBuf">—</div>
+                    <div class="kpi-sub" id="kpiBufSub"></div>
+                </div>
+            </div>
+
+            <div class="chart-grid">
+                <div class="chart-card">
+                    <div class="chart-title">Win Rate</div>
+                    <div class="chart-container"><canvas id="chartWR"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">TD Error</div>
+                    <div class="chart-container"><canvas id="chartTD"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Epsilon</div>
+                    <div class="chart-container"><canvas id="chartEps"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Eval Win Rate</div>
+                    <div class="chart-container"><canvas id="chartEval"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== TAB: Elo & Rankings ====== -->
+    <div class="tab-content" id="tab-elo">
+        <div class="content">
+            <div class="chart-card wide" style="margin-bottom: 24px;">
+                <div class="chart-title">Elo History</div>
+                <div class="chart-container tall"><canvas id="chartElo"></canvas></div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-title">League Rankings</div>
+                <table class="league-table" id="leagueTable">
+                    <thead>
+                        <tr>
+                            <th style="width:50px">#</th>
+                            <th>Agent</th>
+                            <th style="width:80px">Elo</th>
+                            <th style="width:120px">Rating</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leagueBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== TAB: Game History ====== -->
+    <div class="tab-content" id="tab-games">
+        <div class="content">
+
+            <div class="chart-card">
+                <div class="chart-title">Recent Games</div>
+                <div class="game-header">
+                    <div>Game</div>
+                    <div>Players</div>
+                    <div>Result</div>
+                    <div>Length</div>
+                    <div>TD Err</div>
+                </div>
+                <div class="game-list" id="gameList">
+                    <div class="no-data">Waiting for game data...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== TAB: Opponents ====== -->
+    <div class="tab-content" id="tab-opponents">
+        <div class="content">
+            <!-- Opponents content -->
+            <div class="chart-card wide" style="margin-bottom: 24px;">
+                <div class="chart-title">Win Rate by Opponent</div>
+                <div class="chart-container tall"><canvas id="chartOpp"></canvas></div>
+            </div>
+
+            <div class="opp-grid" id="oppGrid">
+                <div class="no-data">Waiting for opponent data...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== TAB: Spectate ====== -->
+    <div class="tab-content" id="tab-spectate">
+        <div class="content">
+            <div class="chart-card wide" style="display: flex; gap: 24px; align-items: flex-start;">
+                <div style="flex: 0 0 600px;">
+                    <div class="chart-title" style="margin-bottom: 8px;">Live Game (Batch Index 0)</div>
+                    <canvas id="ludoBoard" width="600" height="600"
+                        style="background: white; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);"></canvas>
+                </div>
+                <div style="flex: 1;">
+                    <div class="chart-title">Game Info</div>
+                    <div class="kpi-grid" style="grid-template-columns: 1fr 1fr;">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Current Player</div>
+                            <div class="kpi-value" id="specPlayer">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Dice Roll</div>
+                            <div class="kpi-value" id="specDice">-</div>
+                        </div>
+                    </div>
+                    <div class="chart-title" style="margin-top:20px;">Players</div>
+                    <table class="league-table" id="specTable">
+                        <thead>
+                            <tr>
+                                <th>Seat</th>
+                                <th>Type</th>
+                                <th>Score</th>
+                            </tr>
+                        </thead>
+                        <tbody id="specBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // State
+        // ============================================================
+        let charts = {};
+        let pollCount = 0;
+        let startedAt = null;
+        let lastStats = null;
+        let eloColors = {};
+
+        const COLORS = [
+            'rgba(59,130,246,1)', 'rgba(168,85,247,1)', 'rgba(34,197,94,1)',
+            'rgba(245,158,11,1)', 'rgba(239,68,68,1)', 'rgba(6,182,212,1)',
+            'rgba(236,72,153,1)', 'rgba(132,204,22,1)', 'rgba(99,102,241,1)',
+            'rgba(244,63,94,1)',
+        ];
+
+        function getColor(name) {
+            if (!eloColors[name]) {
+                const idx = Object.keys(eloColors).length % COLORS.length;
+                eloColors[name] = COLORS[idx];
+            }
+            return eloColors[name];
+        }
+
+        // ============================================================
+        // Tab switching
+        // ============================================================
+        function switchTab(name) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById('tab-' + name).classList.add('active');
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                if (b.textContent.toLowerCase().includes(name === 'elo' ? 'elo' : name === 'games' ? 'game' : name))
+                    b.classList.add('active');
+            });
+        }
+
+        // ============================================================
+        // Chart Initialization
+        // ============================================================
+        const chartDefaults = {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: false },
+                y: {
+                    ticks: { color: '#555570', font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                    border: { display: false },
+                }
+            }
+        };
+
+        function makeLineDataset(label, color, data = []) {
+            return {
+                label, data,
+                borderColor: color,
+                backgroundColor: color.replace('1)', '0.1)'),
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: true,
+                tension: 0.3,
+            };
+        }
+
+        function initCharts() {
+            const mkChart = (id, label, color, yOpts = {}) => {
+                return new Chart(document.getElementById(id), {
+                    type: 'line',
+                    data: { labels: [], datasets: [makeLineDataset(label, color)] },
+                    options: {
+                        ...chartDefaults,
+                        scales: { ...chartDefaults.scales, y: { ...chartDefaults.scales.y, ...yOpts } },
+                    }
+                });
+            };
+
+            charts.wr = mkChart('chartWR', 'Win Rate', 'rgba(34,197,94,1)', { min: 0, max: 100 });
+            charts.td = mkChart('chartTD', 'TD Error', 'rgba(245,158,11,1)', { min: 0 });
+            charts.eps = mkChart('chartEps', 'Epsilon', 'rgba(59,130,246,1)', { min: 0, max: 0.15 });
+            charts.eval = mkChart('chartEval', 'Eval WR', 'rgba(168,85,247,1)', { min: 0, max: 100 });
+
+            // Elo chart (multi-line)
+            charts.elo = new Chart(document.getElementById('chartElo'), {
+                type: 'line',
+                data: { labels: [], datasets: [] },
+                options: {
+                    ...chartDefaults,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: { color: '#8888a0', font: { size: 11 }, boxWidth: 12, padding: 16 }
+                        }
+                    },
+                }
+            });
+
+            // Opponent bar chart
+            charts.opp = new Chart(document.getElementById('chartOpp'), {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Win Rate %',
+                        data: [],
+                        backgroundColor: [],
+                        borderRadius: 6,
+                        barThickness: 40,
+                    }]
+                },
+                options: {
+                    ...chartDefaults,
+                    indexAxis: 'y',
+                    scales: {
+                        x: {
+                            min: 0, max: 100,
+                            ticks: { color: '#555570', font: { size: 10 } },
+                            grid: { color: 'rgba(255,255,255,0.04)' },
+                            border: { display: false },
+                        },
+                        y: {
+                            ticks: { color: '#8888a0', font: { size: 12 } },
+                            grid: { display: false },
+                            border: { display: false },
+                        }
+                    },
+                    plugins: { legend: { display: false } },
+                }
+            });
+        }
+
+        // ============================================================
+        // Data Fetching & Rendering
+        // ============================================================
+        async function fetchJSON(url) {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) return null;
+                return await res.json();
+            } catch { return null; }
+        }
+
+        function fmt(n, dec = 1) {
+            if (n === undefined || n === null || isNaN(n)) return '—';
+            return Number(n).toFixed(dec);
+        }
+
+        function updateKPIs(stats) {
+            if (!stats || Object.keys(stats).length === 0) return;
+            lastStats = stats;
+
+            document.getElementById('kpiElo').textContent = stats.main_elo ? fmt(stats.main_elo, 0) : '1500';
+            document.getElementById('kpiWR').textContent = fmt(stats.win_rate_100, 1) + '%';
+            document.getElementById('kpiGames').textContent = (stats.total_games || 0).toLocaleString();
+            document.getElementById('kpiDBTotal').textContent = stats.db_total ? `${stats.db_total} in DB` : '';
+            document.getElementById('kpiTD').textContent = fmt(stats.avg_td_error, 4);
+
+            document.getElementById('kpiGPM').textContent = fmt(stats.games_per_minute, 0);
+            document.getElementById('kpiBestEval').textContent = fmt(stats.best_eval_win_rate, 1) + '%';
+            document.getElementById('kpiBuf').textContent = (stats.buffer_size || 0).toLocaleString();
+            document.getElementById('kpiBufSub').textContent = `${stats.ghost_count || 0} ghosts`;
+            document.getElementById('throughputLabel').textContent = `${fmt(stats.games_per_minute, 0)} GPM`;
+
+
+        }
+
+        function updateOverviewCharts(metrics) {
+            if (!metrics || !Array.isArray(metrics) || metrics.length === 0) return;
+
+            const games = metrics.map(m => m.games);
+            const wr = metrics.map(m => (m.win_rate || 0) * 100);
+            const td = metrics.map(m => m.avg_td_error || 0);
+            const eps = metrics.map(m => m.epsilon || 0);
+            const evalWR = metrics.filter(m => m.eval_win_rate !== undefined);
+
+            charts.wr.data.labels = games;
+            charts.wr.data.datasets[0].data = wr;
+            charts.wr.update('none');
+
+            charts.td.data.labels = games;
+            charts.td.data.datasets[0].data = td;
+            charts.td.update('none');
+
+            charts.eps.data.labels = games;
+            charts.eps.data.datasets[0].data = eps;
+            charts.eps.update('none');
+
+            if (evalWR.length > 0) {
+                charts.eval.data.labels = evalWR.map(m => m.games);
+                charts.eval.data.datasets[0].data = evalWR.map(m => (m.eval_win_rate || 0) * 100);
+                charts.eval.update('none');
+            }
+        }
+
+        function updateEloTab(eloData) {
+            if (!eloData) return;
+
+            // Elo history chart
+            if (eloData.history && Object.keys(eloData.history).length > 0) {
+                const datasets = [];
+                for (const [name, points] of Object.entries(eloData.history)) {
+                    if (points.length < 2) continue;
+                    const color = getColor(name);
+                    datasets.push({
+                        label: name,
+                        data: points.map(p => ({ x: p.game, y: p.elo })),
+                        borderColor: color,
+                        backgroundColor: color.replace('1)', '0.05)'),
+                        borderWidth: name === 'Main' ? 2.5 : 1,
+                        pointRadius: 0,
+                        fill: name === 'Main',
+                        tension: 0.3,
+                    });
+                }
+                charts.elo.data.datasets = datasets;
+                // Use the longest dataset's x labels
+                const longestDs = datasets.reduce((a, b) => a.data.length > b.data.length ? a : b, datasets[0]);
+                charts.elo.data.labels = longestDs ? longestDs.data.map(d => d.x) : [];
+                charts.elo.options.scales.x = {
+                    type: 'linear',
+                    ticks: { color: '#555570', font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                    border: { display: false },
+                    title: { display: true, text: 'Game', color: '#555570', font: { size: 10 } },
+                };
+                charts.elo.update('none');
+            }
+
+            // League table
+            if (eloData.rankings) {
+                const tbody = document.getElementById('leagueBody');
+                const maxElo = Math.max(...eloData.rankings.map(r => r.elo), 1600);
+                const minElo = Math.min(...eloData.rankings.map(r => r.elo), 1400);
+                const range = maxElo - minElo || 1;
+
+                tbody.innerHTML = eloData.rankings.map((r, i) => {
+                    const rankClass = i < 3 ? `rank-${i + 1}` : 'rank-n';
+                    const pct = Math.max(5, ((r.elo - minElo) / range) * 100);
+                    const barColor = getColor(r.name);
+                    return `<tr>
+                <td><span class="rank-badge ${rankClass}">${i + 1}</span></td>
+                <td style="color: ${getColor(r.name)}; font-weight: 500">${r.name}</td>
+                <td style="font-family: monospace; color: var(--text-secondary)">${r.elo.toFixed(0)}</td>
+                <td><div class="elo-bar"><div class="elo-bar-fill" style="width:${pct}%; background:${barColor}"></div></div></td>
+            </tr>`;
+                }).join('');
+            }
+        }
+
+        function updateGamesTab(gamesData) {
+            if (!gamesData || !gamesData.recent_games) return;
+
+            const list = document.getElementById('gameList');
+            if (gamesData.recent_games.length === 0) {
+                list.innerHTML = '<div class="no-data">No games recorded yet</div>';
+                return;
+            }
+
+            list.innerHTML = gamesData.recent_games.map(g => {
+                const isWin = g.winner_name === 'Main';
+                const uniquePlayers = [...new Set(g.players)];
+                const playersStr = uniquePlayers.join(' vs ');
+                return `<div class="game-row">
+            <div class="game-num">#${g.game}</div>
+            <div class="players">${playersStr}</div>
+            <div class="${isWin ? 'result-win' : 'result-loss'}">${isWin ? 'WIN' : 'LOSS'}</div>
+            <div class="length">${g.length} moves</div>
+            <div class="td-err">${g.td_error.toFixed(4)}</div>
+        </div>`;
+            }).join('');
+        }
+
+        function updateOpponentsTab(stats) {
+            if (!stats) return;
+
+            // Get opponent stats from live_stats or games API  
+            const oppStats = stats.opponent_stats || {};
+            const opponents = Object.entries(oppStats).filter(([name]) => name !== 'Main');
+
+            if (opponents.length === 0) return;
+
+            // Bar chart
+            const labels = opponents.map(([name]) => name);
+            const data = opponents.map(([, s]) => s.win_rate || 0);
+            const colors = opponents.map(([name]) => {
+                const wr = oppStats[name].win_rate || 0;
+                if (wr >= 50) return 'rgba(34,197,94,0.7)';
+                if (wr >= 30) return 'rgba(245,158,11,0.7)';
+                return 'rgba(239,68,68,0.7)';
+            });
+
+            charts.opp.data.labels = labels;
+            charts.opp.data.datasets[0].data = data;
+            charts.opp.data.datasets[0].backgroundColor = colors;
+            charts.opp.update('none');
+
+            // Opponent cards
+            const grid = document.getElementById('oppGrid');
+            grid.innerHTML = opponents.map(([name, s]) => {
+                const wr = s.win_rate || 0;
+                const barColor = wr >= 50 ? 'var(--accent-green)' : wr >= 30 ? 'var(--accent-amber)' : 'var(--accent-red)';
+                return `<div class="opp-card">
+            <div class="opp-name" style="color: ${getColor(name)}">${name}</div>
+            <div class="opp-wr" style="color: ${barColor}">${wr.toFixed(1)}%</div>
+            <div class="opp-record">${s.wins || 0}W / ${(s.games || 0) - (s.wins || 0)}L (${s.games || 0} games)</div>
+            <div class="wr-bar"><div class="wr-bar-fill" style="width:${wr}%; background:${barColor}"></div></div>
+        </div>`;
+            }).join('');
+        }
+
+        async function updateDashboard() {
+            const stats = await fetchJSON('/api/stats');
+            const metrics = await fetchJSON('/api/metrics');
+            const eloData = await fetchJSON('/api/elo');
+            const gamesData = await fetchJSON('/api/games');
+            const sysData = await fetchJSON('/api/system');
+
+            if (stats && Object.keys(stats).length > 0) {
+                updateKPIs(stats);
+                updateOverviewCharts(metrics);
+                updateEloTab(eloData);
+                updateGamesTab(gamesData);
+                updateOpponentsTab(stats);
+            }
+
+            if (sysData) {
+                const modeElem = document.getElementById('modeBadge');
+                if (sysData.mode) {
+                    modeElem.textContent = sysData.mode;
+                    modeElem.className = 'badge mode-' + sysData.mode.toLowerCase();
+                }
+                document.getElementById('sysCPU').textContent = sysData.cpu + '%';
+                document.getElementById('sysRAM').textContent = sysData.ram + '%';
+            }
+        }
+
+        // ============================================================
+        // Session Timer
+        // ============================================================
+        function updateTimer() {
+            if (!startedAt) {
+                startedAt = Date.now();
+            }
+            const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+            const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+            const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+            const s = String(elapsed % 60).padStart(2, '0');
+            document.getElementById('sessionTime').textContent = `${h}:${m}:${s}`;
+        }
+
+        // ============================================================
+        // Polling
+        // ============================================================
+        async function poll() {
+            const [stats, metrics, eloData, gamesData] = await Promise.all([
+                fetchJSON('/api/stats'),
+                fetchJSON('/api/metrics'),
+                fetchJSON('/api/elo'),
+                fetchJSON('/api/games'),
+            ]);
+
+            if (stats && Object.keys(stats).length > 0) {
+                updateKPIs(stats);
+                updateOverviewCharts(metrics);
+                updateEloTab(eloData);
+                updateGamesTab(gamesData);
+                updateOpponentsTab(stats);
+            }
+        }
+
+        // Spectator Logic
+        const cvs = document.getElementById('ludoBoard');
+        const ctx = cvs ? cvs.getContext('2d') : null;
+        const CELL_SIZE = 40; // 600 / 15
+
+        // Coordinate Tables (P0 centric)
+        const PATH_COORDS_P0 = [
+            [6, 1], [6, 2], [6, 3], [6, 4], [6, 5],          // 0-4
+            [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],   // 5-10
+            [0, 7], [0, 8],                               // 11-12
+            [1, 8], [2, 8], [3, 8], [4, 8], [5, 8],          // 13-17
+            [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14], // 18-23
+            [7, 14], [8, 14],                             // 24-25
+            [8, 13], [8, 12], [8, 11], [8, 10], [8, 9],      // 26-30
+            [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8], // 31-36
+            [14, 7], [14, 6],                             // 37-38
+            [13, 6], [12, 6], [11, 6], [10, 6], [9, 6],      // 39-43
+            [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],   // 44-49
+            [7, 0]                                       // 50
+        ];
+
+        const HOME_RUN_P0 = [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]];
+        const HOME_COORD_P0 = [7, 6];
+
+        const BASE_COORDS = [
+            [[2, 2], [2, 3], [3, 2], [3, 3]],       // P0 (TL in JS visualization typically? No, tensor_utils checks.)
+            // tensor_utils logic: 
+            // P0: (2,2)-(3,3). But wait, P0 path starts at (6,1). That's typically bottom-left or top-left depending on orientation.
+            // Let's re-read tensor_utils rotation:
+            // r,c = c, 14-r (Clockwise 90).
+            // This means visual (HTML5 Canvas 0,0 is Top-Left).
+            // If P0 is Red, usually starts Bottom-Left.
+            // Let's assume standard layout.
+            // I'll stick to tensor_utils mapping logic exactly.
+            [[2, 2], [2, 3], [3, 2], [3, 3]],       // P0
+            [[2, 11], [2, 12], [3, 11], [3, 12]],   // P1
+            [[11, 11], [11, 12], [12, 11], [12, 12]], // P2
+            [[11, 2], [11, 3], [12, 2], [12, 3]]    // P3
+        ];
+
+        function getBoardCoords(player, pos, tokenIdx) {
+            let r = 0, c = 0;
+            if (pos === -1) {
+                // Base
+                [r, c] = BASE_COORDS[player][tokenIdx];
+            } else if (pos === 99) {
+                // Home
+                [r, c] = HOME_COORD_P0; // Rotate later
+            } else if (pos > 50) {
+                // Home Run
+                const idx = pos - 51;
+                if (idx < 5) [r, c] = HOME_RUN_P0[idx];
+                else[r, c] = HOME_COORD_P0;
+            } else {
+                // Path
+                [r, c] = PATH_COORDS_P0[pos];
+            }
+
+            // Rotate based on player
+            // Python: r, c = c, 14 - r
+            for (let i = 0; i < player; i++) {
+                const tmp = r;
+                r = c;
+                c = 14 - tmp;
+            }
+            return [r, c];
+        }
+
+        function drawBoard(state) {
+            if (!ctx) return;
+            ctx.clearRect(0, 0, 600, 600);
+
+            // Draw Grid Background
+            ctx.fillStyle = '#f8fafc'; // Very light gray
+            ctx.fillRect(0, 0, 600, 600);
+
+            // Draw Paths (Colored Tracks)
+            // Simplified: Draw big colored blocks for bases
+            // P0 (TL/BL?): According to base coords:
+            // P0 Base: (2,2) -> Top Left 
+            // P1 Base: (2,12) -> Top Right
+            // P2 Base: (12,12) -> Bottom Right
+            // P3 Base: (12,2) -> Bottom Left
+
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.2)'; ctx.fillRect(0, 0, 6 * CELL_SIZE, 6 * CELL_SIZE); // P0 Base Area (Top Left according to coords)
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.2)'; ctx.fillRect(9 * CELL_SIZE, 0, 6 * CELL_SIZE, 6 * CELL_SIZE); // P1
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.2)'; ctx.fillRect(9 * CELL_SIZE, 9 * CELL_SIZE, 6 * CELL_SIZE, 6 * CELL_SIZE); // P2
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.2)'; ctx.fillRect(0, 9 * CELL_SIZE, 6 * CELL_SIZE, 6 * CELL_SIZE); // P3
+
+            // Draw Grid Lines
+            ctx.strokeStyle = '#cbd5e1';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 15; i++) {
+                ctx.beginPath(); ctx.moveTo(i * CELL_SIZE, 0); ctx.lineTo(i * CELL_SIZE, 600); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i * CELL_SIZE); ctx.lineTo(600, i * CELL_SIZE); ctx.stroke();
+            }
+
+            // Draw Tokens
+            const colors = ['#ef4444', '#22c55e', '#f59e0b', '#3b82f6']; // Red, Green, Yellow, Blue
+
+            if (state && state.positions) {
+                // Count overlap to offset tokens
+                const coordCounts = {};
+
+                // First pass: Calculate coords and counts
+                const tokenRenderList = [];
+                state.positions.forEach((playerTokens, pIdx) => {
+                    playerTokens.forEach((pos, tIdx) => {
+                        const [r, c] = getBoardCoords(pIdx, pos, tIdx);
+                        const key = `${r},${c}`;
+                        coordCounts[key] = (coordCounts[key] || 0) + 1;
+                        tokenRenderList.push({ pIdx, tIdx, r, c });
+                    });
+                });
+
+                // Second pass: Draw
+                const currentCounts = {};
+                tokenRenderList.forEach(item => {
+                    const key = `${item.r},${item.c}`;
+                    const total = coordCounts[key];
+                    const idx = currentCounts[key] || 0;
+                    currentCounts[key] = idx + 1;
+
+                    const cx = item.c * CELL_SIZE + CELL_SIZE / 2;
+                    const cy = item.r * CELL_SIZE + CELL_SIZE / 2;
+
+                    // Offset if multiple
+                    let ox = 0, oy = 0;
+                    if (total > 1) {
+                        const offset = 10;
+                        ox = (idx % 2 === 0 ? -1 : 1) * offset;
+                        oy = (idx < 2 ? -1 : 1) * offset;
+                        if (total > 4) { ox = 0; oy = 0; } // Fallback for too many
+                    }
+
+                    ctx.beginPath();
+                    ctx.arc(cx + ox, cy + oy, 12, 0, Math.PI * 2);
+                    ctx.fillStyle = colors[item.pIdx];
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+
+                    // Draw ID (optional) or just dot
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '10px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(item.tIdx, cx + ox, cy + oy);
+                });
+            }
+        }
+
+        async function updateSpectate() {
+            const data = await fetchJSON('/api/spectate');
+            if (!data) return;
+
+            document.getElementById('specPlayer').textContent = 'P' + data.current_player;
+            document.getElementById('specDice').textContent = data.dice_roll;
+
+            const tbody = document.getElementById('specBody');
+            tbody.innerHTML = '';
+            data.identities.forEach((id, i) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>P${i}</td><td>${id}</td><td>${data.scores?.[i] || 0}</td>`;
+                tbody.appendChild(tr);
+            });
+
+            drawBoard(data);
+        }
+
+        async function poll() {
+            const stats = await fetchJSON('/api/stats'); // Fetch stats first to check connection
+            const connected = stats && Object.keys(stats).length > 0;
+            const dot = document.getElementById('statusDot');
+            dot.className = connected ? 'dot pulse' : 'dot offline';
+
+            if (connected) {
+                await updateDashboard();
+            }
+
+            pollCount++;
+
+            // Poll spectate if tab is active
+            const spectateTab = document.getElementById('tab-spectate');
+            if (spectateTab && spectateTab.classList.contains('active')) {
+                await updateSpectate();
+            }
+        }
+
+        // ============================================================
+        // Init
+        // ============================================================
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            poll();
+            setInterval(poll, 3000);
+            setInterval(updateTimer, 1000);
+        });
+    </script>
+
+</body>
+
+</html>
