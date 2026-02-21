@@ -59,13 +59,14 @@ def data_worker_loop(rank, data_queue, device='cpu', viz_queue=None, stop_reques
     # Ideally Actors just play, Learner updates Elo. 
     # For MVP: Actors pick random or simple logic. Let's pass None.
     # Note: VectorLeagueWorker requires model.
-    # Enable Visualization for Actor 0 ONLY
-    visualize_actor = (rank == 0)
+    # Enable Visualization for ALL Actors
+    visualize_actor = True
     
     # MOVED: Visualizer Server now runs in Learner process to ensure stability
     if visualize_actor and viz_queue:
         from src.visualizer import visualizer
         visualizer.set_ipc_queue(viz_queue)
+        visualizer.set_actor_id(rank)
         # We don't start server here, but setting queue enables broadcast methods to push to it
 
 

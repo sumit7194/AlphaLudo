@@ -27,6 +27,7 @@ class GameDB:
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         
+        c.execute('PRAGMA journal_mode=WAL;')
         c.execute('''
             CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

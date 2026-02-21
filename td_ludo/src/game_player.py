@@ -92,18 +92,24 @@ class TDGamePlayer:
         best_value = -float('inf')
         best_move = legal_moves[0]
         
-        # Batch evaluation for efficiency
+        current_p = state.current_player
         next_states = []
+        next_players = []
         for move in legal_moves:
             next_state = ludo_cpp.apply_move(state, move)
-            next_states.append(state_to_tensor_mastery(next_state))
+            next_states.append(ludo_cpp.encode_state(next_state))
+            next_players.append(next_state.current_player)
         
         values = self.trainer.predict_value_batch(next_states)
         
-        current_player = state.current_player
         for i, move in enumerate(legal_moves):
-            # Value is from the perspective of current_player
             v = values[i]
+            # CRITICAL: Perspective Flip
+            # V(s') is from the perspective of next_players[i].
+            # If that's NOT us, we want to MINIMIZE their value (maximize -v).
+            if next_players[i] != current_p:
+                v = -v
+            
             if v > best_value:
                 best_value = v
                 best_move = move
@@ -322,7 +328,7 @@ class TDGamePlayer:
             opponent_seat = 2 if model_player == 0 else 0
             
             player_types = ['Inactive'] * 4
-            player_types[model_player] = 'Model'
+            player_types[model_player] = 'Main'
             
             # Opponent type
             if game_type == 'SelfPlay':
@@ -341,7 +347,7 @@ class TDGamePlayer:
         # 4-Player Mode Logic (Standard)
         # Model always gets a random seat
         model_player = random.randint(0, 3)
-        player_types = ['Model'] * 4
+        player_types = ['Main'] * 4
         
         if game_type != 'SelfPlay':
             # Place one bot of chosen type in a random non-model seat
@@ -405,8 +411,10 @@ class VectorTDGamePlayer:
         self.recent_td_errors = []
         
         # Track consecutive sixes for all games (4 players per game)
-        # Shape: (batch_size, 4)
         self.consecutive_sixes = np.zeros((batch_size, 4), dtype=int)
+        
+        # Track move counts for max_moves enforcement
+        self.move_counts = np.zeros(batch_size, dtype=int)
         
         # Initialize bots (shared instances are fine for stateless bots)
         self.bots = {name: cls() for name, cls in BOT_CLASSES.items()}
@@ -417,7 +425,7 @@ class VectorTDGamePlayer:
         Returns list of finished game results (dicts).
         """
         # 1. Get current states (s_t) for decision making
-        # shape (B, 21, 15, 15)
+        # shape (B, 11, 15, 15)
         current_states_np = self.env.get_state_tensor()
         
         actions = []
@@ -427,6 +435,7 @@ class VectorTDGamePlayer:
         # 2. Determine actions for all games
         for i in range(self.batch_size):
             game = self.env.get_game(i)
+
             
             if game.is_terminal:
                 actions.append(-1)
@@ -435,6 +444,13 @@ class VectorTDGamePlayer:
                 
             cp = game.current_player
             current_players.append(cp)
+            
+            # Check max moves
+            if self.move_counts[i] >= MAX_MOVES_PER_GAME:
+                # Force draw/termination
+                 game.is_terminal = True # FORCE C++ STATE TERMINAL
+                 actions.append(-1)
+                 continue
             
             # Dice Roll Logic
             if game.current_dice_roll == 0:
@@ -446,15 +462,25 @@ class VectorTDGamePlayer:
                     self.consecutive_sixes[i, cp] = 0
                     
                 if self.consecutive_sixes[i, cp] >= 3:
-                    game.current_player = (cp + 1) % 4
+                    # Skip to next ACTIVE player
+                    next_p = (cp + 1) % 4
+                    while not game.active_players[next_p]:
+                        next_p = (next_p + 1) % 4
+                    game.current_player = next_p
                     game.current_dice_roll = 0
                     self.consecutive_sixes[i, cp] = 0
                     actions.append(-1)
                     continue
             
+            
+
             legal_moves = ludo_cpp.get_legal_moves(game)
             if not legal_moves:
-                game.current_player = (cp + 1) % 4
+                # Skip to next ACTIVE player
+                next_p = (cp + 1) % 4
+                while not game.active_players[next_p]:
+                    next_p = (next_p + 1) % 4
+                game.current_player = next_p
                 game.current_dice_roll = 0
                 actions.append(-1)
                 continue
@@ -487,24 +513,32 @@ class VectorTDGamePlayer:
                     continue
                 
                 # Prepare candidates for value estimation
+                cp = game.current_player
                 for m in lmoves:
-                    # Apply move on copy (fast enough in C++)
+                    # Optimized: Use C++ encoder directly
                     next_g = ludo_cpp.apply_move(game, m)
-                    tsr = state_to_tensor_mastery(next_g)
-                    all_hooks.append((idx, m, tsr))
+                    tsr = ludo_cpp.encode_state(next_g)
+                    # We store (origin_idx, move, tensor, next_player)
+                    all_hooks.append((idx, m, tsr, next_g.current_player, cp))
             
             if all_hooks:
                 # Batch predict V(s') for candidates
                 batch_tsrs = np.stack([h[2] for h in all_hooks]) 
-                vals = self.trainer.predict_value_batch(torch.from_numpy(batch_tsrs).to(self.device))
+                vals = self.trainer.predict_value_batch(batch_tsrs)
                 
                 best_scores = {idx: -float('inf') for idx in model_indices}
                 chosen_moves = {}
                 
                 ptr = 0
-                for idx, m, _ in all_hooks:
+                for idx, m, _, next_p, orig_p in all_hooks:
                     v = vals[ptr]
                     ptr += 1
+                    
+                    # CRITICAL: Perspective Flip
+                    # If it's no longer our turn in the next state, the value is for the opponent.
+                    if next_p != orig_p:
+                        v = -v
+                        
                     if v > best_scores.get(idx, -float('inf')):
                         best_scores[idx] = v
                         chosen_moves[idx] = m
@@ -528,6 +562,10 @@ class VectorTDGamePlayer:
 
         # 5. Step Environment
         final_actions = [a if a >= 0 else -1 for a in actions]
+        for i, a in enumerate(final_actions):
+            if a >= 0:
+                self.move_counts[i] += 1
+                
         next_states_np, rewards_np, dones_np, info_list = self.env.step(final_actions)
         
         # 6. TD Updates
@@ -535,11 +573,22 @@ class VectorTDGamePlayer:
         if train:
             for idx in model_indices:
                 if actions[idx] >= 0:
-                    # Calculate Reward
-                    raw_reward = rewards_np[idx]
+                    mpid = self.game_compositions[idx]['model_player']
+                    
+                    # FIX #1: Inject terminal reward (C++ step() always returns 0.0)
+                    raw_reward = float(rewards_np[idx])
+                    if dones_np[idx]:
+                        winner = info_list[idx]['winner']
+                        if winner == mpid:
+                            raw_reward = 1.0
+                        elif winner >= 0:
+                            raw_reward = -1.0  # Zero-sum for 2-player
+                    
                     reward = raw_reward
                     
-                    if REWARD_SHAPING and idx in prev_states_data:
+                    # Apply PBRS only on non-terminal steps
+                    # (PBRS theorem: Φ(terminal) = 0, so skip shaping at terminal)
+                    if REWARD_SHAPING and not dones_np[idx] and idx in prev_states_data:
                         # Reconstruct prev state proxy
                         prev_s = ludo_cpp.GameState()
                         ps_scores, ps_pos, ps_board, ps_cp, ps_term = prev_states_data[idx]
@@ -550,16 +599,53 @@ class VectorTDGamePlayer:
                         prev_s.is_terminal = ps_term
                         
                         curr_s = self.env.get_game(idx)
-                        mpid = self.game_compositions[idx]['model_player']
                         reward = compute_shaped_reward(prev_s, curr_s, mpid, raw_reward, TD_GAMMA)
+                    
+                    # FIX #2: Re-encode s_{t+1} from MODEL player's perspective
+                    # env.step() encodes from the NEW current_player (may be opponent)
+                    game_after = self.env.get_game(idx)
+                    if game_after.current_player != mpid and not dones_np[idx]:
+                        # Temporarily set current_player to model's perspective for encoding
+                        orig_cp = game_after.current_player
+                        game_after.current_player = mpid
+                        next_state_tensor = ludo_cpp.encode_state(game_after)
+                        game_after.current_player = orig_cp  # Restore
+                    else:
+                        next_state_tensor = next_states_np[idx]
                     
                     # Store (s_t, s_{t+1}, r, d)
                     model_updates.append((
                         current_states_np[idx],
-                        next_states_np[idx],
+                        next_state_tensor,
                         reward,
                         dones_np[idx]
                     ))
+            
+            # FIX: Inject loss transitions for games that ended on the opponent's turn
+            # When the opponent makes the winning move, model_indices doesn't include
+            # this game (it's not the model's turn), so no -1.0 loss is ever stored.
+            # We fix this by scanning all games for newly-finished losses.
+            model_indices_set = set(model_indices)
+            for i in range(self.batch_size):
+                if dones_np[i] and i not in model_indices_set:
+                    # Game ended but model didn't act this step
+                    mpid = self.game_compositions[i]['model_player']
+                    winner = info_list[i]['winner']
+                    if winner >= 0 and winner != mpid:
+                        # Model lost — inject (s_t_from_model_perspective, s_terminal, -1.0, done)
+                        # Re-encode current state from model's perspective
+                        game_state = self.env.get_game(i)
+                        orig_cp_before = game_state.current_player
+                        game_state.current_player = mpid
+                        s_t_model = ludo_cpp.encode_state(game_state)
+                        game_state.current_player = orig_cp_before
+                        
+                        model_updates.append((
+                            s_t_model,
+                            next_states_np[i],  # Terminal state (doesn't matter, done=True masks V(s'))
+                            -1.0,
+                            True
+                        ))
             
             # Perform Batch Update
             if model_updates:
@@ -569,10 +655,10 @@ class VectorTDGamePlayer:
                 d_batch = np.array([u[3] for u in model_updates], dtype=np.float32)
                 
                 td_err = self.trainer.td_update_batch(
-                    torch.from_numpy(s_batch),
-                    torch.from_numpy(ns_batch),
-                    torch.from_numpy(r_batch),
-                    torch.from_numpy(d_batch)
+                    s_batch,
+                    ns_batch,
+                    r_batch,
+                    d_batch
                 )
                 self.recent_td_errors.append(td_err)
                 if len(self.recent_td_errors) > 1000:
@@ -584,11 +670,21 @@ class VectorTDGamePlayer:
             if dones_np[i]:
                 winner = info_list[i]['winner']
                 mpid = self.game_compositions[i]['model_player']
-                model_won = (winner == mpid)
+                
+                if winner == -1:
+                    # Timeout / Draw
+                    outcome = "Timeout"
+                    model_won = False # Technically not a win
+                else:
+                    model_won = (winner == mpid)
+                    outcome = "Win" if model_won else "Loss"
                 
                 # Stats
                 self.total_games += 1
                 if model_won: self.total_model_wins += 1
+                
+                # Only count decisive games for win rate? Or count draws as 0.5?
+                # For now, keep binary win/loss for recent_wins to be safe, or 0.
                 self.recent_wins.append(1 if model_won else 0)
                 if len(self.recent_wins) > 100: self.recent_wins = self.recent_wins[-100:]
 
@@ -605,10 +701,11 @@ class VectorTDGamePlayer:
                     'model_won': model_won,
                     'model_player': mpid,
                     'identities': identities,
-                    'total_moves': 0, # Not tracked per game easily
+                    'total_moves': int(self.move_counts[i]),
                     'avg_td_error': self.get_recent_td_error(),
                     'game_duration': 0.0
                 })
+                self.move_counts[i] = 0
         
         return results
 
@@ -648,7 +745,9 @@ class VectorTDGamePlayer:
             'current_player': game.current_player,
             'dice_roll': game.current_dice_roll,
             'is_terminal': game.is_terminal,
-            'identities': self.game_compositions[game_idx]['player_types']
+            'identities': self.game_compositions[game_idx]['player_types'],
+            'active_players': game.active_players.tolist(),
+            'move_count': int(self.move_counts[game_idx])
         }
 
     def _random_composition(self):

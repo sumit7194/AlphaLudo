@@ -47,14 +47,27 @@ PYBIND11_MODULE(ludo_cpp, m) {
           })
       .def_readwrite("current_player", &GameState::current_player)
       .def_readwrite("current_dice_roll", &GameState::current_dice_roll)
-      .def_readwrite("is_terminal", &GameState::is_terminal);
+      .def_readwrite("is_terminal", &GameState::is_terminal)
+      .def_property(
+          "active_players",
+          [](GameState &s) -> py::array_t<bool> {
+            return py::array_t<bool>({NUM_PLAYERS}, {sizeof(bool)},
+                                     s.active_players.data(), py::cast(s));
+          },
+          [](GameState &s, py::array_t<bool> array) {
+            auto buf = array.unchecked<1>();
+            for (int i = 0; i < NUM_PLAYERS; ++i)
+              s.active_players[i] = buf(i);
+          });
 
   m.def("get_legal_moves", &get_legal_moves,
         "Get legal moves for current state");
   m.def("apply_move", &apply_move, "Apply a move to the state");
   m.def("get_winner", &get_winner, "Get winner (-1 if none)");
   m.def("create_initial_state", &create_initial_state,
-        "Create initial game state");
+        "Create initial 4-player game state");
+  m.def("create_initial_state_2p", &create_initial_state_2p,
+        "Create initial 2-player game state (P0 vs P2)");
 
   // MCTS Bindings
   py::class_<MCTSEngine>(m, "MCTSEngine")

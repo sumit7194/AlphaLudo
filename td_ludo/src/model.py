@@ -8,7 +8,7 @@ Key Improvements over v2:
 4. Designed for TD(λ) training with MCTS Q-value targets
 
 Architecture:
-- Input: (B, 18, 15, 15) spatial tensor
+- Input: (B, 11, 15, 15) spatial tensor
 - Backbone: ResNet-10 (128 channels)
 - Policy Head: GAP → FC(128→64→4)
 - Value Head: GAP → FC(128→64→1)
@@ -46,12 +46,12 @@ class AlphaLudoV3(nn.Module):
     - Added auxiliary safety prediction head
     - Streamlined for faster training
     """
-    def __init__(self, num_res_blocks=10, num_channels=128, in_channels=21):
+    def __init__(self, num_res_blocks=10, num_channels=128, in_channels=11):
         super(AlphaLudoV3, self).__init__()
         
         self.num_channels = num_channels
         
-        # Stem: 21 Input Channels → 128 Filters
+        # Stem: 11 Input Channels → 128 Filters
         self.conv_input = nn.Conv2d(in_channels, num_channels, kernel_size=3, padding=1, bias=False)
         self.bn_input = nn.BatchNorm2d(num_channels)
         
@@ -81,7 +81,7 @@ class AlphaLudoV3(nn.Module):
         Forward pass with direct token selection.
         
         Args:
-            x: (B, 21, 15, 15) spatial tensor
+            x: (B, 11, 15, 15) spatial tensor
             legal_mask: (B, 4) binary mask of legal moves (optional)
             
         Returns:
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     print(f"AlphaLudo v3 Parameters: {model.count_parameters():,}")
     
     # Test forward pass
-    x = torch.randn(2, 21, 15, 15)
+    x = torch.randn(2, 11, 15, 15)
     legal_mask = torch.tensor([[1, 1, 0, 0], [1, 0, 1, 1]], dtype=torch.float32)
     
     policy, value, aux = model(x, legal_mask)

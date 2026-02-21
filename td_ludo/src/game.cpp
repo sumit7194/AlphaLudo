@@ -364,17 +364,17 @@ void write_tensor_val(float *buffer, int ch, int r, int c, float val,
 }
 
 void write_state_tensor(const GameState &state, float *buffer) {
-  // Hybrid v7 Architecture: (21, 15, 15)
+  // Cleaned 11-Channel Architecture: (11, 15, 15)
   // 0-3: My Tokens (Distinct Identity 0,1,2,3)
-  // 4-6: Opponent Pieces (Density) [Next, Team, Prev]
-  // 7: Safe Zones (0.5)
-  // 8-11: Home Paths (My, Next, Team, Prev)
-  // 12-17: Dice (One-Hot)
-  // 18: Score Diff
-  // 19: My Locked
-  // 20: Opp Locked
+  // 4:   Opponent Pieces (Density, 0.25 per token, skip inactive)
+  // 5:   Safe Zones (0.5)
+  // 6:   My Home Path
+  // 7:   Opponent Home Path (skip inactive)
+  // 8:   Score Diff (broadcast)
+  // 9:   My Locked (broadcast)
+  // 10:  Opp Locked (broadcast)
 
-  int num_channels = 21;
+  int num_channels = 11;
   int spatial_size = BOARD_SIZE * BOARD_SIZE;
   clear_buffer(buffer, num_channels * spatial_size);
 
@@ -389,19 +389,18 @@ void write_state_tensor(const GameState &state, float *buffer) {
     if (pos == BASE_POS)
       get_board_coords(p, pos, r, c, t);
     else
-      get_board_coords(p, pos, r, c); // Token index irrelevant for path
+      get_board_coords(p, pos, r, c);
 
     if (r >= 0) {
       write_tensor_val(buffer, t, r, c, 1.0f, k);
     }
   }
 
-  // --- CHANNELS 4-6: Opponent Pieces (Density) ---
+  // --- CHANNEL 4: Opponent Pieces (Single Density Channel) ---
   for (int offset = 1; offset < 4; ++offset) {
     int opp_p = (current_p + offset) % 4;
-    int target_ch = 3 + offset; // 4, 5, 6
 
-    // Skip inactive players (their channels stay zero)
+    // Skip inactive players
     if (!state.active_players[opp_p])
       continue;
 
@@ -414,50 +413,49 @@ void write_state_tensor(const GameState &state, float *buffer) {
         get_board_coords(opp_p, pos, r, c);
 
       if (r >= 0) {
-        write_tensor_val(buffer, target_ch, r, c, 0.25f, k);
+        write_tensor_val(buffer, 4, r, c, 0.25f, k);
       }
     }
   }
 
-  // --- CHANNEL 7: Safe Zones ---
-  // Safe Indices: 0, 8, 13, 21...
+  // --- CHANNEL 5: Safe Zones ---
   for (int pl = 0; pl < NUM_PLAYERS; ++pl) {
     for (int s : SAFE_INDICES) {
       int r, c;
       get_board_coords(pl, s, r, c);
-      // Only write if valid
       if (r >= 0) {
-        write_tensor_val(buffer, 7, r, c, 0.5f, k, false);
+        write_tensor_val(buffer, 5, r, c, 0.5f, k, false);
       }
     }
   }
 
-  // --- CHANNELS 8-11: Home Paths ---
-  // 8: My Home Path
-  // 9: Next Home Path, etc.
-  for (int offset = 0; offset < 4; ++offset) {
-    int target_ch = 8 + offset;
-    int pl = (current_p + offset) % 4;
+  // --- CHANNEL 6: My Home Path ---
+  for (int i = 0; i < 5; ++i) {
+    int home_pos = 51 + i;
+    int r, c;
+    get_board_coords(current_p, home_pos, r, c);
+    if (r >= 0) {
+      write_tensor_val(buffer, 6, r, c, 1.0f, k, false);
+    }
+  }
+
+  // --- CHANNEL 7: Opponent Home Path (skip inactive) ---
+  for (int offset = 1; offset < 4; ++offset) {
+    int opp_p = (current_p + offset) % 4;
+    if (!state.active_players[opp_p])
+      continue;
 
     for (int i = 0; i < 5; ++i) {
       int home_pos = 51 + i;
       int r, c;
-      get_board_coords(pl, home_pos, r, c);
+      get_board_coords(opp_p, home_pos, r, c);
       if (r >= 0) {
-        write_tensor_val(buffer, target_ch, r, c, 1.0f, k, false);
+        write_tensor_val(buffer, 7, r, c, 1.0f, k, false);
       }
     }
   }
 
-  // --- CHANNELS 12-17: Dice ---
-  int roll = state.current_dice_roll;
-  if (roll >= 1 && roll <= 6) {
-    int dice_ch = 12 + (roll - 1);
-    std::fill(buffer + (dice_ch * spatial_size),
-              buffer + ((dice_ch + 1) * spatial_size), 1.0f);
-  }
-
-  // --- CHANNEL 18: Score Diff ---
+  // --- CHANNEL 8: Score Diff ---
   int my_score = state.scores[current_p];
   int max_opp = 0;
   for (int pl = 0; pl < NUM_PLAYERS; ++pl) {
@@ -465,25 +463,25 @@ void write_state_tensor(const GameState &state, float *buffer) {
       max_opp = std::max(max_opp, (int)state.scores[pl]);
   }
   float score_val = (float)(my_score - max_opp) / 4.0f;
-  std::fill(buffer + (18 * spatial_size), buffer + (19 * spatial_size),
+  std::fill(buffer + (8 * spatial_size), buffer + (9 * spatial_size),
             score_val);
 
-  // --- CHANNEL 19: My Locked ---
+  // --- CHANNEL 9: My Locked ---
   int my_locked = 0;
   for (int t = 0; t < 4; ++t)
     if (state.player_positions[current_p][t] == BASE_POS)
       my_locked++;
-  std::fill(buffer + (19 * spatial_size), buffer + (20 * spatial_size),
+  std::fill(buffer + (9 * spatial_size), buffer + (10 * spatial_size),
             (float)my_locked / 4.0f);
 
-  // --- CHANNEL 20: Opp Locked ---
+  // --- CHANNEL 10: Opp Locked ---
   int opp_locked = 0;
   int active_opp_tokens = 0;
   for (int pl = 0; pl < 4; ++pl) {
     if (pl == current_p)
       continue;
     if (!state.active_players[pl])
-      continue; // Skip inactive players
+      continue;
     active_opp_tokens += 4;
     for (int t = 0; t < 4; ++t)
       if (state.player_positions[pl][t] == BASE_POS)
@@ -492,6 +490,6 @@ void write_state_tensor(const GameState &state, float *buffer) {
   float opp_locked_val = (active_opp_tokens > 0)
                              ? (float)opp_locked / (float)active_opp_tokens
                              : 0.0f;
-  std::fill(buffer + (20 * spatial_size), buffer + (21 * spatial_size),
+  std::fill(buffer + (10 * spatial_size), buffer + (11 * spatial_size),
             opp_locked_val);
 }

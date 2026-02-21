@@ -438,6 +438,12 @@
             font-size: 12px;
         }
 
+        .game-row .result-timeout {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 12px;
+        }
+
         .game-row .length {
             color: var(--text-muted);
             font-size: 12px;
@@ -597,6 +603,11 @@
                     <div class="kpi-value" id="kpiBuf">—</div>
                     <div class="kpi-sub" id="kpiBufSub"></div>
                 </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">V(s) Calibration</div>
+                    <div class="kpi-value" id="kpiVsMean">—</div>
+                    <div class="kpi-sub" id="kpiVsSub"></div>
+                </div>
             </div>
 
             <div class="chart-grid">
@@ -691,30 +702,33 @@
                 </div>
                 <div style="flex: 1;">
                     <div class="chart-title">Game Info</div>
-                    <div class="kpi-grid" style="grid-template-columns: 1fr 1fr;">
-                        <div class="kpi-card">
-                            <div class="kpi-label">Current Player</div>
-                            <div class="kpi-value" id="specPlayer">-</div>
-                        </div>
-                        <div class="kpi-card">
-                            <div class="kpi-label">Dice Roll</div>
-                            <div class="kpi-value" id="specDice">-</div>
-                        </div>
+                    <div class="kpi-card">
+                        <div class="kpi-label">Current Player</div>
+                        <div class="kpi-value" id="specPlayer">-</div>
                     </div>
-                    <div class="chart-title" style="margin-top:20px;">Players</div>
-                    <table class="league-table" id="specTable">
-                        <thead>
-                            <tr>
-                                <th>Seat</th>
-                                <th>Type</th>
-                                <th>Score</th>
-                            </tr>
-                        </thead>
-                        <tbody id="specBody"></tbody>
-                    </table>
+                    <div class="kpi-card">
+                        <div class="kpi-label">Dice Roll</div>
+                        <div class="kpi-value" id="specDice">-</div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-label">Moves</div>
+                        <div class="kpi-value" id="specMoves">-</div>
+                    </div>
                 </div>
+                <div class="chart-title" style="margin-top:20px;">Players</div>
+                <table class="league-table" id="specTable">
+                    <thead>
+                        <tr>
+                            <th>Seat</th>
+                            <th>Type</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="specBody"></tbody>
+                </table>
             </div>
         </div>
+    </div>
     </div>
 
     <script>
@@ -884,7 +898,19 @@
             document.getElementById('kpiBufSub').textContent = `${stats.ghost_count || 0} ghosts`;
             document.getElementById('throughputLabel').textContent = `${fmt(stats.games_per_minute, 0)} GPM`;
 
-
+            if (stats.v_mean !== undefined) {
+                const elVs = document.getElementById('kpiVsMean');
+                elVs.textContent = fmt(stats.v_mean, 3);
+                elVs.className = 'kpi-value';
+                if (stats.v_mean < -0.15 || stats.v_mean > 0.15) {
+                    elVs.classList.add('accent-amber'); // Alert if too pessimistic or optimistic
+                } else {
+                    elVs.classList.add('accent-green'); // Healthy calibration
+                }
+                const vW = fmt(stats.v_pre_win, 2);
+                const vL = fmt(stats.v_pre_loss, 2);
+                document.getElementById('kpiVsSub').textContent = `W: ${vW} | L: ${vL}`;
+            }
         }
 
         function updateOverviewCharts(metrics) {
@@ -980,13 +1006,23 @@
             }
 
             list.innerHTML = gamesData.recent_games.map(g => {
-                const isWin = g.winner_name === 'Main';
+                let resultClass = 'result-loss';
+                let resultText = 'LOSS';
+
+                if (g.winner === g.model_player_idx) {
+                    resultClass = 'result-win';
+                    resultText = 'WIN';
+                } else if (g.winner === -1 || g.winner_name === 'Timeout') {
+                    resultClass = 'result-timeout';
+                    resultText = 'TIMEOUT';
+                }
+
                 const uniquePlayers = [...new Set(g.players)];
                 const playersStr = uniquePlayers.join(' vs ');
                 return `<div class="game-row">
             <div class="game-num">#${g.game}</div>
             <div class="players">${playersStr}</div>
-            <div class="${isWin ? 'result-win' : 'result-loss'}">${isWin ? 'WIN' : 'LOSS'}</div>
+            <div class="${resultClass}">${resultText}</div>
             <div class="length">${g.length} moves</div>
             <div class="td-err">${g.td_error.toFixed(4)}</div>
         </div>`;
@@ -996,9 +1032,9 @@
         function updateOpponentsTab(stats) {
             if (!stats) return;
 
-            // Get opponent stats from live_stats or games API  
-            const oppStats = stats.opponent_stats || {};
-            const opponents = Object.entries(oppStats).filter(([name]) => name !== 'Main');
+            // Use recent_opponent_stats (last 500) if available, fallback to all-time  
+            const oppStats = stats.recent_opponent_stats || stats.opponent_stats || {};
+            const opponents = Object.entries(oppStats).filter(([name]) => name !== 'Main' && name !== 'Model');
 
             if (opponents.length === 0) return;
 
@@ -1116,15 +1152,6 @@
         const HOME_COORD_P0 = [7, 6];
 
         const BASE_COORDS = [
-            [[2, 2], [2, 3], [3, 2], [3, 3]],       // P0 (TL in JS visualization typically? No, tensor_utils checks.)
-            // tensor_utils logic: 
-            // P0: (2,2)-(3,3). But wait, P0 path starts at (6,1). That's typically bottom-left or top-left depending on orientation.
-            // Let's re-read tensor_utils rotation:
-            // r,c = c, 14-r (Clockwise 90).
-            // This means visual (HTML5 Canvas 0,0 is Top-Left).
-            // If P0 is Red, usually starts Bottom-Left.
-            // Let's assume standard layout.
-            // I'll stick to tensor_utils mapping logic exactly.
             [[2, 2], [2, 3], [3, 2], [3, 3]],       // P0
             [[2, 11], [2, 12], [3, 11], [3, 12]],   // P1
             [[11, 11], [11, 12], [12, 11], [12, 12]], // P2
@@ -1134,8 +1161,8 @@
         function getBoardCoords(player, pos, tokenIdx) {
             let r = 0, c = 0;
             if (pos === -1) {
-                // Base
-                [r, c] = BASE_COORDS[player][tokenIdx];
+                // Base - Already absolute, return immediately!
+                return BASE_COORDS[player][tokenIdx];
             } else if (pos === 99) {
                 // Home
                 [r, c] = HOME_COORD_P0; // Rotate later
@@ -1198,6 +1225,9 @@
                 // First pass: Calculate coords and counts
                 const tokenRenderList = [];
                 state.positions.forEach((playerTokens, pIdx) => {
+                    // Check active players (if available)
+                    if (state.active_players && !state.active_players[pIdx]) return;
+
                     playerTokens.forEach((pos, tIdx) => {
                         const [r, c] = getBoardCoords(pIdx, pos, tIdx);
                         const key = `${r},${c}`;
@@ -1250,6 +1280,7 @@
 
             document.getElementById('specPlayer').textContent = 'P' + data.current_player;
             document.getElementById('specDice').textContent = data.dice_roll;
+            document.getElementById('specMoves').textContent = data.move_count || 0;
 
             const tbody = document.getElementById('specBody');
             tbody.innerHTML = '';

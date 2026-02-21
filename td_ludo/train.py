@@ -38,7 +38,7 @@ from src.game_player import VectorTDGamePlayer, TDGamePlayer
 from src.elo_tracker import EloTracker
 from src.game_db import GameDB
 from src.config import (
-    LEARNING_RATE, EVAL_INTERVAL, EVAL_GAMES,
+    LEARNING_RATE, WEIGHT_DECAY, EVAL_INTERVAL, EVAL_GAMES,
     SAVE_INTERVAL, CHECKPOINT_DIR, MAIN_CKPT_PATH,
     KICKSTART_PATH, STATS_PATH, METRICS_PATH,
     REPLAY_EVERY_N_GAMES, USE_EXPERIENCE_BUFFER,
@@ -65,6 +65,66 @@ def signal_handler(sig, frame):
     print("[Train] Press Ctrl+C again to force exit (may lose progress)")
 
 signal.signal(signal.SIGINT, signal_handler)
+
+
+# =============================================================================
+# PID Lock — Prevent multiple training instances
+# =============================================================================
+LOCK_FILE = os.path.join(CHECKPOINT_DIR, "train.pid")
+
+def _is_process_alive(pid):
+    """Check if a process with given PID is still running."""
+    try:
+        os.kill(pid, 0)  # Signal 0 = check if alive, don't actually kill
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+def acquire_lock():
+    """
+    Try to acquire the training lock. Returns True if successful.
+    If another training instance is already running, prints an error and returns False.
+    """
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                old_pid = int(f.read().strip())
+            if _is_process_alive(old_pid):
+                print(f"\n{'='*60}")
+                print(f"  ❌ ANOTHER TRAINING INSTANCE IS ALREADY RUNNING!")
+                print(f"  PID: {old_pid}")
+                print(f"  Lock file: {LOCK_FILE}")
+                print(f"")
+                print(f"  To force start, either:")
+                print(f"    1. Kill the other process: kill {old_pid}")
+                print(f"    2. Remove the lock: rm {LOCK_FILE}")
+                print(f"{'='*60}\n")
+                return False
+            else:
+                # Stale lock file — process died without cleanup
+                print(f"[Train] Removing stale lock (PID {old_pid} no longer running)")
+        except (ValueError, IOError):
+            print("[Train] Removing corrupt lock file")
+    
+    # Write our PID
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    return True
+
+def release_lock():
+    """Remove the PID lock file."""
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            # Only remove if it's our lock
+            if pid == os.getpid():
+                os.remove(LOCK_FILE)
+    except (ValueError, IOError, OSError):
+        pass
+
+import atexit
+atexit.register(release_lock)
 
 
 # =============================================================================
@@ -111,6 +171,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._serve_spectate()
         elif self.path == '/api/system':
             self._serve_system()
+        elif self.path == '/api/history':
+            self._serve_games()
+        elif self.path == '/api/live':
+            self._serve_spectate()
         else:
             super().do_GET()
     
@@ -233,7 +297,35 @@ def main():
                         help='Dashboard server port (default: 8787)')
     parser.add_argument('--eval-only', action='store_true',
                         help='Run evaluation only')
+    parser.add_argument('--fresh', action='store_true',
+                        help='Start fresh (delete existing run data)')
+    parser.add_argument('--clear-buffer', action='store_true',
+                        help='Resume model weights but clear experience buffer and reset optimizer')
+    parser.add_argument('--reset-heads', action='store_true',
+                        help='Resume backbone weights but reinitialize value/policy heads, optimizer, and buffer')
     args = parser.parse_args()
+    
+    # Handle fresh start (purge run directory)
+    if args.fresh and os.path.exists(CHECKPOINT_DIR):
+        import shutil
+        print(f"[Train] Fresh start requested. Purging {CHECKPOINT_DIR}...")
+        for f in os.listdir(CHECKPOINT_DIR):
+            fpath = os.path.join(CHECKPOINT_DIR, f)
+            try:
+                if os.path.isfile(fpath):
+                    os.unlink(fpath)
+                elif os.path.isdir(fpath):
+                    shutil.rmtree(fpath)
+            except Exception as e:
+                print(f"[Train] Warning: could not delete {fpath}: {e}")
+    
+    # Ensure required subdirectories exist (important for resumes if they were deleted)
+    from src.config import GHOSTS_DIR
+    os.makedirs(GHOSTS_DIR, exist_ok=True)
+    
+    # Acquire training lock — prevent duplicate instances
+    if not acquire_lock():
+        sys.exit(1)
     
     # Device
     if args.device:
@@ -251,10 +343,39 @@ def main():
     trainer = TDTrainer(model, device, learning_rate=LEARNING_RATE)
     
     # Load weights
-    if args.resume:
+    if args.resume or args.clear_buffer or args.reset_heads:
         loaded = trainer.load_checkpoint()
         if loaded:
             print(f"[Train] Resumed from checkpoint ({trainer.total_games} games, {trainer.total_updates} updates)")
+            if args.reset_heads:
+                # Keep backbone (conv_input, bn_input, res_blocks), reset heads
+                print("[Train] Resetting value/policy/aux heads (keeping backbone)...")
+                for name, module in model.named_children():
+                    if name in ('policy_fc1', 'policy_fc2', 'value_fc1', 'value_fc2', 'aux_fc1', 'aux_fc2'):
+                        module.reset_parameters()
+                        print(f"  Reset: {name}")
+                # Reset optimizer (Adam state is stale)
+                trainer.optimizer = torch.optim.Adam(
+                    model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+                )
+                # Clear buffer (old data has wrong value targets)
+                if trainer.experience_buffer is not None:
+                    trainer.experience_buffer.clear()
+                from src.config import BUFFER_PATH
+                if os.path.exists(BUFFER_PATH):
+                    os.remove(BUFFER_PATH)
+                print(f"[Train] Heads reset, optimizer reset, buffer cleared")
+            elif args.clear_buffer:
+                # Keep model weights, reset optimizer and buffer
+                trainer.optimizer = torch.optim.Adam(
+                    model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+                )
+                if trainer.experience_buffer is not None:
+                    trainer.experience_buffer.clear()
+                from src.config import BUFFER_PATH
+                if os.path.exists(BUFFER_PATH):
+                    os.remove(BUFFER_PATH)
+                print(f"[Train] Cleared buffer and reset optimizer (model weights kept)")
         else:
             print("[Train] No checkpoint found, starting fresh")
             _try_kickstart(trainer, args.kickstart)
@@ -291,7 +412,7 @@ def main():
     _player = player
     
     # Stats tracking
-    rolling_win_rate = deque(maxlen=100)
+    rolling_win_rate = deque(maxlen=500)
     rolling_td_error = deque(maxlen=500)
     start_time = time.time()
     last_save_time = time.time()
@@ -308,7 +429,6 @@ def main():
     if USE_EXPERIENCE_BUFFER:
         print(f"  Experience buffer: ON (replay every {REPLAY_EVERY_N_GAMES} games)")
     else:
-        print(f"  Experience buffer: OFF (pure online learning)")
         print(f"  Experience buffer: OFF (pure online learning)")
     print(f"  Batch Size: {BATCH_SIZE} (Configured)")
     if args.hours > 0:
@@ -369,7 +489,7 @@ def main():
                 
                 # ---- Experience replay ----
                 if USE_EXPERIENCE_BUFFER and games_since_replay >= REPLAY_EVERY_N_GAMES:
-                    replay_loss = trainer.replay_train()
+                    replay_loss = trainer.replay_experience()
                     games_since_replay = 0
                 
                 # ---- Ghost saving (with Elo-based pruning) ----

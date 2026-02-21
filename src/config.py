@@ -14,13 +14,13 @@ DEFAULT_CONFIGS = {
         "MCTS_SIMS": 800,              # Increased to 800 (Deep Search) for Golden Data
         "MCTS_PARALLEL_SIMS": 8,       # Virtual Loss parallelism per game
         "C_PUCT": 2.5,                 # Reduced from 4.0 to stabilize policy
-        "DIRICHLET_ALPHA": 0.3,        # Root exploration noise
-        "DIRICHLET_EPS": 0.25,         # Reduced from 0.5 to reduce randomness
+        "DIRICHLET_ALPHA": 0.0,        # Disabled (was 0.3)
+        "DIRICHLET_EPS": 0.0,          # Disabled (was 0.25)
         
         # === Batch Settings (Hardware-optimized for M4) ===
-        "ACTOR_BATCH_SIZE": 16,        # Reduced for less straggler waiting
-        "INFERENCE_BATCH_SIZE": 128,   # Batch inference for MPS efficiency
-        "TRAINING_BATCH_SIZE": 512,    # Reduced for more frequent updates
+        "ACTOR_BATCH_SIZE": 32,        # Increased
+        "INFERENCE_BATCH_SIZE": 2048,   # Batch inference for MPS efficiency
+        "TRAINING_BATCH_SIZE": 2048,    # Huge batch for throughput
         
         # === Training Settings (v3: Improved Learning) ===
         "TRAIN_STEPS": 100,            # Gradient updates per learning iteration
@@ -36,7 +36,7 @@ DEFAULT_CONFIGS = {
         "AUX_LOSS_WEIGHT": 0.5,        # Auxiliary safety head weight
         
         # === Hardware Optimization ===
-        "USE_FLOAT16": True,           # Half precision for 2x speedup on M4
+        "USE_FLOAT16": False,           # Disabled to prevent precision issues (was True)
         
         # === Game Composition (v3: Dynamic) ===
         "GAME_COMPOSITION": {
@@ -56,9 +56,9 @@ DEFAULT_CONFIGS = {
     
     "TEST": {
         "MCTS_SIMS": 10, "MCTS_PARALLEL_SIMS": 1, "C_PUCT": 3.0,
-        "DIRICHLET_ALPHA": 0.3, "DIRICHLET_EPS": 0.25,
+        "DIRICHLET_ALPHA": 0.0, "DIRICHLET_EPS": 0.0,
         "ACTOR_BATCH_SIZE": 16, "INFERENCE_BATCH_SIZE": 32, "TRAINING_BATCH_SIZE": 16,
-        "TRAIN_STEPS": 100000, "NUM_ACTORS": 1, "GHOST_SAVE_FREQ": 100,
+        "TRAIN_STEPS": 100000, "NUM_ACTORS": 2, "GHOST_SAVE_FREQ": 100,
         "LEARNING_RATE": 0.001, "LR_WARMUP_STEPS": 100, "BUFFER_SIZE_LIMIT": 1000,
         "TD_LAMBDA": 0.95, "TD_GAMMA": 0.99, "AUX_LOSS_WEIGHT": 0.5, "USE_FLOAT16": False,
     }
@@ -129,12 +129,15 @@ USE_FLOAT16 = CONF.get("USE_FLOAT16", False)
 # Run Name (for forking experiments)
 # Set via: export ALPHALUDO_RUN_NAME=mastery_v3_prod
 # BACKGROUND mode uses same data as PROD by default
+# Run Name (for forking experiments)
+# Set via: export ALPHALUDO_RUN_NAME=mastery_v3_prod
+# BACKGROUND mode uses same data as PROD by default
 if MODE == "BACKGROUND":
-    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3_prod")  # Shares PROD data
+    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v4_prod")  # Updated to v4
 elif MODE == "PROD":
-    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v3_prod")
+    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "mastery_v4_prod")  # Updated to v4
 else:
-    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "test_v3")
+    RUN_NAME = os.environ.get("ALPHALUDO_RUN_NAME", "test_v4")          # Updated to v4 test
 
 # Data Paths (using RUN_NAME)
 CHECKPOINT_DIR = f"checkpoints_mastery/{RUN_NAME}"
@@ -153,3 +156,6 @@ GAME_COMPOSITION = CONF.get("GAME_COMPOSITION", {
     "Main": 0.50, "Ghost": 0.20,
     "Heuristic": 0.10, "Aggressive": 0.07, "Defensive": 0.07, "Racing": 0.06
 })
+
+# Export BATCH_SIZE for train.py
+BATCH_SIZE = TRAINING_BATCH_SIZE

@@ -175,17 +175,18 @@ class GameDB:
         games = []
         try:
             c.execute('''
-                SELECT game_num, p0, p1, p2, p3, winner, game_length, avg_td_error, timestamp
+                SELECT game_num, p0, p1, p2, p3, winner, game_length, avg_td_error, timestamp, model_player_idx
                 FROM games ORDER BY id DESC LIMIT ?
             ''', (n,))
             for row in c.fetchall():
-                game_num, p0, p1, p2, p3, winner, length, td_err, ts = row
+                game_num, p0, p1, p2, p3, winner, length, td_err, ts, model_idx = row
                 players = [p0, p1, p2, p3]
                 games.append({
                     'game': game_num,
                     'players': players,
                     'winner': winner,
-                    'winner_name': players[winner] if 0 <= winner < 4 else 'None',
+                    'model_player_idx': model_idx,
+                    'winner_name': players[winner] if 0 <= winner < 4 else 'Timeout',
                     'length': length,
                     'td_error': round(td_err, 4),
                     'timestamp': ts,

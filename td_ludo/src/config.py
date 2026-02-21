@@ -20,7 +20,7 @@ print(f"[TD-Ludo Config] Mode: {MODE}")
 # =============================================================================
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRETRAINED_DIR = os.path.join(PROJECT_ROOT, "pretrained")
-KICKSTART_PATH = os.path.join(PRETRAINED_DIR, "model_kickstart.pt")
+KICKSTART_PATH = os.path.join(PRETRAINED_DIR, "model_kickstart_11ch.pt")
 
 # =============================================================================
 # Default Configurations — PROD vs TEST fully isolated
@@ -34,7 +34,7 @@ DEFAULT_CONFIGS = {
         "EPSILON_DECAY_GAMES": 50000, # Games over which ε decays linearly
 
         # === Neural Network Training ===
-        "LEARNING_RATE": 0.0005,      # Adam optimizer LR
+        "LEARNING_RATE": 0.0003,      # Adam optimizer LR
         "WEIGHT_DECAY": 1e-4,         # L2 regularization
         "GRAD_ACCUM_STEPS": 4,        # Accumulate gradients over N moves before stepping
         "MAX_GRAD_NORM": 1.0,         # Gradient clipping
@@ -45,23 +45,30 @@ DEFAULT_CONFIGS = {
         # === Experience Buffer (optional replay) ===
         "USE_EXPERIENCE_BUFFER": True, # Store recent experiences for replay
         "BUFFER_SIZE": 200000,          # Max transitions in buffer
-        "REPLAY_BATCH_SIZE": 512,       # Batch size for replay training
-        "REPLAY_EVERY_N_GAMES": 10,    # Do a replay pass every N games
-        "REPLAY_STEPS": 32,            # Number of mini-batches per replay pass
+        "REPLAY_BATCH_SIZE": 1024,      # Increased for 11-channel efficiency
+        "REPLAY_EVERY_N_GAMES": 5,      # Do a replay pass every N games
+        "REPLAY_STEPS": 24,            # Steps per replay pass — prioritize learning quality
+
+        # === Prioritized Experience Replay (PER) ===
+        "PER_ALPHA": 0.6,              # Priority exponent (0=uniform, 1=full priority)
+        "PER_BETA_START": 0.4,         # IS correction start (anneals to 1.0)
+        "PER_BETA_END": 1.0,           # IS correction end
+        "PER_BETA_ANNEAL_GAMES": 50000, # Anneal β over this many games
 
         # === Game Settings ===
-        "BATCH_SIZE": 2048,
-        "MAX_MOVES_PER_GAME": 1000,
+        "BATCH_SIZE": 128,
+        "MAX_MOVES_PER_GAME": 10000,
         "GAME_COMPOSITION": {
-            "SelfPlay": 0.50,
-            "Heuristic": 0.15,
-            "Aggressive": 0.10,
-            "Defensive": 0.10,
-            "Racing": 0.10,
-            "Random": 0.05,
+            "SelfPlay": 0.70,          # High SelfPlay to learn from its own emerging tactics
+            "Random": 0.20,            # Easy wins to learn how to finish the game
+            "Heuristic": 0.10,         # Slight grounding against basic logic
+            # Advanced bots temporarily removed for Phase 1 curriculum
+            # "Aggressive": 0.15,
+            # "Defensive": 0.15,
+            # "Racing": 0.15,
         },
-        "NUM_ACTIVE_PLAYERS": 4,       # Standard 4-player
-        "TERMINAL_LOSS_REWARD": -0.33, # -1/3 for losing against 3 opponents
+        "NUM_ACTIVE_PLAYERS": 2,       # 2-Player Mode (P0 vs P2)
+        "TERMINAL_LOSS_REWARD": -1.0,  # Zero-sum for 1v1
 
         # === Evaluation ===
         "EVAL_INTERVAL": 500,         # Games between evaluations
@@ -159,6 +166,10 @@ REPLAY_BATCH_SIZE = CONF["REPLAY_BATCH_SIZE"]
 REPLAY_EVERY_N_GAMES = CONF["REPLAY_EVERY_N_GAMES"]
 REPLAY_STEPS = CONF["REPLAY_STEPS"]
 BATCH_SIZE = CONF["BATCH_SIZE"]
+PER_ALPHA = CONF.get("PER_ALPHA", 0.6)
+PER_BETA_START = CONF.get("PER_BETA_START", 0.4)
+PER_BETA_END = CONF.get("PER_BETA_END", 1.0)
+PER_BETA_ANNEAL_GAMES = CONF.get("PER_BETA_ANNEAL_GAMES", 50000)
 MAX_MOVES_PER_GAME = CONF["MAX_MOVES_PER_GAME"]
 GAME_COMPOSITION = CONF["GAME_COMPOSITION"]
 EVAL_INTERVAL = CONF["EVAL_INTERVAL"]
@@ -183,7 +194,7 @@ os.makedirs(GHOSTS_DIR, exist_ok=True)
 MAIN_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "model_latest.pt")
 BEST_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "model_best.pt")
 METRICS_PATH = os.path.join(CHECKPOINT_DIR, "training_metrics.json")
-BUFFER_PATH = os.path.join(CHECKPOINT_DIR, "experience_buffer.pt")
+BUFFER_PATH = os.path.join(CHECKPOINT_DIR, "experience_buffer.npz")
 STATS_PATH = os.path.join(CHECKPOINT_DIR, "live_stats.json")
 ELO_PATH = os.path.join(CHECKPOINT_DIR, "elo_ratings.json")
 GAME_DB_PATH = os.path.join(CHECKPOINT_DIR, "game_history.db")

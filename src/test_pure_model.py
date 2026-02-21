@@ -1,7 +1,7 @@
 """
 Pure Model Evaluation Test
 --------------------------
-Tests the trained v3 model against 3 random heuristic bots.
+Tests the trained v4 model against 3 random heuristic bots.
 No MCTS, no training - just pure neural network inference.
 
 Usage:
@@ -62,7 +62,7 @@ def run_pure_model_game(model, device, model_player_idx, bots):
         model_won: True if model won
         total_moves: Number of moves in the game
     """
-    state = ludo_cpp.GameState()
+    state = ludo_cpp.create_initial_state()
     total_moves = 0
     max_moves = 2000  # Safety limit
     consecutive_sixes = [0, 0, 0, 0]
@@ -302,7 +302,7 @@ def main():
     
     if os.path.exists(ckpt_path):
         try:
-            ckpt = torch.load(ckpt_path, map_location=device)
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(ckpt['model_state_dict'])
             print(f"Loaded checkpoint: {ckpt_path}")
         except Exception as e:

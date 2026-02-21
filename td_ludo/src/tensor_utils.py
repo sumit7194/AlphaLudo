@@ -123,27 +123,28 @@ HOME_RUN_MASKS = torch.from_numpy(get_home_run_masks())
 
 
 # =============================================================================
-# State to Tensor Conversion (21-channel)
+# State to Tensor Conversion (11-channel, cleaned 2P afterstate)
 # =============================================================================
 def state_to_tensor_mastery(state):
     """
-    Converts GameState to (21, 15, 15) single spatial tensor.
+    Converts GameState to (11, 15, 15) single spatial tensor.
     
     Channels:
     0-3:   My Tokens (Distinct Identity, one channel per token)
-    4-6:   Opponent Pieces (Density: Next, Team, Prev)
-    7:     Safe Zones (Binary)
-    8-11:  Home Paths (Binary: Me, Next, Team, Prev)
-    12-17: Dice One-Hot (Roll 1-6)
-    18:    Score Diff (Broadcast)
-    19:    My Locked (Broadcast)
-    20:    Opp Locked (Broadcast)
+    4:     Opponent Pieces (Density, 0.25 per token, skip inactive)
+    5:     Safe Zones (Binary)
+    6:     My Home Path (Binary)
+    7:     Opponent Home Path (Binary, skip inactive)
+    8:     Score Diff (Broadcast)
+    9:     My Locked (Broadcast)
+    10:    Opp Locked (Broadcast, skip inactive)
     """
     current_p = state.current_player
     positions = state.player_positions
     scores = state.scores
+    active_players = state.active_players
     
-    final_tensor = np.zeros((21, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+    final_tensor = np.zeros((11, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
     
     # --- CHANNELS 0-3: My Tokens (Distinct Identity) ---
     for t in range(4):
@@ -156,75 +157,79 @@ def state_to_tensor_mastery(state):
         if 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE:
             final_tensor[t, r, c] = 1.0
 
-    # --- CHANNELS 4-6: Opponent Pieces (Density) ---
+    # --- CHANNEL 4: Opponent Pieces (Single Density Channel) ---
     for p_offset in range(1, 4):
         p = (current_p + p_offset) % 4
-        target_ch = 3 + p_offset  # 4, 5, 6
-        
+        if not active_players[p]:
+            continue
         for t in range(4):
             pos = positions[p][t]
             if pos == BASE_POS:
                 r, c = get_board_coords(p, pos, t)
             else:
                 r, c = get_board_coords(p, pos, 0)
-            
             if 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE:
-                final_tensor[target_ch, r, c] += 0.25
+                final_tensor[4, r, c] += 0.25
 
-    # --- Channel 7: Safe Zones ---
-    SAFE_ABS_INDICES = [0, 8, 13, 21, 26, 34, 39, 47]
-    for p in range(NUM_PLAYERS):
-        for s in SAFE_ABS_INDICES:
-            r, c = get_board_coords(p, s, 0)
-            if r >= 0:
-                final_tensor[7, r, c] = 0.5
+    # --- CHANNEL 5: Safe Zones ---
+    for p in range(4):
+        for idx in SAFE_INDICES:
+            r, c = get_board_coords(p, idx)
+            if 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE:
+                final_tensor[5, r, c] = 0.5
 
-    # --- Channels 8-11: Home Paths (Binary) ---
-    for p_offset in range(4):
-        target_ch = 8 + p_offset
+    # --- CHANNEL 6: My Home Path ---
+    for i in range(5):
+        r, c = get_board_coords(current_p, 51 + i, 0)
+        if r >= 0:
+            final_tensor[6, r, c] = 1.0
+
+    # --- CHANNEL 7: Opponent Home Path (skip inactive) ---
+    for p_offset in range(1, 4):
         p = (current_p + p_offset) % 4
+        if not active_players[p]:
+            continue
         for i in range(5):
             r, c = get_board_coords(p, 51 + i, 0)
             if r >= 0:
-                final_tensor[target_ch, r, c] = 1.0
+                final_tensor[7, r, c] = 1.0
 
-    # --- Apply Rotation to Spatial Channels (0-11) ---
+    # --- Apply Rotation to Spatial Channels (0-7) ---
     k = current_p
     if k > 0:
-        final_tensor[:12] = np.rot90(final_tensor[:12], k=k, axes=(1, 2))
+        final_tensor[:8] = np.rot90(final_tensor[:8], k=k, axes=(1, 2))
 
-    # --- CHANNELS 12-17: Dice One-Hot ---
-    roll = state.current_dice_roll
-    if 1 <= roll <= 6:
-        dice_ch = 12 + (roll - 1)
-        final_tensor[dice_ch, :, :] = 1.0
-
-    # --- BROADCAST STATS (Channels 18-20) ---
+    # --- BROADCAST STATS (Channels 8-10) ---
     
-    # 18: Score Diff
+    # 8: Score Diff
     my_score = scores[current_p]
     max_opp = 0
     for p in range(4):
         if p != current_p:
             max_opp = max(max_opp, scores[p])
     score_val = (my_score - max_opp) / 4.0
-    final_tensor[18, :, :] = score_val
+    final_tensor[8, :, :] = score_val
 
-    # 19: My Locked
+    # 9: My Locked
     total_locked = 0
     for t in range(4):
         if positions[current_p][t] == BASE_POS:
             total_locked += 1
-    final_tensor[19, :, :] = total_locked / 4.0
+    final_tensor[9, :, :] = total_locked / 4.0
 
-    # 20: Opp Locked
+    # 10: Opp Locked (skip inactive)
     total_opp_locked = 0
+    active_opp_tokens = 0
     for p in range(4):
         if p == current_p:
             continue
+        if not active_players[p]:
+            continue
+        active_opp_tokens += 4
         for t in range(4):
             if positions[p][t] == BASE_POS:
                 total_opp_locked += 1
-    final_tensor[20, :, :] = total_opp_locked / 12.0
+    opp_locked_val = total_opp_locked / active_opp_tokens if active_opp_tokens > 0 else 0.0
+    final_tensor[10, :, :] = opp_locked_val
     
-    return torch.from_numpy(final_tensor.copy())
+    return final_tensor

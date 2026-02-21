@@ -21,7 +21,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import td_ludo_cpp as ludo_cpp
 from src.model import AlphaLudoV3
-from src.tensor_utils import state_to_tensor_mastery
 from src.heuristic_bot import (
     HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
     get_bot, BOT_REGISTRY,
@@ -60,24 +59,31 @@ def evaluate_model(model, device, num_games=200, verbose=False,
     start_time = time.time()
     
     for game_idx in range(num_games):
-        # Random seat for model
-        model_player = random.randint(0, 3)
+        # 2-player setup: Model at P0 or P2, opponent at the other
+        model_player = random.choice([0, 2])
+        opp_player = 2 if model_player == 0 else 0
+        inactive_players = {1, 3}  # P1 and P3 always inactive
         
-        # Random bots for other seats
-        player_bots = {}
-        game_bot_types = {}
-        for p in range(4):
-            if p != model_player:
-                bot_type = random.choice(available_types)
-                player_bots[p] = get_bot(bot_type, player_id=p)
-                game_bot_types[p] = bot_type
+        bot_type = random.choice(available_types)
+        player_bots = {opp_player: get_bot(bot_type, player_id=opp_player)}
+        game_bot_types = {opp_player: bot_type}
         
-        # Play game
-        state = ludo_cpp.create_initial_state()
+        # Play game (2-player: P0 vs P2)
+        state = ludo_cpp.create_initial_state_2p()
         consecutive_sixes = [0, 0, 0, 0]
         move_count = 0
         
         while not state.is_terminal and move_count < MAX_MOVES_PER_GAME:
+            current_player = state.current_player
+            
+            # Skip inactive players
+            if not state.active_players[current_player]:
+                next_p = (current_player + 1) % 4
+                while not state.active_players[next_p]:
+                    next_p = (next_p + 1) % 4
+                state.current_player = next_p
+                continue
+            
             if state.current_dice_roll == 0:
                 state.current_dice_roll = random.randint(1, 6)
                 
@@ -88,7 +94,10 @@ def evaluate_model(model, device, num_games=200, verbose=False,
                     consecutive_sixes[cp] = 0
                 
                 if consecutive_sixes[cp] >= 3:
-                    state.current_player = (state.current_player + 1) % 4
+                    next_p = (cp + 1) % 4
+                    while not state.active_players[next_p]:
+                        next_p = (next_p + 1) % 4
+                    state.current_player = next_p
                     state.current_dice_roll = 0
                     consecutive_sixes[cp] = 0
                     continue
@@ -96,11 +105,12 @@ def evaluate_model(model, device, num_games=200, verbose=False,
             legal_moves = ludo_cpp.get_legal_moves(state)
             
             if len(legal_moves) == 0:
-                state.current_player = (state.current_player + 1) % 4
+                next_p = (state.current_player + 1) % 4
+                while not state.active_players[next_p]:
+                    next_p = (next_p + 1) % 4
+                state.current_player = next_p
                 state.current_dice_roll = 0
                 continue
-            
-            current_player = state.current_player
             
             if current_player == model_player:
                 # Model move — pure greedy (no exploration)
@@ -108,14 +118,21 @@ def evaluate_model(model, device, num_games=200, verbose=False,
                     action = legal_moves[0]
                 else:
                     next_tensors = []
+                    next_players = []
                     for move in legal_moves:
                         ns = ludo_cpp.apply_move(state, move)
-                        next_tensors.append(state_to_tensor_mastery(ns))
+                        next_tensors.append(ludo_cpp.encode_state(ns))
+                        next_players.append(ns.current_player)
                     
                     with torch.no_grad():
-                        batch = torch.stack(next_tensors).to(device, dtype=torch.float32)
+                        batch = torch.from_numpy(np.stack(next_tensors)).to(device, dtype=torch.float32)
                         _, values, _ = model(batch)
                         values = values.squeeze(-1)
+                        
+                        # Perspective flip: negate V(s') when it's from opponent's view
+                        for i in range(len(values)):
+                            if next_players[i] != model_player:
+                                values[i] = -values[i]
                     
                     best_idx = values.argmax().item()
                     action = legal_moves[best_idx]
@@ -223,7 +240,7 @@ def main():
     print(f"  Overall Win Rate: {results['win_rate_percent']}% ({results['wins']}/{results['total']})")
     print(f"  Avg Game Length: {results['avg_game_length']:.0f} moves")
     print(f"  Duration: {results['elapsed_seconds']:.1f}s ({results['games_per_minute']:.0f} GPM)")
-    print(f"  Random Baseline: 25.0%")
+    print(f"  Random Baseline: 50.0% (2-player)")
     
     if results['per_bot']:
         print(f"\n  {'─'*50}")

@@ -28,8 +28,9 @@ struct GameState {
   std::array<std::array<int8_t, NUM_TOKENS>, NUM_PLAYERS>
       prev_player_positions;              // Previous Turn (For Ghost Trail)
   std::array<int8_t, NUM_PLAYERS> scores; // Number of tokens home
-  int8_t current_player;                  // 0-3
-  int8_t current_dice_roll;               // 1-6
+  std::array<bool, NUM_PLAYERS> active_players; // true = player is in game
+  int8_t current_player;                        // 0-3
+  int8_t current_dice_roll;                     // 1-6
   bool is_terminal;
 };
 
@@ -44,7 +45,8 @@ int get_winner(const GameState &state); // Returns -1 if none, 0-3 if winner
 void write_state_tensor(const GameState &state, float *buffer);
 
 // Helper to reset state
-GameState create_initial_state();
+GameState create_initial_state();    // 4-player
+GameState create_initial_state_2p(); // 2-player (P0 vs P2)
 
 // Helper to get board coordinates from linear path position
 void get_board_coords(int player, int pos, int &r, int &c, int token_index = 0);

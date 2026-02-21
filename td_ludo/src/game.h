@@ -40,8 +40,8 @@ get_legal_moves(const GameState &state); // Returns list of token indices (0-3)
 GameState apply_move(const GameState &state, int token_index);
 int get_winner(const GameState &state); // Returns -1 if none, 0-3 if winner
 
-// Tensorization - 18 Channels (AlphaLudo Async Plan)
-// Spatial: (18, 15, 15) -> writes 4050 floats
+// Tensorization - 11 Channels (Cleaned 2P Afterstate)
+// Spatial: (11, 15, 15) -> writes 2475 floats
 void write_state_tensor(const GameState &state, float *buffer);
 
 // Helper to reset state

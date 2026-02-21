@@ -31,6 +31,15 @@ SCORE_POSITION = 56  # Token is home
 # =============================================================================
 # Potential Function
 # =============================================================================
+# Scale factor for the potential function.
+# Raw Φ(s) ranges from ~0 to ~4.0 (4 tokens × 1.0 max each).
+# Without scaling, the shaped reward (γ·Φ(s') - Φ(s)) has a systematic
+# positive bias (~0.044/step), which inflates V(s) → 0.94 and prevents
+# the model from differentiating mid-game states.
+# Scaling by 0.15 reduces the bias to ~0.007/step while preserving
+# the directional learning signal.
+POTENTIAL_SCALE = 0.15
+
 def potential(state, player):
     """
     Compute the potential Φ(s) for a given player.
@@ -78,7 +87,7 @@ def potential(state, player):
     threats = _count_threats(state, player)
     phi -= 0.03 * threats
     
-    return phi
+    return phi * POTENTIAL_SCALE
 
 
 def _get_absolute_position(player, relative_pos):

@@ -140,6 +140,20 @@ GameState create_initial_state() {
   state.current_dice_roll = 0; // Waiting for roll
   state.is_terminal = false;
 
+  // Default: all 4 players active
+  for (int p = 0; p < NUM_PLAYERS; ++p)
+    state.active_players[p] = true;
+
+  update_board(state);
+  return state;
+}
+
+GameState create_initial_state_2p() {
+  GameState state = create_initial_state();
+  // Only P0 and P2 are active (diagonal opposite)
+  state.active_players[1] = false;
+  state.active_players[3] = false;
+  // P1/P3 tokens stay at BASE_POS (already set by create_initial_state)
   update_board(state);
   return state;
 }
@@ -246,7 +260,7 @@ GameState apply_move(const GameState &state, int token_index) {
     int abs_pos = get_absolute_pos(p, new_pos);
     if (!is_safe_pos(abs_pos)) {
       for (int other_p = 0; other_p < NUM_PLAYERS; ++other_p) {
-        if (other_p == p)
+        if (other_p == p || !next_state.active_players[other_p])
           continue;
 
         // First, count how many of this opponent's tokens are at each position
@@ -290,6 +304,10 @@ GameState apply_move(const GameState &state, int token_index) {
   // Update turn
   if (!bonus_turn) {
     next_state.current_player = (p + 1) % NUM_PLAYERS;
+    // Skip inactive players
+    while (!next_state.active_players[next_state.current_player]) {
+      next_state.current_player = (next_state.current_player + 1) % NUM_PLAYERS;
+    }
   }
 
   // Reset dice roll for next state (Chance Node)
@@ -383,6 +401,10 @@ void write_state_tensor(const GameState &state, float *buffer) {
     int opp_p = (current_p + offset) % 4;
     int target_ch = 3 + offset; // 4, 5, 6
 
+    // Skip inactive players (their channels stay zero)
+    if (!state.active_players[opp_p])
+      continue;
+
     for (int t = 0; t < NUM_TOKENS; ++t) {
       int pos = state.player_positions[opp_p][t];
       int r, c;
@@ -456,13 +478,20 @@ void write_state_tensor(const GameState &state, float *buffer) {
 
   // --- CHANNEL 20: Opp Locked ---
   int opp_locked = 0;
+  int active_opp_tokens = 0;
   for (int pl = 0; pl < 4; ++pl) {
     if (pl == current_p)
       continue;
+    if (!state.active_players[pl])
+      continue; // Skip inactive players
+    active_opp_tokens += 4;
     for (int t = 0; t < 4; ++t)
       if (state.player_positions[pl][t] == BASE_POS)
         opp_locked++;
   }
+  float opp_locked_val = (active_opp_tokens > 0)
+                             ? (float)opp_locked / (float)active_opp_tokens
+                             : 0.0f;
   std::fill(buffer + (20 * spatial_size), buffer + (21 * spatial_size),
-            (float)opp_locked / 12.0f);
+            opp_locked_val);
 }

@@ -58,6 +58,7 @@ class GameVisualizer:
         self.identities = ['Main'] * 4 
         
         # New State Persistence
+        self.actor_id = 0  # Default actor ID, overwritten by set_actor_id
         self.batch_size = 32
         self.game_results = {} # game_id -> winner
         self.ghost_game_ids = [] # List of game IDs with ghost players
@@ -99,6 +100,10 @@ class GameVisualizer:
         self.mcts_settings = {
             'early_termination_threshold': 0.90
         }
+
+    def set_actor_id(self, actor_id):
+        """Set the actor ID for tagging broadcasts."""
+        self.actor_id = int(actor_id)
 
     def load_metrics(self):
         """Load metrics history from disk."""
@@ -178,7 +183,8 @@ class GameVisualizer:
                             elif msg_type == 'get_state':
                                  # Legacy / Fallback
                                  gid = data.get('game_id', 0)
-                                 await self._send_game_init(websocket, gid)
+                                 aid = data.get('actor_id', 0)
+                                 await self._send_game_init(websocket, gid, aid)
 
                             elif msg_type == 'stop_training':
                                 print("Stop signal received from Dashboard.")
@@ -365,19 +371,33 @@ class GameVisualizer:
                                         actor_data = json.load(f)
                                         learner_pid = actor_data.get('learner_pid')
                                         label_map = {}
-                                        if learner_pid: label_map[learner_pid] = "Learner"
+                                        if learner_pid: label_map[int(learner_pid)] = "Learner"
                                         for aid, info in actor_data.get('actors', {}).items():
-                                            if info.get('pid'): label_map[info['pid']] = f"Actor {aid}"
+                                            if info.get('pid'): label_map[int(info['pid'])] = f"Actor {aid}"
                                         
                                         for pid, p_stats in system_data['processes'].items():
-                                            if pid in label_map: p_stats['label'] = label_map[pid]
-                                            elif pid == os.getpid(): p_stats['label'] = "Viz/Learner"
+                                            p_pid = int(pid)
+                                            p_stats['pid'] = p_pid # Ensure pid is in the dict
+                                            if p_pid in label_map: p_stats['label'] = label_map[p_pid]
+                                            elif p_pid == os.getpid(): p_stats['label'] = "Viz/Learner"
                                  except: pass
                             
                             await self._broadcast_to_channel('dashboard', json.dumps({
                                 'type': 'system_stats',
                                 **system_data
                             }))
+
+                            # 4. Periodic Actor Stats Broadcast (for real-time dashboard updates)
+                            if os.path.exists('data/actor_stats.json'):
+                                try:
+                                    with open('data/actor_stats.json', 'r') as f:
+                                        actor_data = json.load(f)
+                                    await self._broadcast_to_channel('dashboard', json.dumps({
+                                        'type': 'actor_stats',
+                                        **actor_data
+                                    }))
+                                except: pass
+                        
                         except Exception as e:
                             print(f"System stats broadcast error: {e}")
 
@@ -533,7 +553,7 @@ class GameVisualizer:
         except Exception as e:
              pass
 
-    async def _send_game_init(self, websocket, gid):
+    async def _send_game_init(self, websocket, gid, aid=None):
          """Send current state for a specific game."""
          state_to_send = self.game_states.get(gid)
          if state_to_send:
@@ -727,16 +747,18 @@ class GameVisualizer:
         
         message = json.dumps({
             'type': 'state',
+            'actor_id': self.actor_id,
             'game_id': game_id,
             'state': state_dict,
             'identities': self.game_identities.get(game_id, self.identities)
         })
         
-        self._emit_message(f'game_{game_id}', message)
+        self._emit_message(f'game_{self.actor_id}_{game_id}', message)
         
         # Also send lightweight progress update to Dashboard
         progress_msg = json.dumps({
             'type': 'game_progress',
+            'actor_id': self.actor_id,
             'game_id': game_id,
             'state': {
                 'player_positions': state_dict.get('player_positions', []),
@@ -744,7 +766,7 @@ class GameVisualizer:
             }
         })
         self._emit_message('dashboard', progress_msg)
-    
+
     def broadcast_move(self, player, token, dice, game_id=0, from_pos=-1, to_pos=-1, token_stats=None):
         """Broadcast_move tagged with game_id to GAME channel."""
         if 1 <= dice <= 6:
@@ -752,6 +774,7 @@ class GameVisualizer:
             
         message = json.dumps({
             'type': 'move',
+            'actor_id': self.actor_id,
             'game_id': game_id,
             'player': int(player),
             'token': int(token),
@@ -761,7 +784,7 @@ class GameVisualizer:
             'token_stats': token_stats
         })
         
-        self._emit_message(f'game_{game_id}', message)
+        self._emit_message(f'game_{self.actor_id}_{game_id}', message)
     
     def _serialize_state(self, state):
         """Convert GameState to JSON-serializable dict."""
@@ -794,12 +817,12 @@ class GameVisualizer:
         self.identities = identities
         self.game_identities[game_id] = identities
         
-        message = json.dumps({'type': 'identities', 'data': identities, 'game_id': game_id})
-        self._emit_message(f'game_{game_id}', message)
+        message = json.dumps({'type': 'identities', 'data': identities, 'game_id': game_id, 'actor_id': self.actor_id})
+        self._emit_message(f'game_{self.actor_id}_{game_id}', message)
 
     def broadcast_league_stats(self, stats):
         """Broadcast league stats to DASHBOARD."""
-        message = json.dumps({'type': 'league_stats', 'data': stats})
+        message = json.dumps({'type': 'league_stats', 'stats': stats})
         self._emit_message('dashboard', message)
 
     def broadcast_batch_init(self, batch_size):
@@ -813,6 +836,7 @@ class GameVisualizer:
         
         message = json.dumps({
             'type': 'batch_init', 
+            'actor_id': self.actor_id,
             'batch_size': self.batch_size,
             'batch_start_time': self.batch_start_time,
             'game_start_times': self.game_start_times
@@ -834,6 +858,7 @@ class GameVisualizer:
         
         msg = {
             'type': 'game_result', 
+            'actor_id': self.actor_id,
             'game_id': int(game_id), 
             'winner': int(winner),
             'winner_identity': winner_identity,
@@ -843,7 +868,7 @@ class GameVisualizer:
         message = json.dumps(msg)
         
         self._emit_message('dashboard', message)
-        self._emit_message(f'game_{game_id}', message)
+        self._emit_message(f'game_{self.actor_id}_{game_id}', message)
 
     def broadcast_ghost_games(self, ghost_game_ids):
         """Broadcast ghost games to DASHBOARD."""
