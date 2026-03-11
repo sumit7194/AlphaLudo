@@ -266,8 +266,8 @@ async function doAITurn() {
     document.getElementById('dice').classList.add('disabled');
     isProcessing = true;
     
-    // Small delay so user sees the thinking animation
-    await sleep(600);
+    // Delay so user sees the thinking animation
+    await sleep(1000);
     
     const res = await fetch('/api/ai_turn', { method: 'POST' });
     const data = await res.json();
@@ -275,11 +275,13 @@ async function doAITurn() {
     
     document.getElementById('aiThinking').classList.remove('show');
     
-    // Show AI's dice
+    // Show AI's dice roll — pause so user can see it
     const aiRoll = data.ai_roll || data.dice_roll;
     if (aiRoll) {
         document.getElementById('diceValue').textContent = aiRoll;
+        showMessage(`AI rolled ${aiRoll}`);
     }
+    await sleep(1200);  // Pause to show dice result
     
     // Show AI probabilities
     if (data.ai_probs) {
@@ -294,16 +296,19 @@ async function doAITurn() {
         showMessage('AI rolled triple 6! 💀');
     } else if (data.no_moves) {
         addLog('ai', `Rolled ${aiRoll || '?'} — no moves.`);
+        showMessage(`AI rolled ${aiRoll || '?'} — no moves`);
     } else {
         const lastMove = data.last_move;
         if (lastMove) {
             let msg = `Rolled ${aiRoll}. Token ${lastMove.token}: ${lastMove.from_pos}→${lastMove.to_pos}`;
             if (lastMove.captured) msg += ' ⚔️ CAPTURE!';
             addLog('ai', msg);
+            showMessage(`AI: Token ${lastMove.token} moved ${lastMove.from_pos}→${lastMove.to_pos}${lastMove.captured ? ' ⚔️ CAPTURE!' : ''}`);
         }
     }
     
     renderState();
+    await sleep(1500);  // Pause so user can see what AI did
     isProcessing = false;
     
     // Check game over
@@ -315,13 +320,14 @@ async function doAITurn() {
     
     // AI bonus turn? Keep going
     if (data.bonus_turn || gameState.current_player === AI) {
-        await sleep(500);
+        showMessage(`AI gets a bonus turn!`);
+        await sleep(1000);
         await doAITurn();
         return;
     }
     
-    // Back to human
-    await sleep(300);
+    // Back to human — short pause before switching
+    await sleep(500);
     updateTurnIndicator();
     document.getElementById('dice').classList.remove('disabled');
     document.getElementById('diceValue').textContent = '?';
