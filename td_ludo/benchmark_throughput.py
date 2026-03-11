@@ -12,13 +12,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 import td_ludo_cpp as ludo_cpp
-from model import AlphaLudoV3
+from model import AlphaLudoV4
 from trainer import TDTrainer
 
 def benchmark_simulation(batch_size):
     print(f"\nBenchmarking Simulation Batch Size: {batch_size}")
     env = ludo_cpp.VectorGameState(batch_size, True)
-    model = AlphaLudoV3().to("cpu") # Test on CPU first as it's common on Mac
+    model = AlphaLudoV4().to("cpu") # Test on CPU first as it's common on Mac
     model.eval()
     
     start = time.time()
@@ -55,7 +55,7 @@ def benchmark_simulation(batch_size):
 
 def benchmark_replay(batch_size):
     print(f"\nBenchmarking Replay Batch Size: {batch_size}")
-    model = AlphaLudoV3()
+    model = AlphaLudoV4()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     
     # Mock data

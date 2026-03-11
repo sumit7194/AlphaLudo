@@ -332,19 +332,19 @@
             transform: scale(0.96);
         }
 
-        /* Grid */
         .game-grid {
             display: grid;
-            /* grid-template-columns set by JS dynamically */
-            /* grid-template-columns: repeat(8, 1fr);  <-- REMOVED */
             gap: 12px;
             padding: 4px;
-            /* Space for hover expansion */
             align-content: start;
+            align-items: start;
+            /* Prevent Safari from stretching items vertically */
         }
 
         .game-card {
             aspect-ratio: 1;
+            min-height: 0;
+            /* Fix Safari vertical stretching */
             border-radius: 12px;
             background: var(--bg-glass-lighter);
             border: 1px solid var(--border-glass);
@@ -381,8 +381,8 @@
         }
 
         .game-card.finished {
-            opacity: 0.4;
-            pointer-events: none;
+            opacity: 0.6;
+            cursor: pointer;
         }
 
         /* Lists in sidebar */
@@ -505,6 +505,60 @@
                 grid-template-columns: repeat(4, 1fr) !important;
             }
         }
+
+        /* Tabs */
+        .tabs-header {
+            display: flex;
+            gap: 4px;
+            padding: 0 16px;
+            border-bottom: 1px solid var(--border-glass);
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .tab-btn {
+            padding: 10px 16px;
+            background: transparent;
+            border: none;
+            color: rgba(255, 255, 255, 0.4);
+            cursor: pointer;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            position: relative;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: rgba(255, 255, 255, 0.8);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .tab-btn.active {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--color-blue);
+            box-shadow: var(--shadow-glow-blue);
+        }
+
+        .tab-content {
+            display: none;
+            flex: 1;
+            overflow: hidden;
+            flex-direction: column;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
     </style>
 </head>
 
@@ -574,13 +628,13 @@
         </div>
     </div>
 
-    <!-- Main Content -->
-    <div class="flex flex-1 gap-4 p-4 overflow-hidden" style="padding: 24px;">
+    <div class="flex-1"
+        style="padding: 24px; display: grid; grid-template-columns: 1fr 340px; gap: 24px; min-height: 0; overflow: hidden;">
 
         <!-- Center/Left Area -->
-        <div class="flex flex-col flex-1 gap-4 overflow-hidden">
+        <div style="display: grid; grid-template-rows: 300px 1fr; gap: 24px; min-height: 0; overflow: hidden;">
             <!-- Metrics Row -->
-            <div class="flex gap-4" style="height: 300px;">
+            <div class="flex gap-4" style="min-height: 0;">
                 <!-- Elo Chart -->
                 <div class="glass-panel flex-1 flex flex-col relative" style="flex:2;">
                     <div class="panel-header" style="background:transparent; border-bottom:none;">
@@ -632,8 +686,8 @@
             </div>
 
             <!-- Live Games -->
-            <div class="glass-panel flex-1 flex flex-col overflow-hidden">
-                <div class="panel-header">
+            <div class="glass-panel flex flex-col overflow-hidden" style="min-height: 0;">
+                <div class="panel-header" style="border-bottom: none;">
                     <div>
                         <div class="text-sm text-white-40 uppercase tracking-wide">Live Games</div>
                         <div class="text-xs text-white-30 mt-1"><span id="activeCount">0</span> active</div>
@@ -654,16 +708,22 @@
                         </div>
                     </div>
                 </div>
-                <div class="p-6 overflow-y-auto flex-1 bg-black/10">
-                    <div id="gamesGrid" class="game-grid"></div>
+
+                <!-- Helper for Tabs -->
+                <div class="tabs-header" id="actorTabs">
+                    <!-- <button class="tab-btn active">Actor 0</button> -->
+                </div>
+
+                <div id="actorGridsContainer" class="flex-1 overflow-hidden relative bg-black/10">
+                    <!-- Dynamic Content -->
                 </div>
             </div>
         </div>
 
         <!-- Right Sidebar -->
-        <div class="flex flex-col gap-4" style="width: 340px; overflow-y: auto; max-height: 100%;">
+        <div class="flex flex-col gap-4" style="min-height: 0; overflow-y: auto; padding-right: 4px;">
             <!-- Leaderboard -->
-            <div class="glass-panel flex flex-col" style="max-height: 35%; flex-shrink: 0 !important;">
+            <div class="glass-panel flex flex-col" style="max-height: 35%; flex-shrink: 0;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">Leaderboard</div>
                 </div>
@@ -671,7 +731,7 @@
             </div>
 
             <!-- Training Stats -->
-            <div class="glass-panel p-0" style="flex-shrink: 0 !important;">
+            <div class="glass-panel p-0" style="flex-shrink: 0;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">Training Stats</div>
                 </div>
@@ -710,7 +770,7 @@
             </div>
 
             <!-- System Health -->
-            <div class="glass-panel flex flex-col" style="overflow: visible !important; height: auto; flex: none;">
+            <div class="glass-panel flex flex-col" style="overflow: visible !important; height: auto; flex-shrink: 0;">
                 <div class="panel-header">
                     <div class="text-xs text-white-40 uppercase tracking-wide">System Health</div>
                 </div>
@@ -793,6 +853,39 @@
         </div>
     </div>
 
+    <!-- Game View Modal -->
+    <div id="gameModal"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; backdrop-filter:blur(8px); background:rgba(0,0,0,0.6); opacity:0; transition: opacity 0.3s;">
+        <div class="glass-panel"
+            style="width:90%; height:90%; max-width:1200px; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%) scale(0.95); transition: transform 0.3s; display:flex; flex-direction:column; box-shadow: 0 20px 50px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.15);">
+            <!-- Modal Header -->
+            <div class="panel-header" style="padding:12px 20px; background:rgba(255,255,255,0.03);">
+                <div class="flex items-center gap-3">
+                    <div class="text-lg text-white-90 font-light" id="modalTitle">Game Details</div>
+                    <div class="pill" id="modalBadge">
+                        <div class="dot" style="background:var(--color-green);"></div>
+                        <span class="text-xs text-white-60" id="modalSubtitle">Actor 0 • Game #42</span>
+                    </div>
+                </div>
+                <button class="btn-icon" onclick="closeModal()" title="Close">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <!-- IFrame Container -->
+            <div class="flex-1 overflow-hidden bg-black/40 relative">
+                <iframe id="gameFrame" src="" style="width:100%; height:100%; border:none; display:none;"
+                    onload="this.style.display='block';"></iframe>
+                <div id="modalLoading"
+                    style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:rgba(255,255,255,0.3);">
+                    Loading Game...
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Logic -->
     <script>
         const $ = id => document.getElementById(id);
@@ -842,6 +935,7 @@
         let startTime = Date.now();
         let games = {}, ghostIds = new Set(), heurIds = new Set();
         let currentBatchSize = 16;
+        let activeTabId = null; // Track selected actor tab
 
         // --- Charts ---
         Chart.defaults.color = 'rgba(255,255,255,0.3)';
@@ -947,6 +1041,7 @@
 
         function onSocketMessage(e) {
             const d = JSON.parse(e.data);
+            console.log("WS Recv type:", d.type, "Actor:", d.actor_id, "Keys:", Object.keys(d));
 
             if (d.type === 'tuner_update') {
                 handleTunerUpdate(d.history);
@@ -1011,7 +1106,7 @@
                 }
             }
             else if (d.type === 'game_result') {
-                markGameDone(d.game_id, d.winner, d.winner_identity, d.main_won);
+                markGameDone(d.game_id, d.winner, d.winner_identity, d.main_won, d.actor_id);
             }
             else if (d.type === 'config_mode') {
                 const badge = $('configBadge');
@@ -1031,55 +1126,211 @@
             }
             else if (d.type === 'batch_init') {
                 currentBatchSize = d.batch_size || 16;
-                initGrid(currentBatchSize);
+                initGrid(d.actor_id, currentBatchSize);
+                // Force a style refresh (and reset) when a new batch starts
+                refreshGridStyles(d.actor_id, true); // true = force reset
             }
-            else if (d.type === 'ghost_games') { d.game_ids.forEach(x => ghostIds.add(x)); refreshGridStyles(); }
-            else if (d.type === 'heuristic_games') { d.game_ids.forEach(x => heurIds.add(x)); refreshGridStyles(); }
+            else if (d.type === 'ghost_games') {
+                // Store per actor? Simplified: just add to set and refresh specific grid
+                // TODO: Separate ghost/heur sets per actor
+                d.game_ids.forEach(x => ghostIds.add(`${d.actor_id || 0}-${x}`));
+                refreshGridStyles(d.actor_id);
+            }
+            else if (d.type === 'heuristic_games') {
+                d.game_ids.forEach(x => heurIds.add(`${d.actor_id || 0}-${x}`));
+                refreshGridStyles(d.actor_id);
+            }
             else if (d.type === 'system_stats') {
                 updateSystem(d);
             }
+            else if (d.type === 'actor_stats') {
+                if (d.active_count !== undefined) {
+                    const el = $('activeCount');
+                    if (el) el.textContent = d.active_count;
+                }
+                if (d.actors) {
+                    console.log("Processing actor_stats keys:", Object.keys(d.actors));
+                    Object.keys(d.actors).forEach(aid => {
+                        console.log("Dispatching initGrid for:", aid);
+                        initGrid(aid, currentBatchSize);
+                    });
+                }
+            }
             else if (d.type === 'game_progress') {
-                updateGameProgress(d.game_id, d.state);
+                // Lazy init if grid missing
+                const aid = d.actor_id !== undefined ? d.actor_id : 0;
+                if (!document.getElementById(`gamesGrid-${aid}`)) {
+                    initGrid(aid, currentBatchSize);
+                }
+                updateGameProgress(d.game_id, d.state, aid);
             }
         };
 
-        // --- Grid ---
-        function initGrid(size) {
-            const el = $('gamesGrid');
-            el.innerHTML = '';
-            games = {};
-            // If size is 0 or undefined, default to 16
-            const count = size || 16;
-            $('activeCount').textContent = count;
-            el.dataset.count = count;
+        // --- Modal Logic ---
+        // --- Modal Logic ---
+        function openGameModal(actorId, gameId) {
+            const modal = document.getElementById('gameModal');
+            const frame = document.getElementById('gameFrame');
+            const title = document.getElementById('modalTitle');
+            const badge = document.getElementById('modalBadge');
 
-            for (let i = 0; i < count; i++) {
-                const div = document.createElement('div');
-                div.className = 'game-card';
-                div.id = `g-${i}`;
-                div.title = `Watch Game ${i}`;
-                div.onclick = () => window.open(`game.html?id=${i}`, '_blank');
-                div.innerHTML = `
-                    <div class="flex items-center justify-between w-full" style="margin-bottom:2px;">
-                        <div class="dot" id="d-${i}" style="background:rgba(255,255,255,0.2); transition:0.3s; width:4px; height:4px;"></div>
-                        <div style="font-family:var(--font-mono); font-size:8px; color:rgba(255,255,255,0.4);">#${i}</div>
-                    </div>
-                    <div id="prog-${i}" style="display:flex; flex-direction:column; gap:1px; width:100%;">
-                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-0" style="width:0%; height:100%; background:#f87171; transition:width 0.5s;"></div></div>
-                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-1" style="width:0%; height:100%; background:#4ade80; transition:width 0.5s;"></div></div>
-                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-2" style="width:0%; height:100%; background:#fbbf24; transition:width 0.5s;"></div></div>
-                        <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="bar-${i}-3" style="width:0%; height:100%; background:#60a5fa; transition:width 0.5s;"></div></div>
-                    </div>
-                `;
-                el.appendChild(div);
-                games[i] = { active: true };
-            }
-            resizeGrid();
-            refreshGridStyles();
+            if (!modal || !frame) return;
+
+            // Update Content
+            void modal.offsetWidth;
+            modal.style.display = 'flex';
+            setTimeout(() => modal.style.opacity = '1', 10);
+            modal.querySelector('.glass-panel').style.transform = 'translate(-50%, -50%) scale(1)';
+
+            // Load Game
+            const loading = document.getElementById('loading');
+            if (loading) loading.style.display = 'block';
+            frame.style.display = 'none';
+            frame.src = `game.html?id=${gameId}&actor=${actorId}`;
         }
 
-        function resizeGrid() {
-            const el = $('gamesGrid');
+        function closeModal() {
+            const modal = $('gameModal');
+            modal.style.opacity = '0';
+            modal.querySelector('.glass-panel').style.transform = 'translate(-50%, -50%) scale(0.95)';
+
+            setTimeout(() => {
+                modal.style.display = 'none';
+                $('gameFrame').src = ''; // Stop processing
+            }, 300);
+        }
+
+        // Close on outside click
+        $('gameModal').addEventListener('click', (e) => {
+            if (e.target === $('gameModal')) closeModal();
+        });
+
+        // Esc key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && $('gameModal').style.display === 'block') closeModal();
+        });
+
+        // --- Grid ---
+        function initGrid(actorId, size) {
+            console.log("initGrid called for:", actorId, "size:", size);
+            actorId = actorId !== undefined ? actorId : 0;
+            const sizeCount = size || 16;
+
+            // IDEMPOTENCY CHECK:
+            // If the grid already has the correct number of children, do not clear it.
+            // This prevents resetting progress bars and card states on every actor_stats update.
+            const existingGrid = document.getElementById(`gamesGrid-${actorId}`);
+            if (existingGrid && existingGrid.children.length === (sizeCount)) {
+                console.log(`Grid for Actor ${actorId} already initialized with ${sizeCount} games. Skipping destruction.`);
+                return;
+            }
+
+            console.log("initGrid initializing actor:", actorId);
+
+            // 1. Ensure Tab Exists
+            if (isNaN(parseInt(actorId))) return; // Safety check
+            let tabBtn = document.getElementById(`tab-btn-${actorId}`);
+            if (!tabBtn) {
+                console.log("Creating tab for actor:", actorId);
+                const tabsHeader = document.getElementById('actorTabs');
+
+                tabBtn = document.createElement('button');
+                tabBtn.id = `tab-btn-${actorId}`;
+                tabBtn.className = 'tab-btn';
+                tabBtn.textContent = `Actor ${actorId}`;
+                tabBtn.onclick = () => switchTab(actorId);
+
+                // Sorted Insert
+                let inserted = false;
+                for (let i = 0; i < tabsHeader.children.length; i++) {
+                    const child = tabsHeader.children[i];
+                    const childId = parseInt(child.id.split('-')[2]);
+                    if (parseInt(actorId) < childId) {
+                        tabsHeader.insertBefore(tabBtn, child);
+                        inserted = true;
+                        break;
+                    }
+                }
+                if (!inserted) tabsHeader.appendChild(tabBtn);
+
+                // Create Content Container
+                const container = document.getElementById('actorGridsContainer');
+                const content = document.createElement('div');
+                content.id = `tab-content-${actorId}`;
+                content.className = 'tab-content p-6 overflow-y-auto'; // Default hidden
+                content.style.height = '100%';
+
+                const grid = document.createElement('div');
+                grid.id = `gamesGrid-${actorId}`; // Unique ID
+                grid.className = 'game-grid';
+                grid.dataset.actor = actorId;
+
+                content.appendChild(grid);
+                container.appendChild(content);
+            }
+
+            // 2. Populate Grid (Specific Actor)
+            const targetEl = document.getElementById(`gamesGrid-${actorId}`);
+            targetEl.innerHTML = '';
+            targetEl.dataset.count = sizeCount;
+
+            for (let i = 0; i < sizeCount; i++) {
+                const div = createGameCard(actorId, i);
+                targetEl.appendChild(div);
+            }
+
+            resizeGrid(actorId);
+            refreshGridStyles(actorId);
+
+            // If this is the first actor (e.g. 0 or first sorted), activate it if no active tab
+            if (activeTabId === null && document.querySelectorAll('.tab-btn.active').length === 0) {
+                switchTab(actorId);
+            }
+        }
+
+        function createGameCard(actorId, gameId, isAllView = false) {
+            const div = document.createElement('div');
+            div.className = 'game-card';
+            div.id = isAllView ? `g-all-${actorId}-${gameId}` : `g-${actorId}-${gameId}`;
+            div.title = `Watch Game ${gameId} (Actor ${actorId})`;
+            div.onclick = () => openGameModal(actorId, gameId);
+
+            div.innerHTML = `
+                <div class="flex items-center justify-between w-full" style="margin-bottom:2px;">
+                    <div class="dot" id="${isAllView ? 'd-all-' : 'd-'}${actorId}-${gameId}" style="background:rgba(255,255,255,0.2); transition:0.3s; width:4px; height:4px;"></div>
+                    <div style="font-family:var(--font-mono); font-size:8px; color:rgba(255,255,255,0.4);">
+                        ${isAllView ? `A${actorId} #` : '#'}${gameId}
+                    </div>
+                </div>
+                <div id="${isAllView ? 'prog-all-' : 'prog-'}${actorId}-${gameId}" style="display:flex; flex-direction:column; gap:1px; width:100%;">
+                    <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="${isAllView ? 'bar-all-' : 'bar-'}${actorId}-${gameId}-0" style="width:0%; height:100%; background:#f87171; transition:width 0.5s;"></div></div>
+                    <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="${isAllView ? 'bar-all-' : 'bar-'}${actorId}-${gameId}-1" style="width:0%; height:100%; background:#4ade80; transition:width 0.5s;"></div></div>
+                    <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="${isAllView ? 'bar-all-' : 'bar-'}${actorId}-${gameId}-2" style="width:0%; height:100%; background:#fbbf24; transition:width 0.5s;"></div></div>
+                    <div style="height:2px; background:#333; border-radius:1px; overflow:hidden;"><div id="${isAllView ? 'bar-all-' : 'bar-'}${actorId}-${gameId}-3" style="width:0%; height:100%; background:#60a5fa; transition:width 0.5s;"></div></div>
+                </div>
+            `;
+            return div;
+        }
+
+        function switchTab(actorId) {
+            activeTabId = actorId;
+            // Deactivate all
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            // Activate target
+            const btn = document.getElementById(`tab-btn-${actorId}`);
+            const content = document.getElementById(`tab-content-${actorId}`);
+            if (btn) btn.classList.add('active');
+            if (content) content.classList.add('active');
+
+            resizeGrid(actorId);
+        }
+
+        function resizeGrid(actorId) {
+            const el = document.getElementById(`gamesGrid-${actorId}`) || document.getElementById('gamesGrid');
+            if (!el) return;
+
             const count = parseInt(el.dataset.count || 16);
             if (!count) return;
 
@@ -1094,10 +1345,9 @@
             let cols = Math.ceil(Math.sqrt(count * (w / h)));
             cols = Math.max(4, Math.min(count, cols)); // Min 4 cols
 
-            // Check if items become too small
+            // Fallback
             const estimatedWidth = w / cols;
             if (estimatedWidth < 50) {
-                // Too small, fallback to auto-fill
                 el.style.gridTemplateColumns = `repeat(auto-fill, minmax(50px, 1fr))`;
             } else {
                 el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
@@ -1106,54 +1356,82 @@
 
         window.addEventListener('resize', resizeGrid);
 
-        function refreshGridStyles() {
-            Object.keys(games).forEach(k => {
-                const i = parseInt(k);
-                const div = $(`g-${i}`);
-                const dot = $(`d-${i}`);
-                if (!div) return;
+        function refreshGridStyles(actorId, forceReset = false) {
+            actorId = actorId !== undefined ? actorId : 0;
+            const el = document.getElementById(`gamesGrid-${actorId}`);
+            if (!el) return;
 
-                div.className = 'game-card';
+            const count = parseInt(el.dataset.count || 16);
+            for (let i = 0; i < count; i++) {
+                const card = document.getElementById(`g-${actorId}-${i}`);
+                if (!card) continue;
+                const dot = document.getElementById(`d-${actorId}-${i}`);
 
-                if (ghostIds.has(i)) {
-                    div.classList.add('active-ghost');
-                    dot.style.background = 'var(--color-purple)';
-                    dot.style.boxShadow = '0 0 8px var(--color-purple)';
-                } else if (heurIds.has(i)) {
-                    div.classList.add('active-eval');
-                    dot.style.background = 'var(--color-blue)';
-                    dot.style.boxShadow = '0 0 8px var(--color-blue)';
-                } else {
-                    div.classList.add('active-self');
-                    dot.style.background = 'var(--color-green)';
-                    dot.style.boxShadow = '0 0 8px var(--color-green)';
+                const key = `${actorId}-${i}`;
+
+                // Force reset if requested (e.g. on batch_init)
+                if (forceReset) {
+                    card.classList.remove('finished');
+                    card.style.border = '';
+                    card.style.boxShadow = '';
+                    card.style.opacity = '';
+                    card.style.background = '';
+                    const label = card.querySelector('.winner-label');
+                    if (label) label.remove();
                 }
-            });
+
+                // Reset base active classes
+                card.classList.remove('active-ghost', 'active-eval', 'active-self');
+                // ... (rest same)
+
+                if (ghostIds.has(key)) {
+                    card.classList.add('active-ghost');
+                    if (dot) {
+                        dot.style.background = 'var(--color-purple)';
+                        dot.style.boxShadow = '0 0 8px var(--color-purple)';
+                    }
+                } else if (heurIds.has(key)) {
+                    card.classList.add('active-eval');
+                    if (dot) {
+                        dot.style.background = 'var(--color-blue)';
+                        dot.style.boxShadow = '0 0 8px var(--color-blue)';
+                    }
+                } else {
+                    card.classList.add('active-self');
+                    if (dot) {
+                        dot.style.background = 'var(--color-green)';
+                        dot.style.boxShadow = '0 0 8px var(--color-green)';
+                    }
+                }
+            }
         }
 
-        function markGameDone(id, winner, winnerIdentity, mainWon) {
-            const div = $(`g-${id}`);
-            if (div) {
-                div.classList.add('finished');
-                div.style.background = 'transparent';
+        function markGameDone(gid, winner, winnerIdentity, mainWon, actorId) {
+            actorId = actorId !== undefined ? actorId : 0;
+            const card = document.getElementById(`g-${actorId}-${gid}`);
+
+            if (card) {
+                card.classList.add('finished');
+                card.style.background = 'transparent';
 
                 // Color border based on whether Main model won
                 if (mainWon) {
-                    div.style.border = '1px solid rgba(74, 222, 128, 0.4)'; // Green for Main win
-                    div.style.boxShadow = '0 0 8px rgba(74, 222, 128, 0.2)';
+                    card.style.border = '1px solid rgba(74, 222, 128, 0.4)'; // Green for Main win
+                    card.style.boxShadow = '0 0 8px rgba(74, 222, 128, 0.2)';
                 } else {
-                    div.style.border = '1px solid rgba(239, 68, 68, 0.3)'; // Red for loss
+                    card.style.border = '1px solid rgba(239, 68, 68, 0.3)'; // Red for loss
                 }
 
-                const dot = $(`d-${id}`);
-                const colors = ['#f87171', '#4ade80', '#fbbf24', '#60a5fa'];
-                dot.style.boxShadow = 'none';
-                dot.style.background = colors[winner] || '#fff';
+                const dot = document.getElementById(`d-${actorId}-${gid}`);
+                if (dot) {
+                    const colors = ['#f87171', '#4ade80', '#fbbf24', '#60a5fa'];
+                    dot.style.boxShadow = 'none';
+                    dot.style.background = colors[winner] || '#fff';
+                }
 
                 // Add winner identity badge
                 if (winnerIdentity) {
-                    // Create or update winner label
-                    let label = div.querySelector('.winner-label');
+                    let label = card.querySelector('.winner-label');
                     if (!label) {
                         label = document.createElement('div');
                         label.className = 'winner-label';
@@ -1163,8 +1441,8 @@
                             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                             padding: 0 2px;
                         `;
-                        div.style.position = 'relative';
-                        div.appendChild(label);
+                        card.style.position = 'relative';
+                        card.appendChild(label);
                     }
 
                     // Color code by identity
@@ -1183,9 +1461,12 @@
         }
 
         // --- Progress Bars for Game Cards ---
-        function updateGameProgress(gameId, state) {
+        function updateGameProgress(gameId, state, actorId) {
+            actorId = actorId !== undefined ? actorId : 0;
             if (!state || !state.player_positions || !state.scores) return;
             const maxSteps = 4 * 57; // 4 tokens * 57 steps each
+
+            // Calc progress
             for (let p = 0; p < 4; p++) {
                 let totalSteps = state.scores[p] * 57; // Tokens home
                 for (let t = 0; t < 4; t++) {
@@ -1193,8 +1474,23 @@
                     if (pos !== -1 && pos !== 99) totalSteps += (pos + 1);
                 }
                 const progress = Math.min(100, Math.round((totalSteps / maxSteps) * 100));
-                const bar = $(`bar-${gameId}-${p}`);
+                const bar = document.getElementById(`bar-${actorId}-${gameId}-${p}`);
                 if (bar) bar.style.width = progress + '%';
+            }
+
+            // RESET FINISHED STATE:
+            const card = document.getElementById(`g-${actorId}-${gameId}`);
+            if (card && card.classList.contains('finished')) {
+                console.log(`Resetting finished card: g-${actorId}-${gameId}`);
+                card.classList.remove('finished');
+                card.style.border = '';
+                card.style.boxShadow = '';
+                card.style.background = '';
+                card.style.opacity = '';
+                const label = card.querySelector('.winner-label');
+                if (label) label.remove();
+
+                refreshGridStyles(actorId);
             }
         }
 
@@ -1269,7 +1565,7 @@
                 <div class="list-row group" style="padding: 8px 12px; transition: background 0.2s;">
                     <div class="flex-1">
                         <div class="flex justify-between mb-1.5 align-middle">
-                            <span class="text-xs text-white-60 font-medium">Learner (PID ${learner.pid})</span>
+                            <span class="text-xs text-white-60 font-medium">Learner (PID ${learner.pid || learner.p_pid || '?'})</span>
                             <div class="flex gap-3 items-center">
                                 <span class="font-mono text-[10px] text-white-40">${Math.round(learner.ram_mb)} MB</span>
                                 <button class="opacity-0 group-hover:opacity-100 transition-opacity text-white-40 hover:text-red-400" onclick="killLearner()" title="Stop Process">
@@ -1323,7 +1619,7 @@
                 <div class="list-row group" style="padding: 8px 12px;">
                     <div class="flex-1">
                         <div class="flex justify-between mb-1.5 align-middle">
-                            <span class="text-xs text-white-60 font-medium">${label} (PID ${p.pid})</span>
+                            <span class="text-xs text-white-60 font-medium">${label} (PID ${p.pid || p.p_pid || '?'})</span>
                             <div class="flex gap-3 items-center">
                                 <span class="font-mono text-[10px] text-white-40">${mem}</span>
                                 <button class="opacity-0 group-hover:opacity-100 transition-opacity text-white-40 hover:text-red-400" onclick="killActor(${actorId})" title="Kill Process">
@@ -1438,7 +1734,7 @@
         }, 1000);
 
         // Initial default
-        initGrid(16);
+        initGrid(0);
 
         // Auto-attempt connect
         connect();

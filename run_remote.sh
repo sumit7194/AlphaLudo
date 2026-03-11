@@ -21,6 +21,7 @@ source .venv/bin/activate
 
 # 1. Start Training (Background)
 echo "1️⃣  Starting Training Loop..."
+export ALPHALUDO_RUN_NAME=mastery_v4_prod
 # We run run_training.sh in background, piping output to log to keep terminal clean
 # Or keeping it visible? User wants to see logs probably.
 # But we have multiple processes.

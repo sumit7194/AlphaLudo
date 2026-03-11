@@ -637,7 +637,8 @@
 
         const params = new URLSearchParams(window.location.search);
         const GAME_ID = params.get('id') || '0';
-        document.getElementById('gameTitle').textContent = `Game Stream #${GAME_ID}`;
+        const ACTOR_ID = params.get('actor') || '0';
+        document.getElementById('gameTitle').textContent = `Game Stream #${GAME_ID} (Actor ${ACTOR_ID})`;
 
         // --- Helpers ---
         function rotateCoord(r, c, p) {
@@ -716,8 +717,8 @@
         socket.onopen = () => {
             document.getElementById('connStatus').textContent = "Live";
             document.getElementById('connStatus').style.color = "#4ade80";
-            socket.send(JSON.stringify({ type: 'subscribe', channel: `game_${GAME_ID}` }));
-            socket.send(JSON.stringify({ type: 'get_state', game_id: parseInt(GAME_ID) }));
+            socket.send(JSON.stringify({ type: 'subscribe', channel: `game_${ACTOR_ID}_${GAME_ID}` }));
+            socket.send(JSON.stringify({ type: 'get_state', game_id: parseInt(GAME_ID) })); // Fallback
             startTimer();
         };
 

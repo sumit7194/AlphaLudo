@@ -4,8 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TD-Ludo Dashboard</title>
+    <title>AlphaLudo Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <style>
         :root {
             --bg-dark: #0a0a0f;
@@ -513,11 +515,26 @@
             transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        /* ---- Status Badge ---- */
         .status-bar {
             display: flex;
             align-items: center;
             gap: 16px;
+        }
+
+        .stagnated-alarm .kpi-grid {
+            animation: flashRed 2s infinite;
+        }
+
+        @keyframes flashRed {
+
+            0%,
+            100% {
+                box-shadow: inset 0 0 0px rgba(239, 68, 68, 0);
+            }
+
+            50% {
+                box-shadow: inset 0 0 50px rgba(239, 68, 68, 0.4);
+            }
         }
 
         .no-data {
@@ -525,6 +542,63 @@
             padding: 60px 20px;
             color: var(--text-muted);
             font-size: 14px;
+        }
+
+        /* ---- Training Roadmap ---- */
+        .roadmap-container {
+            margin-top: 32px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .roadmap-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .roadmap-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--glow-blue);
+            background: var(--bg-card-hover);
+        }
+
+        .roadmap-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .roadmap-text {
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        .roadmap-success {
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(34, 197, 94, 0.08);
+            border-left: 3px solid var(--accent-green);
+            font-size: 12px;
+            border-radius: 4px;
+            color: var(--accent-green);
+        }
+
+        .roadmap-watch {
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(239, 68, 68, 0.08);
+            border-left: 3px solid var(--accent-red);
+            font-size: 12px;
+            border-radius: 4px;
+            color: var(--accent-red);
         }
     </style>
 </head>
@@ -561,6 +635,10 @@
     <!-- ====== TAB: Overview ====== -->
     <div class="tab-content active" id="tab-overview">
         <div class="content">
+            <div id="alarmBanner"
+                style="display: none; background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #ef4444; padding: 12px; border-radius: var(--radius); text-align: center; margin-bottom: 24px; font-weight: bold; font-size: 14px;">
+                ⚠️ WARNING: Training has stagnated! No evaluation improvement over 10 consecutive cycles.
+            </div>
             <div class="kpi-grid" id="kpiGrid">
                 <div class="kpi-card">
                     <div class="kpi-label">Main Elo</div>
@@ -577,8 +655,12 @@
                     <div class="kpi-sub" id="kpiDBTotal"></div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-label">TD Error</div>
-                    <div class="kpi-value accent-amber" id="kpiTD">—</div>
+                    <div class="kpi-label">Policy Entropy</div>
+                    <div class="kpi-value accent-amber" id="kpiEntropy">—</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Temperature</div>
+                    <div class="kpi-value accent-blue" id="kpiTemperature">—</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-label">CPU Usage</div>
@@ -594,19 +676,36 @@
                     <div class="kpi-value accent-blue" id="kpiGPM">—</div>
                     <div class="kpi-sub">games/min</div>
                 </div>
+                <div class="kpi-card" style="grid-column: span 3;">
+                    <div class="kpi-label">Eval WR (Best / Latest)</div>
+                    <div class="kpi-value accent-green" id="kpiEvalCombined">— / —</div>
+                    <div class="kpi-sub">Evaluated every 2000 games</div>
+                </div>
+                <!-- Row 3: Opponents -->
                 <div class="kpi-card">
-                    <div class="kpi-label">Best Eval WR</div>
-                    <div class="kpi-value accent-green" id="kpiBestEval">—</div>
+                    <div class="kpi-label">vs SelfPlay</div>
+                    <div class="kpi-value" id="kpiSelfPlay">—</div>
+                    <div class="kpi-sub" id="kpiSelfPlaySub"></div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-label">Buffer / Ghosts</div>
-                    <div class="kpi-value" id="kpiBuf">—</div>
-                    <div class="kpi-sub" id="kpiBufSub"></div>
+                    <div class="kpi-label">vs Heuristic</div>
+                    <div class="kpi-value" id="kpiHeuristic">—</div>
+                    <div class="kpi-sub" id="kpiHeuristicSub"></div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-label">V(s) Calibration</div>
-                    <div class="kpi-value" id="kpiVsMean">—</div>
-                    <div class="kpi-sub" id="kpiVsSub"></div>
+                    <div class="kpi-label">vs Aggressive</div>
+                    <div class="kpi-value" id="kpiAggressive">—</div>
+                    <div class="kpi-sub" id="kpiAggressiveSub"></div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">vs Defensive</div>
+                    <div class="kpi-value" id="kpiDefensive">—</div>
+                    <div class="kpi-sub" id="kpiDefensiveSub"></div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">vs Racing</div>
+                    <div class="kpi-value" id="kpiRacing">—</div>
+                    <div class="kpi-sub" id="kpiRacingSub"></div>
                 </div>
             </div>
 
@@ -616,18 +715,20 @@
                     <div class="chart-container"><canvas id="chartWR"></canvas></div>
                 </div>
                 <div class="chart-card">
-                    <div class="chart-title">TD Error</div>
-                    <div class="chart-container"><canvas id="chartTD"></canvas></div>
+                    <div class="chart-title">Policy Entropy</div>
+                    <div class="chart-container"><canvas id="chartEntropy"></canvas></div>
                 </div>
                 <div class="chart-card">
-                    <div class="chart-title">Epsilon</div>
-                    <div class="chart-container"><canvas id="chartEps"></canvas></div>
+                    <div class="chart-title">Advantage</div>
+                    <div class="chart-container"><canvas id="chartAdvantage"></canvas></div>
                 </div>
                 <div class="chart-card">
                     <div class="chart-title">Eval Win Rate</div>
                     <div class="chart-container"><canvas id="chartEval"></canvas></div>
                 </div>
             </div>
+
+            <!-- Roadmap Text Removed -->
         </div>
     </div>
 
@@ -776,9 +877,29 @@
             responsive: true,
             maintainAspectRatio: false,
             animation: { duration: 300 },
-            plugins: { legend: { display: false } },
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    enabled: true,
+                    mode: 'index',
+                    intersect: false
+                },
+                zoom: {
+                    zoom: { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'x' },
+                    pan: { enabled: true, mode: 'x', modifierKey: 'shift' }
+                }
+            },
             scales: {
-                x: { display: false },
+                x: {
+                    display: true,
+                    ticks: { color: '#555570', font: { size: 10 }, maxTicksLimit: 10 },
+                    grid: { display: false },
+                    border: { display: false }
+                },
                 y: {
                     ticks: { color: '#555570', font: { size: 10 } },
                     grid: { color: 'rgba(255,255,255,0.04)' },
@@ -793,7 +914,8 @@
                 borderColor: color,
                 backgroundColor: color.replace('1)', '0.1)'),
                 borderWidth: 1.5,
-                pointRadius: 0,
+                pointRadius: 2,
+                pointHoverRadius: 6,
                 fill: true,
                 tension: 0.3,
             };
@@ -812,8 +934,8 @@
             };
 
             charts.wr = mkChart('chartWR', 'Win Rate', 'rgba(34,197,94,1)', { min: 0, max: 100 });
-            charts.td = mkChart('chartTD', 'TD Error', 'rgba(245,158,11,1)', { min: 0 });
-            charts.eps = mkChart('chartEps', 'Epsilon', 'rgba(59,130,246,1)', { min: 0, max: 0.15 });
+            charts.td = mkChart('chartEntropy', 'Policy Entropy', 'rgba(245,158,11,1)', { min: 0, max: 1.5 });
+            charts.eps = mkChart('chartAdvantage', 'Advantage', 'rgba(59,130,246,1)', { min: -1, max: 1 });
             charts.eval = mkChart('chartEval', 'Eval WR', 'rgba(168,85,247,1)', { min: 0, max: 100 });
 
             // Elo chart (multi-line)
@@ -890,26 +1012,89 @@
             document.getElementById('kpiWR').textContent = fmt(stats.win_rate_100, 1) + '%';
             document.getElementById('kpiGames').textContent = (stats.total_games || 0).toLocaleString();
             document.getElementById('kpiDBTotal').textContent = stats.db_total ? `${stats.db_total} in DB` : '';
-            document.getElementById('kpiTD').textContent = fmt(stats.avg_td_error, 4);
+            document.getElementById('kpiEntropy').textContent = fmt(stats.policy_entropy, 3);
+
+            if (document.getElementById('kpiTemperature')) {
+                document.getElementById('kpiTemperature').textContent = stats.temperature !== undefined ? fmt(stats.temperature, 2) : '—';
+            }
 
             document.getElementById('kpiGPM').textContent = fmt(stats.games_per_minute, 0);
-            document.getElementById('kpiBestEval').textContent = fmt(stats.best_eval_win_rate, 1) + '%';
-            document.getElementById('kpiBuf').textContent = (stats.buffer_size || 0).toLocaleString();
-            document.getElementById('kpiBufSub').textContent = `${stats.ghost_count || 0} ghosts`;
+
+            const bestEval = fmt(stats.best_eval_win_rate, 1) + '%';
+            const latestEval = stats.eval_win_rate !== undefined ? (fmt(stats.eval_win_rate, 1) + '%') : '—';
+            document.getElementById('kpiEvalCombined').textContent = `${bestEval} / ${latestEval}`;
+
             document.getElementById('throughputLabel').textContent = `${fmt(stats.games_per_minute, 0)} GPM`;
 
-            if (stats.v_mean !== undefined) {
-                const elVs = document.getElementById('kpiVsMean');
-                elVs.textContent = fmt(stats.v_mean, 3);
-                elVs.className = 'kpi-value';
-                if (stats.v_mean < -0.15 || stats.v_mean > 0.15) {
-                    elVs.classList.add('accent-amber'); // Alert if too pessimistic or optimistic
+            // Fill recent opponent stats
+            const opps = stats.recent_opponent_stats || {};
+            const updateOppKpi = (id, name, targetColorNum) => {
+                const el = document.getElementById(id);
+                const sub = document.getElementById(id + 'Sub');
+                if (opps[name]) {
+                    const wr = opps[name].win_rate;
+                    el.textContent = fmt(wr, 1) + '%';
+                    sub.textContent = `${opps[name].wins}/${opps[name].games} wins`;
+                    el.className = 'kpi-value';
+                    if (wr >= targetColorNum) el.classList.add('accent-green');
+                    else if (wr >= targetColorNum - 20) el.classList.add('accent-amber');
+                    else el.classList.add('accent-red');
                 } else {
-                    elVs.classList.add('accent-green'); // Healthy calibration
+                    el.textContent = '—';
+                    sub.textContent = 'No games yet';
+                    el.className = 'kpi-value';
                 }
-                const vW = fmt(stats.v_pre_win, 2);
-                const vL = fmt(stats.v_pre_loss, 2);
-                document.getElementById('kpiVsSub').textContent = `W: ${vW} | L: ${vL}`;
+            };
+
+            updateOppKpi('kpiSelfPlay', 'SelfPlay', 50);
+            updateOppKpi('kpiHeuristic', 'Heuristic', 60);
+            updateOppKpi('kpiAggressive', 'Aggressive', 50);
+            updateOppKpi('kpiDefensive', 'Defensive', 50);
+            updateOppKpi('kpiRacing', 'Racing', 50);
+
+            // Handle Stagnation Alarm
+            const banner = document.getElementById('alarmBanner');
+            if (stats.is_stagnated) {
+                if (!window._isStagnated) {
+                    window._isStagnated = true;
+                    document.body.classList.add('stagnated-alarm');
+                    if (banner) banner.style.display = 'block';
+
+                    if (stats.play_alarm) {
+                        // Simple Audio Alarm
+                        window._playAlarm = function () {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            if (!AudioContext) return;
+                            if (!window._audioCtx) window._audioCtx = new AudioContext();
+                            if (window._audioCtx.state === 'suspended') window._audioCtx.resume();
+
+                            const osc = window._audioCtx.createOscillator();
+                            const gain = window._audioCtx.createGain();
+
+                            osc.type = 'square';
+                            osc.frequency.setValueAtTime(440, window._audioCtx.currentTime);
+                            osc.frequency.setValueAtTime(880, window._audioCtx.currentTime + 0.2);
+
+                            gain.gain.setValueAtTime(0.05, window._audioCtx.currentTime);
+                            gain.gain.exponentialRampToValueAtTime(0.001, window._audioCtx.currentTime + 0.5);
+
+                            osc.connect(gain);
+                            gain.connect(window._audioCtx.destination);
+
+                            osc.start();
+                            osc.stop(window._audioCtx.currentTime + 0.5);
+                        };
+                        window._alarmInterval = setInterval(window._playAlarm, 8000); // Beep every 8s
+                        window._playAlarm();
+                    }
+                }
+            } else {
+                if (window._isStagnated) {
+                    window._isStagnated = false;
+                    document.body.classList.remove('stagnated-alarm');
+                    if (banner) banner.style.display = 'none';
+                    if (window._alarmInterval) clearInterval(window._alarmInterval);
+                }
             }
         }
 
@@ -918,8 +1103,8 @@
 
             const games = metrics.map(m => m.games);
             const wr = metrics.map(m => (m.win_rate || 0) * 100);
-            const td = metrics.map(m => m.avg_td_error || 0);
-            const eps = metrics.map(m => m.epsilon || 0);
+            const entropy = metrics.map(m => m.policy_entropy || 0);
+            const advantage = metrics.map(m => m.avg_advantage || 0);
             const evalWR = metrics.filter(m => m.eval_win_rate !== undefined);
 
             charts.wr.data.labels = games;
@@ -927,11 +1112,11 @@
             charts.wr.update('none');
 
             charts.td.data.labels = games;
-            charts.td.data.datasets[0].data = td;
+            charts.td.data.datasets[0].data = entropy;
             charts.td.update('none');
 
             charts.eps.data.labels = games;
-            charts.eps.data.datasets[0].data = eps;
+            charts.eps.data.datasets[0].data = advantage;
             charts.eps.update('none');
 
             if (evalWR.length > 0) {
@@ -978,11 +1163,13 @@
             // League table
             if (eloData.rankings) {
                 const tbody = document.getElementById('leagueBody');
-                const maxElo = Math.max(...eloData.rankings.map(r => r.elo), 1600);
-                const minElo = Math.min(...eloData.rankings.map(r => r.elo), 1400);
+                // rankings come as arrays: [name, elo]
+                const rankings = eloData.rankings.map(r => Array.isArray(r) ? { name: r[0], elo: r[1] } : r);
+                const maxElo = Math.max(...rankings.map(r => r.elo), 1600);
+                const minElo = Math.min(...rankings.map(r => r.elo), 1400);
                 const range = maxElo - minElo || 1;
 
-                tbody.innerHTML = eloData.rankings.map((r, i) => {
+                tbody.innerHTML = rankings.map((r, i) => {
                     const rankClass = i < 3 ? `rank-${i + 1}` : 'rank-n';
                     const pct = Math.max(5, ((r.elo - minElo) / range) * 100);
                     const barColor = getColor(r.name);
@@ -1024,7 +1211,6 @@
             <div class="players">${playersStr}</div>
             <div class="${resultClass}">${resultText}</div>
             <div class="length">${g.length} moves</div>
-            <div class="td-err">${g.td_error.toFixed(4)}</div>
         </div>`;
             }).join('');
         }
@@ -1088,8 +1274,8 @@
                     modeElem.textContent = sysData.mode;
                     modeElem.className = 'badge mode-' + sysData.mode.toLowerCase();
                 }
-                document.getElementById('sysCPU').textContent = sysData.cpu + '%';
-                document.getElementById('sysRAM').textContent = sysData.ram + '%';
+                document.getElementById('sysCPU').textContent = sysData.cpu_percent + '%';
+                document.getElementById('sysRAM').textContent = sysData.memory_percent + '%';
             }
         }
 

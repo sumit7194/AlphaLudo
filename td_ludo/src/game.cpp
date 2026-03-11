@@ -374,7 +374,7 @@ void write_state_tensor(const GameState &state, float *buffer) {
   // 9:   My Locked (broadcast)
   // 10:  Opp Locked (broadcast)
 
-  int num_channels = 11;
+  int num_channels = 17;
   int spatial_size = BOARD_SIZE * BOARD_SIZE;
   clear_buffer(buffer, num_channels * spatial_size);
 
@@ -492,4 +492,11 @@ void write_state_tensor(const GameState &state, float *buffer) {
                              : 0.0f;
   std::fill(buffer + (10 * spatial_size), buffer + (11 * spatial_size),
             opp_locked_val);
+  // --- CHANNELS 11-16: Dice Roll (One-Hot) ---
+  int roll = state.current_dice_roll;
+  if (roll >= 1 && roll <= 6) {
+    int channel_idx = 11 + (roll - 1);
+    std::fill(buffer + (channel_idx * spatial_size),
+              buffer + ((channel_idx + 1) * spatial_size), 1.0f);
+  }
 }

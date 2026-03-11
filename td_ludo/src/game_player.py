@@ -1,26 +1,31 @@
 """
-TD-Ludo Game Player — Value-Based Move Selection
+TD-Ludo Game Player — Actor-Critic Policy-Based Move Selection
 
-Replaces the MCTS-based VectorLeagueWorker with a simple value-based approach:
-1. For each legal move, simulate it → get V(s')
-2. Pick the move with the highest V(s') (with ε-greedy exploration)
-3. After each move, compute TD update with shaped reward
+Core gameplay loop for the Actor-Critic training paradigm:
+1. At each decision point, forward pass π(a|s) with legal mask
+2. Sample action from the policy distribution (with temperature)
+3. Collect trajectory for ALL players (model + bots)
+4. On game end, send trajectories to trainer for REINFORCE update
 
-This is the core "TD-Gammon" approach adapted for 4-player Ludo.
+Key changes from TD-Gammon approach:
+- NO 1-ply lookahead (we don't simulate each possible move)
+- ONE forward pass per decision instead of N (much faster)
+- Trajectories collected for all players (opponent learning)
+- Training happens at end-of-game, not per-step
 """
 
 import random
 import time
 import numpy as np
 import torch
+import torch.nn.functional as F
 import td_ludo_cpp as ludo_cpp
 
-from src.tensor_utils import state_to_tensor_mastery
-from src.reward_shaping import compute_shaped_reward, get_terminal_reward
 from src.heuristic_bot import HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot
+from src.reward_shaping import compute_shaped_reward
 from src.config import (
-    GAME_COMPOSITION, MAX_MOVES_PER_GAME, EPSILON_START,
-    EPSILON_END, EPSILON_DECAY_GAMES, TD_GAMMA, REWARD_SHAPING,
+    GAME_COMPOSITION, MAX_MOVES_PER_GAME,
+    TEMPERATURE_START, TEMPERATURE_END, TEMPERATURE_DECAY_GAMES,
     NUM_ACTIVE_PLAYERS
 )
 
@@ -35,359 +40,14 @@ BOT_CLASSES = {
 }
 
 
-class TDGamePlayer:
+class VectorACGamePlayer:
     """
-    Plays Ludo games using value-based move selection.
+    Plays N parallel games using C++ VectorGameState and batched policy inference.
     
-    Architecture:
-    - Model predicts V(s) for any board state
-    - Move selection: for each legal move, evaluate V(next_state), pick highest
-    - Exploration: ε-greedy (dice provides additional implicit exploration)
-    - Training: TD(0) update after each model move
-    """
-    
-    def __init__(self, trainer, device):
-        """
-        Args:
-            trainer: TDTrainer instance (has model + td_update)
-            device: torch device
-        """
-        self.trainer = trainer
-        self.device = device
-        
-        # Instantiate bots
-        self.bots = {name: cls() for name, cls in BOT_CLASSES.items()}
-        
-        # Stats
-        self.total_games = 0
-        self.total_model_wins = 0
-        self.recent_wins = []  # Last 100 games
-        self.recent_td_errors = []  # Last 1000 TD errors
-    
-    def get_epsilon(self, games_played):
-        """Get current epsilon with linear decay."""
-        progress = min(1.0, games_played / EPSILON_DECAY_GAMES)
-        return EPSILON_START + (EPSILON_END - EPSILON_START) * progress
-    
-    def select_model_move(self, state, legal_moves, epsilon):
-        """
-        Select a move using value-based 1-ply lookahead + ε-greedy.
-        
-        Args:
-            state: Current game state (with dice roll)
-            legal_moves: List of legal token indices
-            epsilon: Exploration rate
-            
-        Returns:
-            (chosen_move, was_exploration)
-        """
-        if len(legal_moves) == 1:
-            return legal_moves[0], False
-        
-        # ε-greedy exploration
-        if random.random() < epsilon:
-            return random.choice(legal_moves), True
-        
-        # Evaluate each possible move
-        best_value = -float('inf')
-        best_move = legal_moves[0]
-        
-        current_p = state.current_player
-        next_states = []
-        next_players = []
-        for move in legal_moves:
-            next_state = ludo_cpp.apply_move(state, move)
-            next_states.append(ludo_cpp.encode_state(next_state))
-            next_players.append(next_state.current_player)
-        
-        values = self.trainer.predict_value_batch(next_states)
-        
-        for i, move in enumerate(legal_moves):
-            v = values[i]
-            # CRITICAL: Perspective Flip
-            # V(s') is from the perspective of next_players[i].
-            # If that's NOT us, we want to MINIMIZE their value (maximize -v).
-            if next_players[i] != current_p:
-                v = -v
-            
-            if v > best_value:
-                best_value = v
-                best_move = move
-        
-        return best_move, False
-    
-    def play_game(self, game_composition=None, epsilon=0.1, train=True):
-        """
-        Play a single game and optionally train online.
-        
-        Args:
-            game_composition: Dict mapping player slots to 'Model' or bot type
-            epsilon: Exploration rate for model moves
-            train: Whether to apply TD updates
-            
-        Returns:
-            dict with game results:
-                winner: int (0-3)
-                model_won: bool
-                model_player: int
-                total_moves: int
-                avg_td_error: float
-                game_duration: float
-        """
-        start_time = time.time()
-        if NUM_ACTIVE_PLAYERS == 2:
-            state = ludo_cpp.create_initial_state_2p()
-        else:
-            state = ludo_cpp.create_initial_state()
-        
-        # Assign players
-        
-        # Assign players
-        if game_composition is None:
-            game_composition = self._random_composition()
-        
-        model_player = game_composition['model_player']
-        player_types = game_composition['player_types']  # [type_p0, type_p1, type_p2, type_p3]
-        
-        # Track for TD updates
-        consecutive_sixes = [0, 0, 0, 0]
-        move_count = 0
-        td_errors = []
-        
-        prev_model_state_tensor = None
-        prev_model_state = None  # For reward shaping
-        
-        while not state.is_terminal and move_count < MAX_MOVES_PER_GAME:
-            # Roll dice
-            if state.current_dice_roll == 0:
-                state.current_dice_roll = random.randint(1, 6)
-                
-                # Track consecutive sixes
-                cp = state.current_player
-                if state.current_dice_roll == 6:
-                    consecutive_sixes[cp] += 1
-                else:
-                    consecutive_sixes[cp] = 0
-                
-                # Penalty for 3 consecutive sixes
-                if consecutive_sixes[cp] >= 3:
-                    state.current_player = (state.current_player + 1) % 4
-                    state.current_dice_roll = 0
-                    consecutive_sixes[cp] = 0
-                    continue
-            
-            # Get legal moves
-            legal_moves = ludo_cpp.get_legal_moves(state)
-            
-            if len(legal_moves) == 0:
-                # No legal moves — pass turn
-                state.current_player = (state.current_player + 1) % 4
-                state.current_dice_roll = 0
-                continue
-            
-            current_player = state.current_player
-            player_type = player_types[current_player]
-            
-            if player_type == 'Model':
-                # Model's turn — value-based selection
-                current_state_tensor = state_to_tensor_mastery(state)
-                
-                # TD Update from previous model move to this one
-                if train and prev_model_state_tensor is not None:
-                    if REWARD_SHAPING:
-                        reward = compute_shaped_reward(
-                            prev_model_state, state, model_player, 0.0, TD_GAMMA
-                        )
-                    else:
-                        reward = 0.0
-                    
-                    td_err = self.trainer.td_update(
-                        prev_model_state_tensor, current_state_tensor,
-                        reward, done=False
-                    )
-                    td_errors.append(td_err)
-                
-                # Select move
-                if len(legal_moves) == 1:
-                    action = legal_moves[0]
-                else:
-                    action, _ = self.select_model_move(state, legal_moves, epsilon)
-                
-                # Store for next TD update
-                prev_model_state_tensor = current_state_tensor
-                prev_model_state = ludo_cpp.GameState()
-                prev_model_state.current_player = state.current_player
-                prev_model_state.current_dice_roll = state.current_dice_roll
-                prev_model_state.is_terminal = state.is_terminal
-                prev_model_state.player_positions[:] = state.player_positions[:]
-                prev_model_state.scores[:] = state.scores[:]
-                prev_model_state.board[:] = state.board[:]
-                
-            elif player_type == 'Random':
-                bot = self.bots.get('Random')
-                if bot:
-                    action = bot.select_move(state, legal_moves)
-                else:
-                    action = random.choice(legal_moves)
-            else:
-                # Heuristic bot
-                bot = self.bots.get(player_type)
-                if bot:
-                    action = bot.select_move(state, legal_moves)
-                else:
-                    action = random.choice(legal_moves)
-            
-            # Apply move
-            state = ludo_cpp.apply_move(state, action)
-            move_count += 1
-        
-        # Game over — final TD update
-        winner = ludo_cpp.get_winner(state) if state.is_terminal else -1
-        
-        if train and prev_model_state_tensor is not None:
-            terminal_state_tensor = state_to_tensor_mastery(state)
-            
-            if REWARD_SHAPING:
-                raw_reward = get_terminal_reward(state, model_player)
-                final_reward = compute_shaped_reward(
-                    prev_model_state, state, model_player, raw_reward, TD_GAMMA
-                )
-            else:
-                final_reward = get_terminal_reward(state, model_player)
-            
-            td_err = self.trainer.td_update(
-                prev_model_state_tensor, terminal_state_tensor,
-                final_reward, done=True
-            )
-            td_errors.append(td_err)
-            
-            # Flush any remaining gradients
-            self.trainer.flush_gradients()
-        
-        # Track results
-        model_won = (winner == model_player)
-        self.total_games += 1
-        if model_won:
-            self.total_model_wins += 1
-        
-        self.recent_wins.append(1 if model_won else 0)
-        if len(self.recent_wins) > 100:
-            self.recent_wins = self.recent_wins[-100:]
-        
-        avg_td_error = np.mean(td_errors) if td_errors else 0.0
-        self.recent_td_errors.extend(td_errors)
-        if len(self.recent_td_errors) > 1000:
-            self.recent_td_errors = self.recent_td_errors[-1000:]
-        
-        duration = time.time() - start_time
-        
-        # Build identities for Elo tracking ('Model' → 'Main')
-        identities = ['Main' if pt == 'Model' else pt for pt in player_types]
-        
-        return {
-            'winner': winner,
-            'model_won': model_won,
-            'model_player': model_player,
-            'total_moves': move_count,
-            'avg_td_error': avg_td_error,
-            'game_duration': duration,
-            'player_types': player_types,
-            'identities': identities,
-        }
-    
-    def _random_composition(self):
-        """
-        Generate a random game composition based on config probabilities.
-        
-        Returns dict with:
-            model_player: int (0-3)
-            player_types: list of 4 strings
-        """
-        probs = GAME_COMPOSITION
-        
-        # Determine game type
-        r = random.random()
-        cumulative = 0.0
-        game_type = 'SelfPlay'
-        
-        for gtype, prob in probs.items():
-            cumulative += prob
-            if r < cumulative:
-                game_type = gtype
-                break
-        
-        # 2-Player Mode Logic (P0 vs P2)
-        if NUM_ACTIVE_PLAYERS == 2:
-            # P0 is Model, P2 is Opponent (or vice-versa)
-            # Actually, let's keep it simple: Model is always P0 or P2
-            # But wait, create_initial_state_2p activates P0 and P2.
-            # So valid seats are 0 and 2.
-            
-            seats = [0, 2]
-            model_player = random.choice(seats)
-            opponent_seat = 2 if model_player == 0 else 0
-            
-            player_types = ['Inactive'] * 4
-            player_types[model_player] = 'Main'
-            
-            # Opponent type
-            if game_type == 'SelfPlay':
-                player_types[opponent_seat] = 'SelfPlay'
-            elif game_type == 'Random':
-                player_types[opponent_seat] = 'Random'
-            else:
-                # Specific bot type
-                player_types[opponent_seat] = game_type
-                
-            return {
-                'model_player': model_player,
-                'player_types': player_types,
-            }
-
-        # 4-Player Mode Logic (Standard)
-        # Model always gets a random seat
-        model_player = random.randint(0, 3)
-        player_types = ['Main'] * 4
-        
-        if game_type != 'SelfPlay':
-            # Place one bot of chosen type in a random non-model seat
-            bot_seats = [i for i in range(4) if i != model_player]
-            
-            if game_type == 'Random':
-                for seat in bot_seats:
-                    player_types[seat] = 'Random'
-            else:
-                # Mix: chosen bot + random bots for remaining seats
-                # Primary bot in one seat
-                primary_seat = random.choice(bot_seats)
-                player_types[primary_seat] = game_type
-                
-                # Other seats get random bot types (variety)
-                remaining_seats = [s for s in bot_seats if s != primary_seat]
-                bot_options = list(BOT_CLASSES.keys()) + ['Random']
-                for seat in remaining_seats:
-                    player_types[seat] = random.choice(bot_options)
-        
-        return {
-            'model_player': model_player,
-            'player_types': player_types,
-        }
-    
-    def get_recent_win_rate(self):
-        """Win rate over last 100 games."""
-        if not self.recent_wins:
-            return 0.0
-        return sum(self.recent_wins) / len(self.recent_wins)
-    
-    def get_recent_td_error(self):
-        """Average TD error over last 1000 updates."""
-        if not self.recent_td_errors:
-            return 0.0
-        return np.mean(self.recent_td_errors)
-
-class VectorTDGamePlayer:
-    """
-    Plays N parallel games using C++ VectorGameState and batched model inference.
+    Key differences from VectorTDGamePlayer:
+    - Move selection via π(a|s) sampling (not V(s') argmax)
+    - Collects trajectories for ALL players (model + bots)
+    - Training happens at end of each game (not per-step)
     """
     def __init__(self, trainer, batch_size, device):
         self.trainer = trainer
@@ -401,14 +61,14 @@ class VectorTDGamePlayer:
         # Per-game state tracking
         self.game_compositions = [self._random_composition() for _ in range(batch_size)]
         
-        # Pending TD updates: (prev_tensor, prev_shaping_state, model_player_id)
-        self.pending_updates = [None] * batch_size
+        # Trajectory storage: dict of player_id → list of (state_tensor, action, legal_mask)
+        # One per game slot
+        self.trajectories = [{} for _ in range(batch_size)]
         
         # Stats
         self.total_games = 0
         self.total_model_wins = 0
         self.recent_wins = []
-        self.recent_td_errors = []
         
         # Track consecutive sixes for all games (4 players per game)
         self.consecutive_sixes = np.zeros((batch_size, 4), dtype=int)
@@ -419,23 +79,28 @@ class VectorTDGamePlayer:
         # Initialize bots (shared instances are fine for stateless bots)
         self.bots = {name: cls() for name, cls in BOT_CLASSES.items()}
 
-    def play_step(self, epsilon=0.1, train=True):
+    def get_temperature(self, total_games):
+        """Calculate current temperature for policy sampling."""
+        if total_games >= TEMPERATURE_DECAY_GAMES:
+            return TEMPERATURE_END
+        progress = total_games / TEMPERATURE_DECAY_GAMES
+        return TEMPERATURE_START - progress * (TEMPERATURE_START - TEMPERATURE_END)
+
+    def play_step(self, train=True):
         """
         Advance all games by one step.
         Returns list of finished game results (dicts).
         """
-        # 1. Get current states (s_t) for decision making
-        # shape (B, 11, 15, 15)
+        # 1. Get current states for decision making
         current_states_np = self.env.get_state_tensor()
         
         actions = []
         current_players = []
-        model_indices = []
+        model_decision_indices = []  # Games where model needs to make a decision
         
         # 2. Determine actions for all games
         for i in range(self.batch_size):
             game = self.env.get_game(i)
-
             
             if game.is_terminal:
                 actions.append(-1)
@@ -447,10 +112,9 @@ class VectorTDGamePlayer:
             
             # Check max moves
             if self.move_counts[i] >= MAX_MOVES_PER_GAME:
-                # Force draw/termination
-                 game.is_terminal = True # FORCE C++ STATE TERMINAL
-                 actions.append(-1)
-                 continue
+                game.is_terminal = True
+                actions.append(-1)
+                continue
             
             # Dice Roll Logic
             if game.current_dice_roll == 0:
@@ -462,7 +126,6 @@ class VectorTDGamePlayer:
                     self.consecutive_sixes[i, cp] = 0
                     
                 if self.consecutive_sixes[i, cp] >= 3:
-                    # Skip to next ACTIVE player
                     next_p = (cp + 1) % 4
                     while not game.active_players[next_p]:
                         next_p = (next_p + 1) % 4
@@ -471,12 +134,9 @@ class VectorTDGamePlayer:
                     self.consecutive_sixes[i, cp] = 0
                     actions.append(-1)
                     continue
-            
-            
 
             legal_moves = ludo_cpp.get_legal_moves(game)
             if not legal_moves:
-                # Skip to next ACTIVE player
                 next_p = (cp + 1) % 4
                 while not game.active_players[next_p]:
                     next_p = (next_p + 1) % 4
@@ -486,81 +146,103 @@ class VectorTDGamePlayer:
                 continue
             
             ptype = self.game_compositions[i]['player_types'][cp]
-            if ptype == 'Model':
-                model_indices.append(i)
-                actions.append(-2) # Marker
+            
+            if ptype in ('Model', 'SelfPlay'):
+                # Model makes the decision — will be batched below
+                model_decision_indices.append(i)
+                actions.append(-2)  # Placeholder marker
             else:
+                # Bot makes the decision — no trajectory needed
                 bot = self.bots.get(ptype, self.bots['Random'])
                 action = bot.select_move(game, legal_moves)
                 actions.append(action)
 
-        # 3. Model Action Selection (Batch)
-        all_hooks = [] # (game_idx, move, next_state_tensor)
-        
-        if model_indices:
-            # Pre-gather all candidate next states
-            for idx in model_indices:
+        # 3. Batched Model Action Selection via Policy Head
+        if model_decision_indices:
+            temperature = self.get_temperature(self.trainer.total_games)
+            
+            # Gather states and legal masks for all model decisions
+            batch_states = []
+            batch_legal_masks = []
+            batch_legal_moves = []
+            
+            for idx in model_decision_indices:
                 game = self.env.get_game(idx)
                 lmoves = ludo_cpp.get_legal_moves(game)
+                batch_legal_moves.append(lmoves)
                 
-                # ε-greedy
-                if random.random() < epsilon:
-                    actions[idx] = random.choice(lmoves)
-                    continue
+                # State tensor from C++ encoder
+                state_tensor = ludo_cpp.encode_state(game)
+                batch_states.append(state_tensor)
                 
-                if len(lmoves) == 1:
-                    actions[idx] = lmoves[0]
-                    continue
-                
-                # Prepare candidates for value estimation
-                cp = game.current_player
+                # Legal mask (4 tokens)
+                legal_mask = np.zeros(4, dtype=np.float32)
                 for m in lmoves:
-                    # Optimized: Use C++ encoder directly
-                    next_g = ludo_cpp.apply_move(game, m)
-                    tsr = ludo_cpp.encode_state(next_g)
-                    # We store (origin_idx, move, tensor, next_player)
-                    all_hooks.append((idx, m, tsr, next_g.current_player, cp))
+                    legal_mask[m] = 1.0
+                batch_legal_masks.append(legal_mask)
             
-            if all_hooks:
-                # Batch predict V(s') for candidates
-                batch_tsrs = np.stack([h[2] for h in all_hooks]) 
-                vals = self.trainer.predict_value_batch(batch_tsrs)
+            # Batch forward pass — ONE pass for all model decisions
+            states_t = torch.from_numpy(np.stack(batch_states)).to(self.device, dtype=torch.float32)
+            masks_t = torch.from_numpy(np.stack(batch_legal_masks)).to(self.device, dtype=torch.float32)
+            
+            with torch.no_grad():
+                policy_logits = self.trainer.model.forward_policy_only(states_t, masks_t)
                 
-                best_scores = {idx: -float('inf') for idx in model_indices}
-                chosen_moves = {}
+                # Base probabilities at T=1.0 (for PPO old_log_prob — must match training)
+                probs_base = F.softmax(policy_logits, dim=1)
                 
-                ptr = 0
-                for idx, m, _, next_p, orig_p in all_hooks:
-                    v = vals[ptr]
-                    ptr += 1
-                    
-                    # CRITICAL: Perspective Flip
-                    # If it's no longer our turn in the next state, the value is for the opponent.
-                    if next_p != orig_p:
-                        v = -v
-                        
-                    if v > best_scores.get(idx, -float('inf')):
-                        best_scores[idx] = v
-                        chosen_moves[idx] = m
+                # Apply temperature for ACTION SAMPLING (exploration)
+                if temperature != 1.0:
+                    sample_logits = policy_logits / temperature
+                    probs_sample = F.softmax(sample_logits, dim=1)
+                else:
+                    probs_sample = probs_base
                 
-                for idx in chosen_moves:
-                    actions[idx] = chosen_moves[idx]
-
-        # 4. Snapshot state for reward shaping (before step)
-        prev_states_data = {}
-        if train and REWARD_SHAPING and model_indices:
-            for idx in model_indices:
-                if actions[idx] >= 0: # If we actually moved
-                    g = self.env.get_game(idx)
-                    prev_states_data[idx] = (
-                        np.array(g.scores, copy=True),
-                        np.array(g.player_positions, copy=True),
-                        np.array(g.board, copy=True),
-                        g.current_player,
-                        g.is_terminal
-                    )
-
-        # 5. Step Environment
+                sampled_actions = torch.multinomial(probs_sample, num_samples=1).squeeze(1)
+                
+                # Compute old_log_prob from base (T=1.0) distribution for PPO ratio
+                old_log_probs = torch.log(
+                    probs_base.gather(1, sampled_actions.unsqueeze(1)).squeeze(1) + 1e-8
+                )
+            
+            sampled_np = sampled_actions.cpu().numpy()
+            old_lp_np = old_log_probs.cpu().numpy()
+            
+            for j, idx in enumerate(model_decision_indices):
+                action = int(sampled_np[j])
+                lmoves = batch_legal_moves[j]
+                
+                # Safety: ensure sampled action is actually legal
+                if action not in lmoves:
+                    action = random.choice(lmoves)
+                
+                actions[idx] = action
+                
+                # Store model's trajectory (with old_log_prob for PPO)
+                if train:
+                    cp = current_players[idx]
+                    if cp not in self.trajectories[idx]:
+                        self.trajectories[idx][cp] = []
+                    self.trajectories[idx][cp].append((
+                        batch_states[j],
+                        action,
+                        batch_legal_masks[j],
+                        float(old_lp_np[j]),   # old_log_prob at T=1.0 for PPO
+                    ))
+        
+        # Save pre-step states for reward computation
+        pre_step_states = []
+        for i in range(self.batch_size):
+            # Must copy the state or extract needed info if GameState mutates.
+            # Fortunately get_game returns a reference the C++ object, so we need to copy?
+            # Actually, `compute_shaped_reward` only needs `player_positions`.
+            # Let's extract original positions for all 4 players for all batch games.
+            game = self.env.get_game(i)
+            # Create a simple struct/dict to hold the old positions
+            old_pos = {p: list(game.player_positions[p]) for p in range(4)}
+            pre_step_states.append(old_pos)
+            
+        # 4. Step Environment
         final_actions = [a if a >= 0 else -1 for a in actions]
         for i, a in enumerate(final_actions):
             if a >= 0:
@@ -568,133 +250,70 @@ class VectorTDGamePlayer:
                 
         next_states_np, rewards_np, dones_np, info_list = self.env.step(final_actions)
         
-        # 6. TD Updates
-        model_updates = []
-        if train:
-            for idx in model_indices:
-                if actions[idx] >= 0:
-                    mpid = self.game_compositions[idx]['model_player']
-                    
-                    # FIX #1: Inject terminal reward (C++ step() always returns 0.0)
-                    raw_reward = float(rewards_np[idx])
-                    if dones_np[idx]:
-                        winner = info_list[idx]['winner']
-                        if winner == mpid:
-                            raw_reward = 1.0
-                        elif winner >= 0:
-                            raw_reward = -1.0  # Zero-sum for 2-player
-                    
-                    reward = raw_reward
-                    
-                    # Apply PBRS only on non-terminal steps
-                    # (PBRS theorem: Φ(terminal) = 0, so skip shaping at terminal)
-                    if REWARD_SHAPING and not dones_np[idx] and idx in prev_states_data:
-                        # Reconstruct prev state proxy
-                        prev_s = ludo_cpp.GameState()
-                        ps_scores, ps_pos, ps_board, ps_cp, ps_term = prev_states_data[idx]
-                        prev_s.scores = ps_scores
-                        prev_s.player_positions = ps_pos
-                        prev_s.board = ps_board
-                        prev_s.current_player = ps_cp
-                        prev_s.is_terminal = ps_term
-                        
-                        curr_s = self.env.get_game(idx)
-                        reward = compute_shaped_reward(prev_s, curr_s, mpid, raw_reward, TD_GAMMA)
-                    
-                    # FIX #2: Re-encode s_{t+1} from MODEL player's perspective
-                    # env.step() encodes from the NEW current_player (may be opponent)
-                    game_after = self.env.get_game(idx)
-                    if game_after.current_player != mpid and not dones_np[idx]:
-                        # Temporarily set current_player to model's perspective for encoding
-                        orig_cp = game_after.current_player
-                        game_after.current_player = mpid
-                        next_state_tensor = ludo_cpp.encode_state(game_after)
-                        game_after.current_player = orig_cp  # Restore
-                    else:
-                        next_state_tensor = next_states_np[idx]
-                    
-                    # Store (s_t, s_{t+1}, r, d)
-                    model_updates.append((
-                        current_states_np[idx],
-                        next_state_tensor,
-                        reward,
-                        dones_np[idx]
-                    ))
-            
-            # FIX: Inject loss transitions for games that ended on the opponent's turn
-            # When the opponent makes the winning move, model_indices doesn't include
-            # this game (it's not the model's turn), so no -1.0 loss is ever stored.
-            # We fix this by scanning all games for newly-finished losses.
-            model_indices_set = set(model_indices)
-            for i in range(self.batch_size):
-                if dones_np[i] and i not in model_indices_set:
-                    # Game ended but model didn't act this step
-                    mpid = self.game_compositions[i]['model_player']
-                    winner = info_list[i]['winner']
-                    if winner >= 0 and winner != mpid:
-                        # Model lost — inject (s_t_from_model_perspective, s_terminal, -1.0, done)
-                        # Re-encode current state from model's perspective
-                        game_state = self.env.get_game(i)
-                        orig_cp_before = game_state.current_player
-                        game_state.current_player = mpid
-                        s_t_model = ludo_cpp.encode_state(game_state)
-                        game_state.current_player = orig_cp_before
-                        
-                        model_updates.append((
-                            s_t_model,
-                            next_states_np[i],  # Terminal state (doesn't matter, done=True masks V(s'))
-                            -1.0,
-                            True
-                        ))
-            
-            # Perform Batch Update
-            if model_updates:
-                s_batch = np.stack([u[0] for u in model_updates])
-                ns_batch = np.stack([u[1] for u in model_updates])
-                r_batch = np.array([u[2] for u in model_updates], dtype=np.float32)
-                d_batch = np.array([u[3] for u in model_updates], dtype=np.float32)
-                
-                td_err = self.trainer.td_update_batch(
-                    s_batch,
-                    ns_batch,
-                    r_batch,
-                    d_batch
-                )
-                self.recent_td_errors.append(td_err)
-                if len(self.recent_td_errors) > 1000:
-                    self.recent_td_errors = self.recent_td_errors[-1000:]
-
-        # 7. Handle resets and logging
+        # 5. Handle game completions — compute dense rewards and train
         results = []
         for i in range(self.batch_size):
+            # Compute shaped reward for the move that just happened in this game.
+            # Only if a valid move was made by a player we are tracking (train==True).
+            cp = current_players[i]
+            if train and cp >= 0 and self.trajectories[i] and cp in self.trajectories[i]:
+                # We need to compute the dense reward for cp.
+                # Since C++ GameState is mutated, self.env.get_game(i) is now the NEXT state.
+                next_game = self.env.get_game(i)
+                
+                # compute_shaped_reward expects objects with .player_positions
+                class DummyState:
+                    def __init__(self, pos):
+                        self.player_positions = pos
+                
+                dummy_old = DummyState(pre_step_states[i])
+                dummy_new = DummyState(next_game.player_positions)
+                
+                step_reward = compute_shaped_reward(dummy_old, dummy_new, cp)
+                
+                # Append to the LAST trajectory entry for this player
+                last_idx = len(self.trajectories[i][cp]) - 1
+                if last_idx >= 0:
+                    tup = self.trajectories[i][cp][last_idx]
+                    # Currently tup is (state, action, mask, old_lp)
+                    if len(tup) == 4:
+                        self.trajectories[i][cp][last_idx] = tup + (step_reward,)
             if dones_np[i]:
                 winner = info_list[i]['winner']
                 mpid = self.game_compositions[i]['model_player']
                 
                 if winner == -1:
-                    # Timeout / Draw
                     outcome = "Timeout"
-                    model_won = False # Technically not a win
+                    model_won = False
                 else:
                     model_won = (winner == mpid)
                     outcome = "Win" if model_won else "Loss"
                 
+                # Train on this game's trajectories
+                if train and winner >= 0 and self.trajectories[i]:
+                    train_stats = self.trainer.train_on_game(
+                        self.trajectories[i],
+                        winner,
+                        mpid
+                    )
+                    self.trainer.total_games += 1
+                
                 # Stats
                 self.total_games += 1
-                if model_won: self.total_model_wins += 1
-                
-                # Only count decisive games for win rate? Or count draws as 0.5?
-                # For now, keep binary win/loss for recent_wins to be safe, or 0.
+                if model_won:
+                    self.total_model_wins += 1
                 self.recent_wins.append(1 if model_won else 0)
-                if len(self.recent_wins) > 100: self.recent_wins = self.recent_wins[-100:]
+                if len(self.recent_wins) > 100:
+                    self.recent_wins = self.recent_wins[-100:]
 
                 # Capture identities before reset
                 identities = self.game_compositions[i]['player_types']
 
-                # Reset
+                # Reset game
                 self.env.reset_game(i)
                 self.game_compositions[i] = self._random_composition()
                 self.consecutive_sixes[i] = 0
+                self.trajectories[i] = {}
                 
                 results.append({
                     'winner': winner,
@@ -702,27 +321,18 @@ class VectorTDGamePlayer:
                     'model_player': mpid,
                     'identities': identities,
                     'total_moves': int(self.move_counts[i]),
-                    'avg_td_error': self.get_recent_td_error(),
                     'game_duration': 0.0
                 })
                 self.move_counts[i] = 0
         
         return results
-
-    def get_epsilon(self, total_games):
-        """Calculate current epsilon for exploration."""
-        if total_games >= EPSILON_DECAY_GAMES:
-            return EPSILON_END
-        
-        # Linear decay
-        progress = total_games / EPSILON_DECAY_GAMES
-        return EPSILON_START - progress * (EPSILON_START - EPSILON_END)
-
-    def get_recent_td_error(self):
-        if not self.recent_td_errors:
+    
+    def get_recent_win_rate(self):
+        """Win rate over last 100 games."""
+        if not self.recent_wins:
             return 0.0
-        return np.mean(self.recent_td_errors)
-        
+        return sum(self.recent_wins) / len(self.recent_wins)
+
     def get_spectator_state(self, game_idx=0):
         """
         Get the full state of a specific game for visualization.
@@ -733,15 +343,9 @@ class VectorTDGamePlayer:
         
         game = self.env.get_game(game_idx)
         
-        # Convert C++ binding objects to Python list/dict
-        # Board is 15x15 (but visually fixed, we actually just need token positions for Ludo)
-        # Actually, board array contains stack heights if we modeled it that way?
-        # The C++ board logic is: 0=empty, or player_id+1? 
-        # Actually bindings.cpp shows board is exposed.
-        
         return {
-            'positions': game.player_positions.tolist(), # 4x4
-            'scores': game.scores.tolist(), # 4
+            'positions': game.player_positions.tolist(),
+            'scores': game.scores.tolist(),
             'current_player': game.current_player,
             'dice_roll': game.current_dice_roll,
             'is_terminal': game.is_terminal,
@@ -751,9 +355,7 @@ class VectorTDGamePlayer:
         }
 
     def _random_composition(self):
-        # Same as TDGamePlayer._random_composition
-        # Can copy-paste logic or reuse static method if refactored.
-        # Copy-pasting for safety now.
+        """Generate a random game composition based on config probabilities."""
         probs = GAME_COMPOSITION
         r = random.random()
         cumulative = 0.0
@@ -770,9 +372,12 @@ class VectorTDGamePlayer:
             opponent_seat = 2 if model_player == 0 else 0
             player_types = ['Inactive'] * 4
             player_types[model_player] = 'Model'
-            if game_type == 'SelfPlay': player_types[opponent_seat] = 'SelfPlay'
-            elif game_type == 'Random': player_types[opponent_seat] = 'Random'
-            else: player_types[opponent_seat] = game_type
+            if game_type == 'SelfPlay':
+                player_types[opponent_seat] = 'SelfPlay'
+            elif game_type == 'Random':
+                player_types[opponent_seat] = 'Random'
+            else:
+                player_types[opponent_seat] = game_type
             return {'model_player': model_player, 'player_types': player_types}
             
         model_player = random.randint(0, 3)
@@ -780,11 +385,13 @@ class VectorTDGamePlayer:
         if game_type != 'SelfPlay':
             bot_seats = [i for i in range(4) if i != model_player]
             if game_type == 'Random':
-                for seat in bot_seats: player_types[seat] = 'Random'
+                for seat in bot_seats:
+                    player_types[seat] = 'Random'
             else:
                 primary_seat = random.choice(bot_seats)
                 player_types[primary_seat] = game_type
                 remaining_seats = [s for s in bot_seats if s != primary_seat]
                 bot_options = list(BOT_CLASSES.keys()) + ['Random']
-                for seat in remaining_seats: player_types[seat] = random.choice(bot_options)
+                for seat in remaining_seats:
+                    player_types[seat] = random.choice(bot_options)
         return {'model_player': model_player, 'player_types': player_types}

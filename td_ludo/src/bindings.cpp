@@ -90,12 +90,12 @@ public:
   }
 
   py::array_t<float> get_state_tensor() {
-    // Shape: (B, 11, 15, 15)
+    // Shape: (B, 17, 15, 15)
     size_t channel_size = BOARD_SIZE * BOARD_SIZE;
-    size_t sample_size = 11 * channel_size;
+    size_t sample_size = 17 * channel_size;
     // size_t total_size = batch_size * sample_size; // unused
 
-    auto result = py::array_t<float>({batch_size, 11, BOARD_SIZE, BOARD_SIZE});
+    auto result = py::array_t<float>({batch_size, 17, BOARD_SIZE, BOARD_SIZE});
     auto buffer = result.mutable_data();
 
     // Parallelize? No, GIL is held. Just sequential optimized writing.
@@ -187,8 +187,8 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
   m.def("apply_move", &apply_move, "Apply a move to the state");
 
   m.def("encode_state", [](const GameState &state) {
-    // Return shape (11, 15, 15) - Single 11 Channel Stack
-    py::array_t<float> result({11, BOARD_SIZE, BOARD_SIZE});
+    // Return shape (17, 15, 15) - Single 17 Channel Stack
+    py::array_t<float> result({17, BOARD_SIZE, BOARD_SIZE});
     auto buf = result.mutable_data();
     write_state_tensor(state, buf);
     return result;
@@ -228,10 +228,10 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
       .def("get_root_stats", &MCTSEngine::get_root_stats)
       .def("get_leaf_tensors", [](MCTSEngine &self) {
         std::vector<float> data = self.get_leaf_tensors();
-        // Return shape (batch, 11, 15, 15) - 11 Channel Stack
-        int n_batch = data.size() / (11 * BOARD_SIZE * BOARD_SIZE);
-        return py::array_t<float>({n_batch, 11, BOARD_SIZE, BOARD_SIZE},
-                                  {11 * BOARD_SIZE * BOARD_SIZE * sizeof(float),
+        // Return shape (batch, 17, 15, 15) - 17 Channel Stack
+        int n_batch = data.size() / (17 * BOARD_SIZE * BOARD_SIZE);
+        return py::array_t<float>({n_batch, 17, BOARD_SIZE, BOARD_SIZE},
+                                  {17 * BOARD_SIZE * BOARD_SIZE * sizeof(float),
                                    BOARD_SIZE * BOARD_SIZE * sizeof(float),
                                    BOARD_SIZE * sizeof(float), sizeof(float)},
                                   data.data());

@@ -1,7 +1,7 @@
 """
-TD-Ludo Evaluator — Pure Model Evaluation Against Bots
+TD-Ludo Evaluator — Policy-Based Model Evaluation Against Bots
 
-Runs games with the model using pure value-based move selection (no exploration)
+Runs games with the model using greedy policy selection (argmax π(a|s))
 against heuristic bots to measure true skill.
 
 Reports overall win rate + per-opponent-type breakdowns.
@@ -12,6 +12,7 @@ import sys
 import random
 import time
 import torch
+import torch.nn.functional as F
 import argparse
 import numpy as np
 from collections import defaultdict
@@ -20,7 +21,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import td_ludo_cpp as ludo_cpp
-from src.model import AlphaLudoV3
+from src.model import AlphaLudoV5
 from src.heuristic_bot import (
     HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
     get_bot, BOT_REGISTRY,
@@ -33,18 +34,11 @@ def evaluate_model(model, device, num_games=200, verbose=False,
     """
     Evaluate model against a mix of heuristic bots.
     
-    The model plays as one player (random seat), the other 3 seats
-    are filled with random bot types.
+    The model plays as one player (random seat), the other seat
+    is filled with a random bot type.
     
-    Args:
-        model: AlphaLudoV3 model
-        device: torch device
-        num_games: Number of games to play
-        verbose: Print per-game results
-        bot_types: List of bot type names to use (default: all)
-        
-    Returns:
-        dict with evaluation results including per-opponent breakdowns
+    Move selection: argmax π(a|s) — greedy policy (no exploration).
+    This is much faster than the old V(s') approach (1 forward pass vs N).
     """
     model.eval()
     available_types = bot_types or list(BOT_REGISTRY.keys())
@@ -113,29 +107,25 @@ def evaluate_model(model, device, num_games=200, verbose=False,
                 continue
             
             if current_player == model_player:
-                # Model move — pure greedy (no exploration)
+                # Model move — greedy policy (argmax π(a|s))
                 if len(legal_moves) == 1:
                     action = legal_moves[0]
                 else:
-                    next_tensors = []
-                    next_players = []
-                    for move in legal_moves:
-                        ns = ludo_cpp.apply_move(state, move)
-                        next_tensors.append(ludo_cpp.encode_state(ns))
-                        next_players.append(ns.current_player)
+                    # Encode state and create legal mask
+                    state_tensor = ludo_cpp.encode_state(state)
+                    legal_mask = np.zeros(4, dtype=np.float32)
+                    for m in legal_moves:
+                        legal_mask[m] = 1.0
                     
                     with torch.no_grad():
-                        batch = torch.from_numpy(np.stack(next_tensors)).to(device, dtype=torch.float32)
-                        _, values, _ = model(batch)
-                        values = values.squeeze(-1)
-                        
-                        # Perspective flip: negate V(s') when it's from opponent's view
-                        for i in range(len(values)):
-                            if next_players[i] != model_player:
-                                values[i] = -values[i]
+                        s_t = torch.from_numpy(state_tensor).unsqueeze(0).to(device, dtype=torch.float32)
+                        m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(device, dtype=torch.float32)
+                        policy_logits = model.forward_policy_only(s_t, m_t)
+                        action = policy_logits.argmax(dim=1).item()
                     
-                    best_idx = values.argmax().item()
-                    action = legal_moves[best_idx]
+                    # Safety check
+                    if action not in legal_moves:
+                        action = random.choice(legal_moves)
             else:
                 # Bot move
                 bot = player_bots[current_player]
@@ -153,7 +143,6 @@ def evaluate_model(model, device, num_games=200, verbose=False,
         game_lengths.append(move_count)
         
         # Track per-bot-type stats
-        # All bot types in this game get a "game" counted, winner gets a point
         for p, bt in game_bot_types.items():
             per_bot[bt]['games'] += 1
             if model_won:
@@ -193,7 +182,7 @@ def evaluate_model(model, device, num_games=200, verbose=False,
 
 
 def main():
-    parser = argparse.ArgumentParser(description='TD-Ludo Model Evaluator')
+    parser = argparse.ArgumentParser(description='TD-Ludo Model Evaluator (Actor-Critic)')
     parser.add_argument('--model', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--games', type=int, default=500, help='Number of evaluation games')
     parser.add_argument('--device', type=str, default='mps', help='Device (cpu/mps)')
@@ -204,20 +193,25 @@ def main():
     device = torch.device(args.device if torch.backends.mps.is_available() else 'cpu')
     print(f"[Evaluator] Device: {device}")
     
-    # Load model
-    model = AlphaLudoV3(num_res_blocks=10, num_channels=128)
+    # Load model — AlphaLudoV5
+    model = AlphaLudoV5(num_res_blocks=10, num_channels=128)
     model.to(device)
     
     if args.model:
         ckpt = torch.load(args.model, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt['model_state_dict'])
+        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+            model.load_state_dict(ckpt['model_state_dict'])
+        else:
+            model.load_state_dict(ckpt)
         print(f"[Evaluator] Loaded model from {args.model}")
     else:
-        # Try default path
         from src.config import MAIN_CKPT_PATH
         if os.path.exists(MAIN_CKPT_PATH):
             ckpt = torch.load(MAIN_CKPT_PATH, map_location=device, weights_only=False)
-            model.load_state_dict(ckpt['model_state_dict'])
+            if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+                model.load_state_dict(ckpt['model_state_dict'])
+            else:
+                model.load_state_dict(ckpt)
             print(f"[Evaluator] Loaded model from {MAIN_CKPT_PATH}")
         else:
             print("[Evaluator] No checkpoint found, evaluating random model")
@@ -227,7 +221,7 @@ def main():
     bot_list = args.bots or list(BOT_REGISTRY.keys())
     
     print(f"\n{'='*60}")
-    print(f"  TD-Ludo Evaluation: {args.games} games")
+    print(f"  TD-Ludo Evaluation (Actor-Critic): {args.games} games")
     print(f"  Opponents: {', '.join(bot_list)}")
     print(f"{'='*60}\n")
     

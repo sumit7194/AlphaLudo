@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaLudo — Play vs AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">♟</span>
+                <h1>Alpha<span class="accent">Ludo</span></h1>
+            </div>
+            <div class="header-actions">
+                <button id="newGameBtn" class="btn btn-primary" onclick="newGame()">New Game</button>
+            </div>
+        </header>
+
+        <main class="game-container">
+            <!-- Left Panel: AI Info -->
+            <aside class="player-panel ai-panel">
+                <div class="player-card ai">
+                    <div class="player-avatar ai-avatar">🤖</div>
+                    <h3>AlphaLudo AI</h3>
+                    <p class="player-subtitle">V6 Big Brain · 3M params</p>
+                    <div class="score-display">
+                        <div class="score-tokens">
+                            <span class="scored-token ai-color" id="ai-scored-0">●</span>
+                            <span class="scored-token ai-color" id="ai-scored-1">●</span>
+                            <span class="scored-token ai-color" id="ai-scored-2">●</span>
+                            <span class="scored-token ai-color" id="ai-scored-3">●</span>
+                        </div>
+                        <span class="score-label" id="ai-score-label">0 / 4 Home</span>
+                    </div>
+                    <div class="ai-thinking" id="aiThinking">
+                        <div class="thinking-dots"><span></span><span></span><span></span></div>
+                        <span>Thinking...</span>
+                    </div>
+                    <div class="ai-probs" id="aiProbs"></div>
+                </div>
+            </aside>
+
+            <!-- Center: Board -->
+            <div class="board-wrapper">
+                <!-- Turn Indicator -->
+                <div class="turn-indicator" id="turnIndicator">
+                    <span id="turnText">Your Turn</span>
+                </div>
+
+                <!-- Dice Area -->
+                <div class="dice-area">
+                    <div class="dice" id="dice" onclick="rollDice()">
+                        <span id="diceValue">?</span>
+                    </div>
+                    <p class="dice-hint" id="diceHint">Click to roll</p>
+                </div>
+
+                <!-- Board Grid -->
+                <div class="board" id="board">
+                    <!-- 15x15 grid cells injected by JS -->
+                </div>
+
+                <!-- Message Area -->
+                <div class="message-area" id="messageArea"></div>
+            </div>
+
+            <!-- Right Panel: Human Info -->
+            <aside class="player-panel human-panel">
+                <div class="player-card human">
+                    <div class="player-avatar human-avatar">🎮</div>
+                    <h3>You</h3>
+                    <p class="player-subtitle">Player 0 · Green</p>
+                    <div class="score-display">
+                        <div class="score-tokens">
+                            <span class="scored-token human-color" id="human-scored-0">●</span>
+                            <span class="scored-token human-color" id="human-scored-1">●</span>
+                            <span class="scored-token human-color" id="human-scored-2">●</span>
+                            <span class="scored-token human-color" id="human-scored-3">●</span>
+                        </div>
+                        <span class="score-label" id="human-score-label">0 / 4 Home</span>
+                    </div>
+                </div>
+
+                <!-- Game Log -->
+                <div class="game-log">
+                    <h4>Game Log</h4>
+                    <div class="log-entries" id="logEntries"></div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Win Modal -->
+        <div class="modal-overlay" id="winModal">
+            <div class="modal">
+                <div class="modal-icon" id="modalIcon">🏆</div>
+                <h2 id="modalTitle">You Win!</h2>
+                <p id="modalSubtext">Congratulations!</p>
+                <button class="btn btn-primary" onclick="newGame()">Play Again</button>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>

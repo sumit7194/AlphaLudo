@@ -38,19 +38,20 @@ done
 
 echo ">>> Cleaning stop signals..."
 rm -f data/stop_signal
+rm -f data/actor_stats.json
 rm -rf data/cmds
 mkdir -p data/cmds
 
 echo ">>> Recompiling C++ Extensions..."
 python3 setup.py build_ext --inplace
 
-echo ">>> Starting Auto-Tuner (Background)..."
-python3 -m src.tuner > data/tuner.log 2>&1 &
-TUNER_PID=$!
-echo "Tuner PID: $TUNER_PID"
+# echo ">>> Starting Auto-Tuner (Background)..."
+# python3 -m src.tuner > data/tuner.log 2>&1 &
+# TUNER_PID=$!
+# echo "Tuner PID: $TUNER_PID"
 
 # Trap to kill tuner on exit
-trap "kill $TUNER_PID" EXIT
+# trap "kill $TUNER_PID" EXIT
 
 echo ">>> Starting Async Training..."
 # MPS Hardware Optimization Environment Variables

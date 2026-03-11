@@ -1,9 +1,9 @@
 """
-TD-Ludo Configuration
+TD-Ludo Configuration — Actor-Critic Edition
 
 Modes:
-- PROD: Full training with kickstart weights, saves to checkpoints/td_prod/
-- TEST: Fast iteration for debugging, saves to checkpoints/td_test/
+- PROD: Full training, saves to checkpoints/ac_v5/
+- TEST: Fast iteration for debugging, saves to checkpoints_test/ac_test/
 
 Set via: export TD_LUDO_MODE=TEST
 """
@@ -27,97 +27,86 @@ KICKSTART_PATH = os.path.join(PRETRAINED_DIR, "model_kickstart_11ch.pt")
 # =============================================================================
 DEFAULT_CONFIGS = {
     "PROD": {
-        # === TD Learning ===
-        "TD_GAMMA": 0.995,           # Discount factor (high for long Ludo games)
-        "EPSILON_START": 0.10,        # Initial exploration rate
-        "EPSILON_END": 0.02,          # Final exploration rate
-        "EPSILON_DECAY_GAMES": 50000, # Games over which ε decays linearly
+        # === Actor-Critic Training ===
+        "LEARNING_RATE": 0.00001,        # Adam LR (lowered from 5e-5 to prevent long-term drift)
+        "WEIGHT_DECAY": 1e-4,            # L2 regularization
+        "MAX_GRAD_NORM": 1.0,            # Gradient clipping
+        "ENTROPY_COEFF": 0.005,          # Entropy bonus coefficient (lowered to respect SL bounds)
+        "VALUE_LOSS_COEFF": 0.5,         # Value head loss weight
+        "GRAD_ACCUM_GAMES": 8,           # (Legacy, unused by PPO trainer)
 
-        # === Neural Network Training ===
-        "LEARNING_RATE": 0.0003,      # Adam optimizer LR
-        "WEIGHT_DECAY": 1e-4,         # L2 regularization
-        "GRAD_ACCUM_STEPS": 4,        # Accumulate gradients over N moves before stepping
-        "MAX_GRAD_NORM": 1.0,         # Gradient clipping
+        # === PPO (Proximal Policy Optimization) ===
+        "CLIP_EPSILON": 0.2,             # PPO clipping range (limits policy change per update)
+        "PPO_EPOCHS": 3,                 # Number of passes over collected data per PPO update
+        "PPO_BUFFER_GAMES": 64,          # Collect this many games before running PPO update
+        "PPO_MINIBATCH_SIZE": 256,       # Steps per mini-batch during PPO training
 
-        # === Reward Shaping ===
-        "REWARD_SHAPING": True,       # Enable PBRS
-
-        # === Experience Buffer (optional replay) ===
-        "USE_EXPERIENCE_BUFFER": True, # Store recent experiences for replay
-        "BUFFER_SIZE": 200000,          # Max transitions in buffer
-        "REPLAY_BATCH_SIZE": 1024,      # Increased for 11-channel efficiency
-        "REPLAY_EVERY_N_GAMES": 5,      # Do a replay pass every N games
-        "REPLAY_STEPS": 24,            # Steps per replay pass — prioritize learning quality
-
-        # === Prioritized Experience Replay (PER) ===
-        "PER_ALPHA": 0.6,              # Priority exponent (0=uniform, 1=full priority)
-        "PER_BETA_START": 0.4,         # IS correction start (anneals to 1.0)
-        "PER_BETA_END": 1.0,           # IS correction end
-        "PER_BETA_ANNEAL_GAMES": 50000, # Anneal β over this many games
+        # === Exploration (Temperature-based) ===
+        "TEMPERATURE_START": 1.1,        # Policy sampling temperature (lowered to avoid off-policy blunders)
+        "TEMPERATURE_END": 0.95,         # Final temperature (slightly deterministic to exploit known win-paths)
+        "TEMPERATURE_DECAY_GAMES": 20000, # Decay faster to rely on the stabilized Value head
 
         # === Game Settings ===
-        "BATCH_SIZE": 128,
+        "BATCH_SIZE": 512,               # Run N games in parallel in C++
         "MAX_MOVES_PER_GAME": 10000,
         "GAME_COMPOSITION": {
-            "SelfPlay": 0.70,          # High SelfPlay to learn from its own emerging tactics
-            "Random": 0.20,            # Easy wins to learn how to finish the game
-            "Heuristic": 0.10,         # Slight grounding against basic logic
-            # Advanced bots temporarily removed for Phase 1 curriculum
-            # "Aggressive": 0.15,
-            # "Defensive": 0.15,
-            # "Racing": 0.15,
+            "SelfPlay": 0.35,            # Deep self-correcting equilibrium
+            "Heuristic": 0.25,           # General logic grounding
+            "Aggressive": 0.15,          # Forced to learn survival/evasion
+            "Defensive": 0.15,           # Forced to learn active breaching
+            "Racing": 0.05,              # Forced to learn speed pacing (DOMINATED)
+            "Random": 0.05,              # Keep baseline exploration defense active
         },
-        "NUM_ACTIVE_PLAYERS": 2,       # 2-Player Mode (P0 vs P2)
-        "TERMINAL_LOSS_REWARD": -1.0,  # Zero-sum for 1v1
+        "NUM_ACTIVE_PLAYERS": 2,         # 2-Player Mode (P0 vs P2)
 
         # === Evaluation ===
-        "EVAL_INTERVAL": 500,         # Games between evaluations
-        "EVAL_GAMES": 200,            # Games per evaluation round
+        "EVAL_INTERVAL": 2000,          # Games between evaluations
+        "EVAL_GAMES": 500,              # Games per evaluation round
+        "EARLY_STOP_PATIENCE": 10,      # Stop training if eval WR drops for N consecutive evals
 
         # === Checkpointing ===
-        "SAVE_INTERVAL": 300,         # Seconds between checkpoint saves
-        "GHOST_SAVE_INTERVAL": 2000,  # Save ghost snapshot every N games
-        "MAX_GHOSTS": 20,             # Keep at most N ghost snapshots
+        "SAVE_INTERVAL": 300,           # Seconds between checkpoint saves
+        "GHOST_SAVE_INTERVAL": 2000,    # Save ghost snapshot every N games
+        "MAX_GHOSTS": 20,               # Keep at most N ghost snapshots
 
         # === Hardware ===
         "USE_FLOAT16": False,
 
         # === Paths (fully isolated per mode) ===
         "CHECKPOINT_BASE": "checkpoints",
-        "RUN_NAME": "td_prod",
+        "RUN_NAME": "ac_v6_big",
     },
 
     "TEST": {
-        "TD_GAMMA": 0.995,
-        "EPSILON_START": 0.10,
-        "EPSILON_END": 0.02,
-        "EPSILON_DECAY_GAMES": 100,
-        "LEARNING_RATE": 0.001,
+        "LEARNING_RATE": 0.0003,
         "WEIGHT_DECAY": 1e-4,
-        "GRAD_ACCUM_STEPS": 1,
         "MAX_GRAD_NORM": 1.0,
-        "REWARD_SHAPING": True,
-        "USE_EXPERIENCE_BUFFER": False,
-        "BUFFER_SIZE": 1000,
-        "REPLAY_BATCH_SIZE": 16,
-        "REPLAY_EVERY_N_GAMES": 5,
-        "REPLAY_STEPS": 4,
+        "ENTROPY_COEFF": 0.01,
+        "VALUE_LOSS_COEFF": 0.5,
+        "GRAD_ACCUM_GAMES": 4,
+        "CLIP_EPSILON": 0.2,
+        "PPO_EPOCHS": 2,
+        "PPO_BUFFER_GAMES": 8,
+        "PPO_MINIBATCH_SIZE": 64,
+        "TEMPERATURE_START": 1.5,
+        "TEMPERATURE_END": 1.0,
+        "TEMPERATURE_DECAY_GAMES": 100,
         "BATCH_SIZE": 4,
         "MAX_MOVES_PER_GAME": 500,
         "GAME_COMPOSITION": {
             "SelfPlay": 0.50,
             "Heuristic": 0.50,
         },
-        "NUM_ACTIVE_PLAYERS": 2,       # 2-player for testing
-        "TERMINAL_LOSS_REWARD": -1.0,  # Zero-sum for 1v1
+        "NUM_ACTIVE_PLAYERS": 2,
         "EVAL_INTERVAL": 20,
         "EVAL_GAMES": 10,
+        "EARLY_STOP_PATIENCE": 3,
         "SAVE_INTERVAL": 60,
         "GHOST_SAVE_INTERVAL": 50,
         "MAX_GHOSTS": 5,
         "USE_FLOAT16": False,
         "CHECKPOINT_BASE": "checkpoints_test",
-        "RUN_NAME": "td_test",
+        "RUN_NAME": "ac_test",
     }
 }
 
@@ -151,36 +140,31 @@ CONF = CONFIGS.get(MODE, CONFIGS["PROD"])
 # =============================================================================
 # Expose individual variables for direct import
 # =============================================================================
-TD_GAMMA = CONF["TD_GAMMA"]
-EPSILON_START = CONF["EPSILON_START"]
-EPSILON_END = CONF["EPSILON_END"]
-EPSILON_DECAY_GAMES = CONF["EPSILON_DECAY_GAMES"]
 LEARNING_RATE = CONF["LEARNING_RATE"]
 WEIGHT_DECAY = CONF["WEIGHT_DECAY"]
-GRAD_ACCUM_STEPS = CONF["GRAD_ACCUM_STEPS"]
 MAX_GRAD_NORM = CONF["MAX_GRAD_NORM"]
-REWARD_SHAPING = CONF["REWARD_SHAPING"]
-USE_EXPERIENCE_BUFFER = CONF["USE_EXPERIENCE_BUFFER"]
-BUFFER_SIZE = CONF["BUFFER_SIZE"]
-REPLAY_BATCH_SIZE = CONF["REPLAY_BATCH_SIZE"]
-REPLAY_EVERY_N_GAMES = CONF["REPLAY_EVERY_N_GAMES"]
-REPLAY_STEPS = CONF["REPLAY_STEPS"]
+ENTROPY_COEFF = CONF["ENTROPY_COEFF"]
+VALUE_LOSS_COEFF = CONF["VALUE_LOSS_COEFF"]
+GRAD_ACCUM_GAMES = CONF["GRAD_ACCUM_GAMES"]
+CLIP_EPSILON = CONF["CLIP_EPSILON"]
+PPO_EPOCHS = CONF["PPO_EPOCHS"]
+PPO_BUFFER_GAMES = CONF["PPO_BUFFER_GAMES"]
+PPO_MINIBATCH_SIZE = CONF["PPO_MINIBATCH_SIZE"]
+TEMPERATURE_START = CONF["TEMPERATURE_START"]
+TEMPERATURE_END = CONF["TEMPERATURE_END"]
+TEMPERATURE_DECAY_GAMES = CONF["TEMPERATURE_DECAY_GAMES"]
 BATCH_SIZE = CONF["BATCH_SIZE"]
-PER_ALPHA = CONF.get("PER_ALPHA", 0.6)
-PER_BETA_START = CONF.get("PER_BETA_START", 0.4)
-PER_BETA_END = CONF.get("PER_BETA_END", 1.0)
-PER_BETA_ANNEAL_GAMES = CONF.get("PER_BETA_ANNEAL_GAMES", 50000)
 MAX_MOVES_PER_GAME = CONF["MAX_MOVES_PER_GAME"]
 GAME_COMPOSITION = CONF["GAME_COMPOSITION"]
+NUM_ACTIVE_PLAYERS = CONF.get("NUM_ACTIVE_PLAYERS", 2)
 EVAL_INTERVAL = CONF["EVAL_INTERVAL"]
 EVAL_GAMES = CONF["EVAL_GAMES"]
+EARLY_STOP_PATIENCE = CONF["EARLY_STOP_PATIENCE"]
 SAVE_INTERVAL = CONF["SAVE_INTERVAL"]
 GHOST_SAVE_INTERVAL = CONF["GHOST_SAVE_INTERVAL"]
 MAX_GHOSTS = CONF["MAX_GHOSTS"]
 USE_FLOAT16 = CONF["USE_FLOAT16"]
-USE_FLOAT16 = CONF["USE_FLOAT16"]
-NUM_ACTIVE_PLAYERS = CONF.get("NUM_ACTIVE_PLAYERS", 4)
-TERMINAL_LOSS_REWARD = CONF.get("TERMINAL_LOSS_REWARD", -0.33)
+
 # =============================================================================
 # Paths — Fully Isolated per Mode
 # =============================================================================
@@ -194,11 +178,10 @@ os.makedirs(GHOSTS_DIR, exist_ok=True)
 MAIN_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "model_latest.pt")
 BEST_CKPT_PATH = os.path.join(CHECKPOINT_DIR, "model_best.pt")
 METRICS_PATH = os.path.join(CHECKPOINT_DIR, "training_metrics.json")
-BUFFER_PATH = os.path.join(CHECKPOINT_DIR, "experience_buffer.npz")
 STATS_PATH = os.path.join(CHECKPOINT_DIR, "live_stats.json")
 ELO_PATH = os.path.join(CHECKPOINT_DIR, "elo_ratings.json")
 GAME_DB_PATH = os.path.join(CHECKPOINT_DIR, "game_history.db")
 
 print(f"[TD-Ludo Config] Run: {RUN_NAME} | Dir: {CHECKPOINT_DIR}")
-print(f"[TD-Ludo Config] LR: {LEARNING_RATE} | γ: {TD_GAMMA} | ε: {EPSILON_START}→{EPSILON_END}")
-print(f"[TD-Ludo Config] Buffer: {'ON' if USE_EXPERIENCE_BUFFER else 'OFF'} | Ghosts: every {GHOST_SAVE_INTERVAL} games")
+print(f"[TD-Ludo Config] LR: {LEARNING_RATE} | Entropy: {ENTROPY_COEFF} | Temp: {TEMPERATURE_START}→{TEMPERATURE_END}")
+print(f"[TD-Ludo Config] Ghosts: every {GHOST_SAVE_INTERVAL} games | Batch: {BATCH_SIZE}")

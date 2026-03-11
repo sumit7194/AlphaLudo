@@ -34,7 +34,27 @@ class GameDB:
     def __init__(self, db_path):
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self._init_db()
+        
+        try:
+            self._init_db()
+            self._check_integrity()
+        except sqlite3.DatabaseError as e:
+            print(f"[GameDB] CORRUPTION DETECTED: {e}")
+            corrupted_path = f"{self.db_path}.corrupted_{int(time.time())}"
+            print(f"[GameDB] Backing up corrupted database to {corrupted_path}")
+            if os.path.exists(self.db_path):
+                os.rename(self.db_path, corrupted_path)
+            print(f"[GameDB] Re-initializing fresh database...")
+            self._init_db()
+            
+    def _check_integrity(self):
+        """Run SQLite integrity check to catch silent corruption early."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('PRAGMA integrity_check')
+            result = cursor.fetchone()[0]
+            if result != 'ok':
+                raise sqlite3.DatabaseError(f"Integrity check failed: {result}")
     
     def _init_db(self):
         """Create tables and indices."""

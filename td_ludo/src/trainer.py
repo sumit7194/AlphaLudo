@@ -1,13 +1,22 @@
 """
-TD-Ludo Trainer — Online TD(0) Value Learning + Prioritized Experience Replay
+TD-Ludo Trainer — PPO (Proximal Policy Optimization)
 
-Features:
-- Online TD(0) semi-gradient updates after each move
-- Prioritized experience buffer with TD-error-weighted sampling (PER)
-- Numpy-based buffer persistence for fast save/load
-- Ghost checkpoint saving at regular intervals
-- Metrics logging for dashboard consumption
-- Graceful checkpoint save/load with optimizer state
+Training paradigm:
+- Policy head (Actor): Learns π(a|s) — which move to make
+- Value head (Critic): Learns V(s) — win probability (used as variance-reducing baseline)
+- Rewards: Pure sparse (+1 win, -1 loss)
+- Targets: Game outcome z (Monte Carlo return) — no bootstrapping
+- Algorithm: PPO with clipped surrogate objective
+
+PPO collects trajectories from N games, then does K epochs of mini-batch training:
+  1. Buffer game trajectories until PPO_BUFFER_GAMES reached
+  2. Stack all steps, shuffle, split into mini-batches
+  3. For each mini-batch:
+     ratio = π_new(a|s) / π_old(a|s)
+     policy_loss = -min(ratio * A, clip(ratio, 1±ε) * A)
+     value_loss = MSE(V(s), z)
+     entropy = -Σ π·log(π)
+     total = policy_loss + 0.5*value_loss - 0.05*entropy
 """
 
 import os
@@ -22,225 +31,26 @@ import json
 import shutil
 from collections import deque
 
-from src.model import AlphaLudoV3
 from src.config import (
     LEARNING_RATE, WEIGHT_DECAY, MAX_GRAD_NORM,
-    GRAD_ACCUM_STEPS, TD_GAMMA, CHECKPOINT_DIR,
+    CHECKPOINT_DIR,
     MAIN_CKPT_PATH, BEST_CKPT_PATH, METRICS_PATH,
     GHOSTS_DIR, MAX_GHOSTS, GHOST_SAVE_INTERVAL,
-    USE_EXPERIENCE_BUFFER, BUFFER_SIZE, BUFFER_PATH,
-    REPLAY_BATCH_SIZE, REPLAY_STEPS, STATS_PATH,
-    PER_ALPHA, PER_BETA_START, PER_BETA_END, PER_BETA_ANNEAL_GAMES,
+    STATS_PATH,
+    ENTROPY_COEFF, VALUE_LOSS_COEFF,
+    CLIP_EPSILON, PPO_EPOCHS, PPO_BUFFER_GAMES, PPO_MINIBATCH_SIZE,
+    NUM_ACTIVE_PLAYERS,
 )
 
 
-# Tensor shape for state: (11, 15, 15)
-STATE_SHAPE = (11, 15, 15)
-STATE_SIZE = 11 * 15 * 15  # 2475 floats
-
-
-class PrioritizedExperienceBuffer:
+class ActorCriticTrainer:
     """
-    Prioritized Experience Replay buffer with numpy-based persistence.
+    Actor-Critic trainer using REINFORCE with baseline.
     
-    - FIFO eviction (ring buffer) — simple, no overhead
-    - TD-error-weighted sampling — focuses learning on "surprising" transitions
-    - Importance sampling correction — prevents gradient bias from non-uniform sampling
-    - Numpy-based save/load — fast I/O, ~80% smaller than torch.save of individual tensors
-    
-    Each transition stores: (state, next_state, reward, done, priority)
-    Priority = |TD error|^α, where α controls how much prioritization matters.
-    """
-    
-    def __init__(self, max_size=BUFFER_SIZE, alpha=PER_ALPHA):
-        self.max_size = max_size
-        self.alpha = alpha
-        
-        # Pre-allocate numpy arrays for the ring buffer
-        self.states = np.zeros((max_size, *STATE_SHAPE), dtype=np.float32)
-        self.next_states = np.zeros((max_size, *STATE_SHAPE), dtype=np.float32)
-        self.rewards = np.zeros(max_size, dtype=np.float32)
-        self.dones = np.zeros(max_size, dtype=np.float32)
-        self.priorities = np.ones(max_size, dtype=np.float32)  # Start with max priority
-        
-        self.position = 0  # Next write position
-        self.size = 0       # Current number of valid entries
-        self.max_priority = 1.0  # Track max priority for new entries
-    
-    def add(self, state, next_state, reward, done):
-        """Add a single transition."""
-        self.states[self.position] = state
-        self.next_states[self.position] = next_state
-        self.rewards[self.position] = reward
-        self.dones[self.position] = done
-        self.priorities[self.position] = self.max_priority
-        self.position = (self.position + 1) % self.max_size
-        self.size = min(self.size + 1, self.max_size)
-
-    def add_batch(self, states, next_states, rewards, dones):
-        """Add a batch of transitions efficiently."""
-        batch_size = len(states)
-        if batch_size == 0: return
-
-        # Handle wrap-around
-        if self.position + batch_size <= self.max_size:
-            idx = slice(self.position, self.position + batch_size)
-            self.states[idx] = states
-            self.next_states[idx] = next_states
-            self.rewards[idx] = rewards
-            self.dones[idx] = dones
-            self.priorities[idx] = self.max_priority
-        else:
-            # Split into two parts
-            first_part = self.max_size - self.position
-            idx1 = slice(self.position, self.max_size)
-            self.states[idx1] = states[:first_part]
-            self.next_states[idx1] = next_states[:first_part]
-            self.rewards[idx1] = rewards[:first_part]
-            self.dones[idx1] = dones[:first_part]
-            self.priorities[idx1] = self.max_priority
-
-            second_part = batch_size - first_part
-            idx2 = slice(0, second_part)
-            self.states[idx2] = states[first_part:]
-            self.next_states[idx2] = next_states[first_part:]
-            self.rewards[idx2] = rewards[first_part:]
-            self.dones[idx2] = dones[first_part:]
-            self.priorities[idx2] = self.max_priority
-
-        self.position = (self.position + batch_size) % self.max_size
-        self.size = min(self.size + batch_size, self.max_size)
-    
-    def sample(self, batch_size, beta=0.4):
-        """Sample with prioritized indices."""
-        batch_size = min(batch_size, self.size)
-        
-        # O(N) but optimized with numpy
-        priorities = self.priorities[:self.size]
-        probs = np.power(priorities, self.alpha)
-        prob_sum = probs.sum()
-        if prob_sum == 0:
-            probs = np.ones(self.size, dtype=np.float32) / self.size
-        else:
-            probs /= prob_sum
-        
-        # CRITICAL: use replace=True to get O(N) sampling instead of O(N log N) or worse.
-        # For PER, replace=True is standard and fast.
-        indices = np.random.choice(self.size, size=batch_size, replace=True, p=probs)
-        
-        # Importance sampling weights
-        weights = (self.size * probs[indices]) ** (-beta)
-        weights /= weights.max()
-        
-        # Batch gather
-        states = torch.from_numpy(self.states[indices])
-        next_states = torch.from_numpy(self.next_states[indices])
-        rewards = torch.from_numpy(self.rewards[indices])
-        dones = torch.from_numpy(self.dones[indices])
-        is_weights = torch.from_numpy(weights.astype(np.float32))
-        
-        return states, next_states, rewards, dones, indices, is_weights
-    
-    def update_priorities(self, indices, td_errors):
-        """Update priorities based on new TD errors from replay."""
-        if isinstance(td_errors, torch.Tensor):
-            td_errors = td_errors.detach().cpu().numpy()
-        
-        new_priorities = np.abs(td_errors) + 1e-6  # Small ε to avoid zero priority
-        self.priorities[indices] = new_priorities
-        self.max_priority = max(self.max_priority, new_priorities.max())
-    
-    def clear(self):
-        """Reset buffer to empty (keeps allocated memory)."""
-        self.position = 0
-        self.size = 0
-        self.max_priority = 1.0
-        print("[Buffer] Cleared")
-    
-    def __len__(self):
-        return self.size
-    
-    def save(self, path=BUFFER_PATH):
-        """Save buffer to disk as compressed numpy archive (~80% smaller than torch.save)."""
-        try:
-            t0 = time.time()
-            np.savez_compressed(
-                path,
-                states=self.states[:self.size],
-                next_states=self.next_states[:self.size],
-                rewards=self.rewards[:self.size],
-                dones=self.dones[:self.size],
-                priorities=self.priorities[:self.size],
-                position=np.array([self.position]),
-                max_priority=np.array([self.max_priority]),
-            )
-            dt = time.time() - t0
-            size_mb = os.path.getsize(path) / (1024 * 1024)
-            print(f"[Buffer] Saved {self.size} transitions ({size_mb:.1f} MB, {dt:.1f}s)")
-        except Exception as e:
-            print(f"[Buffer] Failed to save: {e}")
-    
-    def load(self, path=BUFFER_PATH):
-        """Load buffer from disk. Also tries legacy .pt format for migration."""
-        # Try numpy format first
-        if os.path.exists(path):
-            try:
-                t0 = time.time()
-                data = np.load(path)
-                n = len(data['states'])
-                self.states[:n] = data['states']
-                self.next_states[:n] = data['next_states']
-                self.rewards[:n] = data['rewards']
-                self.dones[:n] = data['dones']
-                self.priorities[:n] = data['priorities']
-                self.position = int(data['position'][0])
-                self.max_priority = float(data['max_priority'][0])
-                self.size = n
-                dt = time.time() - t0
-                print(f"[Buffer] Loaded {n} transitions ({dt:.1f}s)")
-                return True
-            except Exception as e:
-                print(f"[Buffer] Failed to load numpy buffer: {e}")
-                return False
-        
-        # Try legacy .pt format (migration path)
-        legacy_path = path.replace('.npz', '.pt')
-        if os.path.exists(legacy_path):
-            try:
-                print(f"[Buffer] Migrating legacy buffer from {legacy_path}...")
-                t0 = time.time()
-                data = torch.load(legacy_path, weights_only=False)
-                for i, (s, ns, r, d) in enumerate(data):
-                    if i >= self.max_size:
-                        break
-                    self.states[i] = s.numpy() if isinstance(s, torch.Tensor) else s
-                    self.next_states[i] = ns.numpy() if isinstance(ns, torch.Tensor) else ns
-                    self.rewards[i] = float(r.item() if isinstance(r, torch.Tensor) else r)
-                    self.dones[i] = float(d.item() if isinstance(d, torch.Tensor) else d)
-                    self.priorities[i] = 1.0  # Default priority for migrated data
-                self.size = min(len(data), self.max_size)
-                self.position = self.size % self.max_size
-                dt = time.time() - t0
-                print(f"[Buffer] Migrated {self.size} transitions from legacy format ({dt:.1f}s)")
-                # Save in new format immediately
-                self.save(path)
-                return True
-            except Exception as e:
-                print(f"[Buffer] Failed to migrate legacy buffer: {e}")
-                return False
-        
-        return False
-
-
-class TDTrainer:
-    """
-    Online TD(0) trainer for value-based Ludo learning.
-    
-    The model predicts V(s) ∈ [-1, +1] for each board state.
-    Training uses semi-gradient TD(0):
-        δ = R + γ·V(s') - V(s)
-        loss = δ²
-        ∇loss only through V(s), not V(s')  (semi-gradient)
+    Training happens at the END of each game:
+    1. Collect trajectory: [(state, action, legal_mask), ...] per player
+    2. Assign outcome z = +1 (winner) or -1 (loser)
+    3. For each step: compute advantage = z - V(s), update π and V
     """
     
     def __init__(self, model, device, learning_rate=LEARNING_RATE):
@@ -254,308 +64,382 @@ class TDTrainer:
             weight_decay=WEIGHT_DECAY
         )
         
-        self.gamma = TD_GAMMA
-        self.grad_accum_steps = GRAD_ACCUM_STEPS
         self.max_grad_norm = MAX_GRAD_NORM
+        self.entropy_coeff = ENTROPY_COEFF
+        self.value_loss_coeff = VALUE_LOSS_COEFF
         
-        # Experience buffer (Prioritized)
-        self.experience_buffer = PrioritizedExperienceBuffer() if USE_EXPERIENCE_BUFFER else None
+        # PPO parameters
+        self.clip_epsilon = CLIP_EPSILON
+        self.ppo_epochs = PPO_EPOCHS
+        self.ppo_buffer_games = PPO_BUFFER_GAMES
+        self.ppo_minibatch_size = PPO_MINIBATCH_SIZE
+        
+        # PPO buffer (accumulates steps across games, trains in batches)
+        self._ppo_buffer = []
+        self._ppo_games_buffered = 0
         
         # Tracking
         self.total_updates = 0
         self.total_games = 0
         self.best_win_rate = 0.0
-        self.accum_loss = 0.0
-        self.accum_count = 0
         self.last_ghost_game = 0
+        self.last_eval_wr = None
+        
+        # Running stats for dashboard
+        self.recent_policy_entropy = deque(maxlen=1000)
+        self.recent_value_loss = deque(maxlen=1000)
+        self.recent_policy_loss = deque(maxlen=1000)
+        self.recent_advantages = deque(maxlen=1000)
+        self.recent_clip_fractions = deque(maxlen=1000)
+        self.recent_approx_kl = deque(maxlen=1000)
         
         # Metrics history (appended to file)
         self.metrics_history = []
+
+    def train_on_game(self, trajectories, winner, model_player):
+        """
+        Buffer a completed game's trajectory for the next PPO update.
+        
+        Training only happens when the buffer reaches PPO_BUFFER_GAMES.
+        
+        Args:
+            trajectories: dict mapping player_id → list of (state_np, action, legal_mask_np, old_log_prob)
+            winner: int, the player_id who won (or -1 for draw)
+            model_player: int, which player was controlled by the model
+            
+        Returns:
+            dict with training stats (only when PPO update fires)
+        """
+        if winner == -1:
+            return {}  # Skip draws
+        
+        # Only use the model player's trajectory
+        trajectory = trajectories.get(model_player, [])
+        if not trajectory:
+            return {}
+        
+        # Outcome from model's perspective (sparse terminal signal)
+        loss_penalty = -1.0 / max(1, (NUM_ACTIVE_PLAYERS - 1))
+        z = 1.0 if model_player == winner else loss_penalty
+        
+        # Compute discounted returns (Monte Carlo with dense rewards)
+        # Gamma must be extreme (0.999) because Ludo games span 150+ moves.
+        # This prevents dense captures (+0.20) from eclipsing the terminal Win/Loss signal.
+        gamma = 0.999
+        discounted_returns = []
+        R = 0.0
+        
+        for i in reversed(range(len(trajectory))):
+            step = trajectory[i]
+            # step[4] is the dense step_reward if available
+            shaped_reward = step[4] if len(step) > 4 else 0.0
+            
+            # Terminal signal only applies to the very last step
+            if i == len(trajectory) - 1:
+                r_t = shaped_reward + z
+            else:
+                r_t = shaped_reward
+                
+            R = r_t + gamma * R
+            discounted_returns.insert(0, R)
+        
+        # Buffer each step with its corresponding return
+        for i, step in enumerate(trajectory):
+            self._ppo_buffer.append({
+                'state': step[0],
+                'action': step[1],
+                'legal_mask': step[2],
+                'old_log_prob': step[3],
+                'z': discounted_returns[i],  # True discounted return for this specific step
+            })
+        self._ppo_games_buffered += 1
+        
+        # If buffer is full, run PPO update
+        if self._ppo_games_buffered >= self.ppo_buffer_games:
+            return self._ppo_update()
+        
+        return {}
+    
+    def _ppo_update(self):
+        """
+        Run K epochs of mini-batch PPO training over the buffered data.
+        
+        This is where the actual learning happens:
+        1. Stack all buffered steps into tensors
+        2. For each epoch, shuffle and split into mini-batches
+        3. For each mini-batch: compute ratio, clip, update
+        """
+        if not self._ppo_buffer:
+            return {}
+        
+        self.model.train()
+        
+        n_steps = len(self._ppo_buffer)
+        
+        # Stack all buffered data into tensors
+        all_states = torch.from_numpy(
+            np.stack([s['state'] for s in self._ppo_buffer])
+        ).to(self.device, dtype=torch.float32)
+        
+        all_actions = torch.tensor(
+            [s['action'] for s in self._ppo_buffer],
+            dtype=torch.long, device=self.device
+        )
+        
+        all_masks = torch.from_numpy(
+            np.stack([s['legal_mask'] for s in self._ppo_buffer])
+        ).to(self.device, dtype=torch.float32)
+        
+        all_old_lp = torch.tensor(
+            [s['old_log_prob'] for s in self._ppo_buffer],
+            dtype=torch.float32, device=self.device
+        )
+        
+        all_returns = torch.tensor(
+            [s['z'] for s in self._ppo_buffer],
+            dtype=torch.float32, device=self.device
+        )
+        
+        # Track stats across all mini-batches
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy = 0.0
+        total_advantage = 0.0
+        total_clip_frac = 0.0
+        total_approx_kl = 0.0
+        n_minibatches = 0
+        
+        # Precompute and normalize advantages over the *entire* buffer once per update
+        with torch.no_grad():
+            all_values = self.model(all_states, all_masks)[1].squeeze(-1)
+            all_advantages = all_returns - all_values
+            adv_mean = all_advantages.mean()
+            adv_std = all_advantages.std()
+            all_advantages = (all_advantages - adv_mean) / (adv_std + 1e-8)
+            
+        for epoch in range(self.ppo_epochs):
+            # Shuffle indices for this epoch
+            indices = np.random.permutation(n_steps)
+            
+            for start in range(0, n_steps, self.ppo_minibatch_size):
+                end = min(start + self.ppo_minibatch_size, n_steps)
+                mb_idx = indices[start:end]
+                
+                mb_states = all_states[mb_idx]
+                mb_actions = all_actions[mb_idx]
+                mb_masks = all_masks[mb_idx]
+                mb_old_lp = all_old_lp[mb_idx]
+                mb_returns = all_returns[mb_idx]
+                mb_advantages = all_advantages[mb_idx]
+                
+                # Forward pass
+                policy, value = self.model(mb_states, mb_masks)
+                value = value.squeeze(-1)
+                
+                # Advantage: Pre-computed and Normalized over batch
+                advantage = mb_advantages
+                
+                # New log probs under current (updated) policy
+                new_lp = torch.log(
+                    policy.gather(1, mb_actions.unsqueeze(1)).squeeze(1) + 1e-8
+                )
+                
+                # PPO ratio: π_new(a|s) / π_old(a|s)
+                raw_ratio = torch.exp(new_lp - mb_old_lp)
+                # Safeguard against ratio explosions caused by temperature-induced low-prob exploration
+                ratio = torch.clamp(raw_ratio, 0.0, 10.0) 
+                
+                # Clipped surrogate objective
+                surr1 = ratio * advantage
+                surr2 = torch.clamp(
+                    ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon
+                ) * advantage
+                policy_loss = -torch.min(surr1, surr2).mean()
+                
+                # Value loss: Huber loss (smooth L1) protects against exploding Critic gradients
+                value_loss = F.smooth_l1_loss(value, mb_returns)
+                
+                # Entropy bonus: -Σ π·log(π)
+                entropy = -(policy * torch.log(policy + 1e-8)).sum(dim=1).mean()
+                
+                # Combined loss
+                loss = (policy_loss 
+                        + self.value_loss_coeff * value_loss 
+                        - self.entropy_coeff * entropy)
+                
+                # Gradient step
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
+                self.optimizer.step()
+                self.total_updates += 1
+                
+                # Accumulate stats
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_entropy += entropy.item()
+                total_advantage += advantage.mean().item()
+                
+                # PPO diagnostics: clip fraction and approx KL
+                with torch.no_grad():
+                    clipped = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
+                    approx_kl = (mb_old_lp - new_lp).mean().item()
+                total_clip_frac += clipped
+                total_approx_kl += abs(approx_kl)
+                n_minibatches += 1
+        
+        # Record average stats
+        if n_minibatches > 0:
+            avg_pl = total_policy_loss / n_minibatches
+            avg_vl = total_value_loss / n_minibatches
+            avg_ent = total_entropy / n_minibatches
+            avg_adv = total_advantage / n_minibatches
+            avg_clip = total_clip_frac / n_minibatches
+            avg_kl = total_approx_kl / n_minibatches
+            self.recent_policy_loss.append(avg_pl)
+            self.recent_value_loss.append(avg_vl)
+            self.recent_policy_entropy.append(avg_ent)
+            self.recent_advantages.append(avg_adv)
+            self.recent_clip_fractions.append(avg_clip)
+            self.recent_approx_kl.append(avg_kl)
+        
+        # Clear the buffer
+        games_trained = self._ppo_games_buffered
+        self._ppo_buffer.clear()
+        self._ppo_games_buffered = 0
+        
+        return {
+            'policy_loss': avg_pl if n_minibatches > 0 else 0,
+            'value_loss': avg_vl if n_minibatches > 0 else 0,
+            'entropy': avg_ent if n_minibatches > 0 else 0,
+            'total_steps': n_steps,
+            'ppo_games': games_trained,
+            'ppo_minibatches': n_minibatches,
+        }
+    
+    def flush_buffer(self):
+        """Train on any remaining buffered data (called before shutdown)."""
+        if self._ppo_buffer:
+            print(f"[Trainer] Flushing PPO buffer ({self._ppo_games_buffered} games, {len(self._ppo_buffer)} steps)")
+            self._ppo_update()
+    
+    def get_avg_entropy(self):
+        """Average policy entropy over recent updates."""
+        if not self.recent_policy_entropy:
+            return 0.0
+        return float(np.mean(self.recent_policy_entropy))
+    
+    def get_avg_value_loss(self):
+        """Average value loss over recent updates."""
+        if not self.recent_value_loss:
+            return 0.0
+        return float(np.mean(self.recent_value_loss))
+    
+    def get_avg_policy_loss(self):
+        """Average policy loss over recent updates."""
+        if not self.recent_policy_loss:
+            return 0.0
+        return float(np.mean(self.recent_policy_loss))
+    
+    def get_avg_advantage(self):
+        """Average advantage over recent updates."""
+        if not self.recent_advantages:
+            return 0.0
+        return float(np.mean(self.recent_advantages))
+    
+    def get_avg_clip_fraction(self):
+        """Average PPO clip fraction (should be 0.1-0.3 when healthy)."""
+        if not self.recent_clip_fractions:
+            return 0.0
+        return float(np.mean(self.recent_clip_fractions))
+    
+    def get_avg_approx_kl(self):
+        """Average approximate KL divergence between old and new policies."""
+        if not self.recent_approx_kl:
+            return 0.0
+        return float(np.mean(self.recent_approx_kl))
     
     def predict_value(self, state_tensor):
-        """Predict V(s) for a single state tensor."""
+        """Predict V(s) for a single state tensor (for logging/debugging)."""
         self.model.eval()
         with torch.no_grad():
-            x = state_tensor.unsqueeze(0).to(self.device, dtype=torch.float32)
-            _, value, _ = self.model(x)
-            return value.item()
+            t = torch.from_numpy(state_tensor).unsqueeze(0).to(self.device, dtype=torch.float32)
+            _, v = self.model(t)
+            return v.item()
     
     def predict_value_batch(self, state_tensors):
         """Predict V(s) for a batch of state tensors."""
         self.model.eval()
         with torch.no_grad():
-            if isinstance(state_tensors, list):
-                import numpy as np
-                batch = torch.from_numpy(np.stack(state_tensors)).to(self.device, dtype=torch.float32)
-            elif isinstance(state_tensors, torch.Tensor):
-                batch = state_tensors.to(self.device, dtype=torch.float32)
-            else:
-                batch = torch.from_numpy(state_tensors).to(self.device, dtype=torch.float32)
-            _, values, _ = self.model(batch)
-            return values.squeeze(-1).tolist()
-    
-    def td_update(self, state_tensor, next_state_tensor, reward, done):
-        """
-        Single TD(0) semi-gradient update.
-        
-        Returns: float — absolute TD error |δ|
-        """
-        self.model.train()
-        
-        s = state_tensor.unsqueeze(0).to(self.device, dtype=torch.float32)
-        
-        # V(s) — gradient flows through this
-        _, v_s, _ = self.model(s)
-        v_s = v_s.squeeze()
-        
-        # V(s') — detached, no gradient (semi-gradient TD)
-        with torch.no_grad():
-            if done:
-                v_next = 0.0
-            else:
-                s_next = next_state_tensor.unsqueeze(0).to(self.device, dtype=torch.float32)
-                _, v_s_next, _ = self.model(s_next)
-                v_next = v_s_next.squeeze().item()
-        
-        # TD target
-        target = reward + (1.0 - float(done)) * self.gamma * v_next
-        target_tensor = torch.tensor(target, device=self.device, dtype=torch.float32)
-        
-        # Loss = (target - V(s))²
-        td_error = target_tensor - v_s
-        loss = td_error ** 2
-        
-        # Scale for gradient accumulation
-        scaled_loss = loss / self.grad_accum_steps
-        scaled_loss.backward()
-        
-        self.accum_loss += loss.item()
-        self.accum_count += 1
-        
-        # Step optimizer every N accumulations
-        if self.accum_count >= self.grad_accum_steps:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            self.total_updates += 1
-            self.accum_count = 0
-        
-        # Store in experience buffer for replay
-        if self.experience_buffer is not None:
-            self.experience_buffer.add(state_tensor, next_state_tensor, reward, done)
-        
-        return abs(td_error.item())
-    
-    def td_update_batch(self, states, next_states, rewards, dones):
-        """Batched TD(0) update."""
-        self.model.train()
-        
-        # Support both numpy and torch input to reduce redundant transfers
-        s_np = states if isinstance(states, np.ndarray) else states.detach().cpu().numpy()
-        ns_np = next_states if isinstance(next_states, np.ndarray) else next_states.detach().cpu().numpy()
-        r_np = rewards if isinstance(rewards, np.ndarray) else rewards.detach().cpu().numpy()
-        d_np = dones if isinstance(dones, np.ndarray) else dones.detach().cpu().numpy()
-
-        s_gpu = torch.from_numpy(s_np).to(self.device, dtype=torch.float32)
-        ns_gpu = torch.from_numpy(ns_np).to(self.device, dtype=torch.float32)
-        r_gpu = torch.from_numpy(r_np).to(self.device, dtype=torch.float32)
-        d_gpu = torch.from_numpy(d_np).to(self.device, dtype=torch.float32)
-        
-        # V(s)
-        _, v_s, _ = self.model(s_gpu)
-        v_s = v_s.squeeze(-1)
-        
-        # V(s')
-        with torch.no_grad():
-            _, v_next_all, _ = self.model(ns_gpu)
-            v_next_all = v_next_all.squeeze(-1)
-            # Mask terminal states
-            v_next_all = v_next_all * (1.0 - d_gpu)
-            
-        # Target (clamped to tanh range to prevent gradient saturation)
-        target = torch.clamp(r_gpu + self.gamma * v_next_all, -1.0, 1.0)
-        
-        # Loss
-        loss = F.mse_loss(v_s, target)
-        
-        # Scale
-        scaled_loss = loss / self.grad_accum_steps
-        scaled_loss.backward()
-        
-        self.accum_loss += loss.item()
-        self.accum_count += 1
-        
-        if self.accum_count >= self.grad_accum_steps:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            self.total_updates += 1
-            self.accum_count = 0
-            
-        # Add to buffer
-        if self.experience_buffer is not None:
-            self.experience_buffer.add_batch(s_np, ns_np, r_np, d_np)
-
-        return loss.item()
-    
-    def replay_experience(self):
-        """
-        Train on prioritized replay from the buffer.
-        Uses importance sampling weights to correct gradient bias.
-        Updates priorities with fresh TD errors after each batch.
-        """
-        if self.experience_buffer is None or len(self.experience_buffer) < REPLAY_BATCH_SIZE:
-            return 0.0
-        
-        self.model.train()
-        total_loss = 0.0
-        
-        # Anneal β from PER_BETA_START → PER_BETA_END over training
-        beta_progress = min(1.0, self.total_games / max(1, PER_BETA_ANNEAL_GAMES))
-        beta = PER_BETA_START + (PER_BETA_END - PER_BETA_START) * beta_progress
-        
-        for _ in range(REPLAY_STEPS):
-            # Sample with priorities
-            states, next_states, rewards, dones, indices, is_weights = \
-                self.experience_buffer.sample(REPLAY_BATCH_SIZE, beta=beta)
-            
-            states = states.to(self.device, dtype=torch.float32)
-            next_states = next_states.to(self.device, dtype=torch.float32)
-            rewards = rewards.to(self.device)
-            dones = dones.to(self.device)
-            is_weights = is_weights.to(self.device)
-            
-            # Batch V(s)
-            _, v_s, _ = self.model(states)
-            v_s = v_s.squeeze(-1)
-            
-            # Batch V(s') — detached
-            with torch.no_grad():
-                _, v_next, _ = self.model(next_states)
-                v_next = v_next.squeeze(-1)
-            
-            # TD targets and errors (clamped to tanh range)
-            targets = torch.clamp(rewards + (1.0 - dones) * self.gamma * v_next, -1.0, 1.0)
-            td_errors = targets - v_s
-            
-            # IS-weighted MSE loss: weight each transition's loss by its IS weight
-            loss = (is_weights * td_errors.pow(2)).mean()
-            
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            
-            # Update priorities with fresh TD errors
-            self.experience_buffer.update_priorities(indices, td_errors)
-            
-            total_loss += loss.item()
-            self.total_updates += 1
-        
-        return total_loss / REPLAY_STEPS
-    
-    def flush_gradients(self):
-        """Force a gradient step even if accumulation isn't full."""
-        if self.accum_count > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            self.total_updates += 1
-            self.accum_count = 0
+            t = torch.from_numpy(state_tensors).to(self.device, dtype=torch.float32)
+            _, v = self.model(t)
+            return v.squeeze(-1).cpu().numpy()
     
     def maybe_save_ghost(self, elo_tracker=None):
         """Save a ghost snapshot if enough games have passed."""
         games_since_ghost = self.total_games - self.last_ghost_game
         if games_since_ghost >= GHOST_SAVE_INTERVAL:
             ghost_path = os.path.join(GHOSTS_DIR, f"ghost_{self.total_games:06d}.pt")
+            os.makedirs(GHOSTS_DIR, exist_ok=True)
             torch.save({
                 'model_state_dict': self.model.state_dict(),
                 'total_games': self.total_games,
-                'total_updates': self.total_updates,
             }, ghost_path)
             self.last_ghost_game = self.total_games
-            print(f"[Ghost] Saved ghost at game {self.total_games}: {ghost_path}")
-            
-            # Cleanup old ghosts (Elo-based if tracker available, else FIFO)
             self._cleanup_ghosts(elo_tracker)
+            return True
+        return False
     
     def _cleanup_ghosts(self, elo_tracker=None):
         """Prune ghosts beyond MAX_GHOSTS. Uses Elo-based pruning if available."""
-        try:
-            ghosts = sorted([
-                f for f in os.listdir(GHOSTS_DIR) if f.startswith('ghost_') and f.endswith('.pt')
-            ])
-            while len(ghosts) > MAX_GHOSTS:
-                if elo_tracker is not None:
-                    # Elo-based: remove weakest ghost
-                    weakest = elo_tracker.get_weakest_ghost(GHOSTS_DIR)
-                    if weakest:
-                        path, name, elo = weakest
-                        os.remove(path)
-                        ghosts = [g for g in ghosts if g != os.path.basename(path)]
-                        print(f"[Ghost] Pruned weakest: {name} (Elo {elo:.0f})")
-                    else:
-                        oldest = ghosts.pop(0)
-                        os.remove(os.path.join(GHOSTS_DIR, oldest))
-                else:
-                    # Fallback: FIFO
-                    oldest = ghosts.pop(0)
-                    os.remove(os.path.join(GHOSTS_DIR, oldest))
-        except Exception:
-            pass
+        if not os.path.exists(GHOSTS_DIR):
+            return
+        ghosts = sorted([f for f in os.listdir(GHOSTS_DIR) if f.endswith('.pt')])
+        while len(ghosts) > MAX_GHOSTS:
+            # Simple: remove oldest
+            victim = ghosts[0]
+            if elo_tracker is not None:
+                # Find lowest Elo ghost
+                ghost_elos = []
+                for g in ghosts:
+                    name = g.replace('.pt', '')
+                    elo = elo_tracker.get_rating(name)
+                    ghost_elos.append((elo, g))
+                ghost_elos.sort()
+                victim = ghost_elos[0][1]
+            
+            os.remove(os.path.join(GHOSTS_DIR, victim))
+            ghosts.remove(victim)
     
-    def write_live_stats(self, win_rate, td_error, epsilon, gpm, 
+    def write_live_stats(self, win_rate, gpm, temperature=1.0,
                          eval_wr=None, elo_tracker=None, game_db=None):
         """Write live stats JSON for dashboard consumption."""
         
-        # Calculate Value Calibration Metrics
-        v_mean, v_pre_win, v_pre_loss = 0.0, 0.0, 0.0
-        if self.experience_buffer and self.experience_buffer.size > 0:
-            import numpy as np
-            buf = self.experience_buffer
-            size = buf.size
-            idx = np.random.choice(size, min(1000, size), replace=False)
-            
-            states = torch.from_numpy(buf.states[idx]).to(self.device).float()
-            self.model.eval()
-            with torch.no_grad():
-                _, vals, _ = self.model(states)
-                vals_np = vals.squeeze(-1).cpu().numpy()
-            v_mean = float(vals_np.mean())
-            
-            d = buf.dones[:size]
-            r = buf.rewards[:size]
-            win_idx = np.where((d > 0.5) & (np.isclose(r, 1.0, atol=0.01)))[0]
-            loss_idx = np.where((d > 0.5) & (np.isclose(r, -1.0, atol=0.01)))[0]
-            
-            if len(win_idx) > 10:
-                ws = torch.from_numpy(buf.states[win_idx[-100:]]).to(self.device).float()
-                with torch.no_grad():
-                    _, wv, _ = self.model(ws)
-                v_pre_win = float(wv.mean().item())
-            if len(loss_idx) > 10:
-                ls = torch.from_numpy(buf.states[loss_idx[-100:]]).to(self.device).float()
-                with torch.no_grad():
-                    _, lv, _ = self.model(ls)
-                v_pre_loss = float(lv.mean().item())
-
         stats = {
             'total_games': self.total_games,
             'total_updates': self.total_updates,
             'win_rate_100': round(win_rate * 100, 1),
-            'avg_td_error': round(td_error, 6),
-            'epsilon': round(epsilon, 4),
+            'policy_entropy': round(self.get_avg_entropy(), 4),
+            'avg_value_loss': round(self.get_avg_value_loss(), 6),
+            'avg_policy_loss': round(self.get_avg_policy_loss(), 6),
+            'avg_advantage': round(self.get_avg_advantage(), 4),
+            'clip_fraction': round(self.get_avg_clip_fraction(), 4),
+            'approx_kl': round(self.get_avg_approx_kl(), 6),
+            'temperature': round(temperature, 3),
             'games_per_minute': round(gpm, 1),
             'best_eval_win_rate': round(self.best_win_rate * 100, 1),
-            'buffer_size': len(self.experience_buffer) if self.experience_buffer else 0,
             'ghost_count': len([f for f in os.listdir(GHOSTS_DIR) if f.endswith('.pt')]) if os.path.exists(GHOSTS_DIR) else 0,
-            'v_mean': round(v_mean, 4),
-            'v_pre_win': round(v_pre_win, 4),
-            'v_pre_loss': round(v_pre_loss, 4),
+            'is_stagnated': getattr(self, 'is_stagnated', False),
+            'play_alarm': getattr(self, 'play_alarm', False),
             'timestamp': time.time(),
         }
         if eval_wr is not None:
+            self.last_eval_wr = eval_wr
             stats['eval_win_rate'] = round(eval_wr * 100, 1)
+        elif getattr(self, 'last_eval_wr', None) is not None:
+            stats['eval_win_rate'] = round(self.last_eval_wr * 100, 1)
         
         # Enrich with Elo data
         if elo_tracker is not None:
@@ -605,14 +489,15 @@ class TDTrainer:
         except Exception:
             pass
     
-    def log_metrics(self, win_rate, avg_td_error, epsilon, games_played, eval_win_rate=None):
+    def log_metrics(self, win_rate, games_played, eval_win_rate=None):
         """Append training metrics to history file."""
         entry = {
             "games": games_played,
             "updates": self.total_updates,
             "win_rate": round(win_rate, 4),
-            "avg_td_error": round(avg_td_error, 6),
-            "epsilon": round(epsilon, 4),
+            "policy_entropy": round(self.get_avg_entropy(), 4),
+            "avg_value_loss": round(self.get_avg_value_loss(), 6),
+            "avg_policy_loss": round(self.get_avg_policy_loss(), 6),
             "timestamp": time.time(),
         }
         if eval_win_rate is not None:
@@ -627,18 +512,23 @@ class TDTrainer:
             print(f"[Trainer] Failed to save metrics: {e}")
     
     def save_checkpoint(self, path=None, is_best=False):
-        """Save full training state (model + optimizer + buffer)."""
+        """Save full training state (model + optimizer)."""
         path = path or MAIN_CKPT_PATH
         os.makedirs(os.path.dirname(path), exist_ok=True)
         
+        # Always save "clean" weights (strip torch.compile prefix if present)
+        raw_state_dict = self.model.state_dict()
+        clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
+        
         save_dict = {
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': clean_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'total_updates': self.total_updates,
             'total_games': self.total_games,
             'best_win_rate': self.best_win_rate,
             'last_ghost_game': self.last_ghost_game,
             'metrics_history': self.metrics_history,
+            'last_eval_wr': getattr(self, 'last_eval_wr', None),
         }
         
         # Save to temp file first, then rename (atomic)
@@ -647,15 +537,13 @@ class TDTrainer:
         os.replace(tmp_path, path)
         
         if is_best:
+            raw_state_dict = self.model.state_dict()
+            clean_state_dict = {k.replace('_orig_mod.', ''): v for k, v in raw_state_dict.items()}
             torch.save({
-                'model_state_dict': self.model.state_dict(),
+                'model_state_dict': clean_state_dict,
                 'total_games': self.total_games,
                 'best_win_rate': self.best_win_rate,
             }, BEST_CKPT_PATH)
-        
-        # Save experience buffer separately (can be large)
-        if self.experience_buffer is not None and len(self.experience_buffer) > 0:
-            self.experience_buffer.save()
     
     def load_checkpoint(self, path=None):
         """Load full training state. Returns True if successful."""
@@ -664,35 +552,48 @@ class TDTrainer:
             return False
         try:
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            if 'optimizer_state_dict' in checkpoint:
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.total_updates = checkpoint.get('total_updates', 0)
-            self.total_games = checkpoint.get('total_games', 0)
-            self.best_win_rate = checkpoint.get('best_win_rate', 0.0)
-            self.last_ghost_game = checkpoint.get('last_ghost_game', 0)
-            self.metrics_history = checkpoint.get('metrics_history', [])
-            print(f"[Trainer] Loaded checkpoint: {self.total_games} games, {self.total_updates} updates")
             
-            # Load experience buffer
-            if self.experience_buffer is not None:
-                self.experience_buffer.load()
+            # Handle both formats: wrapped dict or raw state_dict
+            # Extract the raw state dict
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
             
+            # 1. Strip '_orig_mod.' from checkpoint if it exists (e.g. from an interrupted compiled run)
+            state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+            
+            # 2. If current model is compiled, add '_orig_mod.' back to keys so load_state_dict matches
+            is_compiled = hasattr(self.model, '_orig_mod')
+            if is_compiled:
+                state_dict = {'_orig_mod.' + k: v for k, v in state_dict.items()}
+            
+            # Load mapped states
+            self.model.load_state_dict(state_dict)
+            
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                # Full checkpoint
+                if 'optimizer_state_dict' in checkpoint:
+                    try:
+                        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                    except Exception as e:
+                        print(f"[Trainer] Warning: Could not load optimizer state: {e}")
+                self.total_updates = checkpoint.get('total_updates', 0)
+                self.total_games = checkpoint.get('total_games', 0)
+                self.best_win_rate = checkpoint.get('best_win_rate', 0.0)
+                self.last_ghost_game = checkpoint.get('last_ghost_game', 0)
+                self.metrics_history = checkpoint.get('metrics_history', [])
+                self.last_eval_wr = checkpoint.get('last_eval_wr', None)
+                print(f"[Trainer] Loaded full checkpoint: {self.total_games} games, {self.total_updates} updates")
+            else:
+                # Raw weights
+                self.total_updates = 0
+                self.total_games = 0
+                self.best_win_rate = 0.0
+                self.last_ghost_game = 0
+                self.metrics_history = []
+                print(f"[Trainer] Loaded raw model weights (fresh optimizer, counters reset to 0)")
             return True
         except Exception as e:
             print(f"[Trainer] Failed to load checkpoint: {e}")
-            return False
-    
-    def load_kickstart(self, kickstart_path):
-        """Load weights from kickstart model (model weights only, no optimizer)."""
-        if not os.path.exists(kickstart_path):
-            print(f"[Trainer] Kickstart not found: {kickstart_path}")
-            return False
-        try:
-            checkpoint = torch.load(kickstart_path, map_location=self.device, weights_only=False)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"[Trainer] Loaded kickstart weights from {kickstart_path}")
-            return True
-        except Exception as e:
-            print(f"[Trainer] Failed to load kickstart: {e}")
             return False
