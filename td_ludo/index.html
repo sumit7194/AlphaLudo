@@ -1004,6 +1004,10 @@
             return Number(n).toFixed(dec);
         }
 
+        function isHiddenIdentity(name) {
+            return name === 'Inactive' || name === 'Main';
+        }
+
         function updateKPIs(stats) {
             if (!stats || Object.keys(stats).length === 0) return;
             lastStats = stats;
@@ -1133,6 +1137,7 @@
             if (eloData.history && Object.keys(eloData.history).length > 0) {
                 const datasets = [];
                 for (const [name, points] of Object.entries(eloData.history)) {
+                    if (isHiddenIdentity(name)) continue;
                     if (points.length < 2) continue;
                     const color = getColor(name);
                     datasets.push({
@@ -1164,7 +1169,9 @@
             if (eloData.rankings) {
                 const tbody = document.getElementById('leagueBody');
                 // rankings come as arrays: [name, elo]
-                const rankings = eloData.rankings.map(r => Array.isArray(r) ? { name: r[0], elo: r[1] } : r);
+                const rankings = eloData.rankings
+                    .map(r => Array.isArray(r) ? { name: r[0], elo: r[1] } : r)
+                    .filter(r => !isHiddenIdentity(r.name));
                 const maxElo = Math.max(...rankings.map(r => r.elo), 1600);
                 const minElo = Math.min(...rankings.map(r => r.elo), 1400);
                 const range = maxElo - minElo || 1;
@@ -1204,7 +1211,7 @@
                     resultText = 'TIMEOUT';
                 }
 
-                const uniquePlayers = [...new Set(g.players)];
+                const uniquePlayers = [...new Set(g.players.filter(name => !isHiddenIdentity(name)))];
                 const playersStr = uniquePlayers.join(' vs ');
                 return `<div class="game-row">
             <div class="game-num">#${g.game}</div>
@@ -1220,7 +1227,9 @@
 
             // Use recent_opponent_stats (last 500) if available, fallback to all-time  
             const oppStats = stats.recent_opponent_stats || stats.opponent_stats || {};
-            const opponents = Object.entries(oppStats).filter(([name]) => name !== 'Main' && name !== 'Model');
+            const opponents = Object.entries(oppStats).filter(
+                ([name]) => !isHiddenIdentity(name) && name !== 'Model'
+            );
 
             if (opponents.length === 0) return;
 

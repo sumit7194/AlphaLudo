@@ -309,7 +309,8 @@ def main():
     print(f"[Train] Mode: {MODE}")
     
     # Initialize model — AlphaLudoV5 "V6 Big Brain" (10 blocks × 128 channels)
-    model = AlphaLudoV5(num_res_blocks=10, num_channels=128)
+    model_factory = lambda: AlphaLudoV5(num_res_blocks=10, num_channels=128)
+    model = model_factory()
     print(f"[Train] Architecture: AlphaLudoV6-Big (128ch, 10res, {model.count_parameters():,} params)")
     model.to(device)
     
@@ -348,7 +349,7 @@ def main():
     # Initialize Elo Tracker
     elo_tracker = EloTracker(save_path=ELO_PATH)
     _elo_tracker = elo_tracker
-    print(f"[Train] Elo Tracker initialized (Main: {elo_tracker.get_rating('Main'):.0f})")
+    print(f"[Train] Elo Tracker initialized (Model: {elo_tracker.get_rating('Model'):.0f})")
     
     # Initialize Game DB
     game_db = GameDB(GAME_DB_PATH)
@@ -367,7 +368,11 @@ def main():
         start_dashboard_server(port=args.port)
     
     # Initialize game player (Vectorized Actor-Critic)
-    player = VectorACGamePlayer(trainer, BATCH_SIZE, device)
+    player = VectorACGamePlayer(
+        trainer, BATCH_SIZE, device,
+        model_factory=model_factory,
+        elo_tracker=elo_tracker,
+    )
     _player = player
     
     # Stats tracking
@@ -527,7 +532,7 @@ def main():
     print(f"  Games This Session: {games_played}")
     print(f"  Total Games: {trainer.total_games}")
     print(f"  Total Updates: {trainer.total_updates}")
-    print(f"  Main Elo: {elo_tracker.get_rating('Main'):.0f}")
+    print(f"  Model Elo: {elo_tracker.get_rating('Model'):.0f}")
     print(f"  Best Eval Win Rate: {trainer.best_win_rate*100:.1f}%")
     print(f"  Duration: {elapsed/3600:.2f} hours")
     if games_played > 0 and elapsed > 0:

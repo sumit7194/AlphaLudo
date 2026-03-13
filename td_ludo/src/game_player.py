@@ -14,6 +14,7 @@ Key changes from TD-Gammon approach:
 - Training happens at end-of-game, not per-step
 """
 
+import os
 import random
 import time
 import numpy as np
@@ -21,12 +22,16 @@ import torch
 import torch.nn.functional as F
 import td_ludo_cpp as ludo_cpp
 
-from src.heuristic_bot import HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot
+from src.heuristic_bot import (
+    HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
+    ExpertBot,
+)
 from src.reward_shaping import compute_shaped_reward
 from src.config import (
     GAME_COMPOSITION, MAX_MOVES_PER_GAME,
     TEMPERATURE_START, TEMPERATURE_END, TEMPERATURE_DECAY_GAMES,
-    NUM_ACTIVE_PLAYERS
+    NUM_ACTIVE_PLAYERS, GHOSTS_DIR,
+    SELFPLAY_GHOST_FRACTION, SELFPLAY_GHOST_STRATEGY,
 )
 
 
@@ -37,6 +42,7 @@ BOT_CLASSES = {
     'Defensive': DefensiveBot,
     'Racing': RacingBot,
     'Random': RandomBot,
+    'Expert': ExpertBot,
 }
 
 
@@ -49,14 +55,22 @@ class VectorACGamePlayer:
     - Collects trajectories for ALL players (model + bots)
     - Training happens at end of each game (not per-step)
     """
-    def __init__(self, trainer, batch_size, device):
+    def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None):
         self.trainer = trainer
         self.batch_size = batch_size
         self.device = device
+        self.model_factory = model_factory
+        self.elo_tracker = elo_tracker
         
         # Initialize Vector Env
         two_player = (NUM_ACTIVE_PLAYERS == 2)
         self.env = ludo_cpp.VectorGameState(batch_size, two_player)
+
+        self.ghost_cache = {}
+        self.max_cached_ghosts = 4
+        self.active_ghost = None
+        self.active_ghost_selected_at = -1
+        self.ghost_refresh_games = 1000
         
         # Per-game state tracking
         self.game_compositions = [self._random_composition() for _ in range(batch_size)]
@@ -86,6 +100,83 @@ class VectorACGamePlayer:
         progress = total_games / TEMPERATURE_DECAY_GAMES
         return TEMPERATURE_START - progress * (TEMPERATURE_START - TEMPERATURE_END)
 
+    def _get_ghost_paths(self):
+        """Return available ghost snapshot paths sorted newest-first."""
+        if not os.path.exists(GHOSTS_DIR):
+            return []
+        ghosts = [
+            os.path.join(GHOSTS_DIR, fname)
+            for fname in os.listdir(GHOSTS_DIR)
+            if fname.startswith("ghost_") and fname.endswith(".pt")
+        ]
+        return sorted(ghosts, reverse=True)
+
+    def _load_ghost_model(self, ghost_path):
+        """Load a ghost snapshot into an eval-only model, keeping a small cache."""
+        if ghost_path in self.ghost_cache:
+            model = self.ghost_cache.pop(ghost_path)
+            self.ghost_cache[ghost_path] = model
+            return model
+
+        if self.model_factory is None:
+            return None
+
+        model = self.model_factory().to(self.device)
+        checkpoint = torch.load(ghost_path, map_location=self.device, weights_only=False)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        model.load_state_dict(state_dict)
+        model.eval()
+
+        for param in model.parameters():
+            param.requires_grad_(False)
+
+        self.ghost_cache[ghost_path] = model
+        while len(self.ghost_cache) > self.max_cached_ghosts:
+            old_path, old_model = next(iter(self.ghost_cache.items()))
+            del self.ghost_cache[old_path]
+            del old_model
+
+        return model
+
+    def _get_active_ghost(self):
+        """Keep one active ghost opponent for a while to avoid model-loading churn."""
+        ghost_pool = self._get_ghost_paths()
+        if not ghost_pool:
+            self.active_ghost = None
+            return None
+
+        needs_refresh = (
+            self.active_ghost is None
+            or self.active_ghost['path'] not in ghost_pool
+            or (self.trainer.total_games - self.active_ghost_selected_at) >= self.ghost_refresh_games
+        )
+        if not needs_refresh:
+            return self.active_ghost
+
+        if self.elo_tracker is not None:
+            ghost_path = self.elo_tracker.select_ghost(
+                ghost_pool,
+                main_name="Model",
+                strategy=SELFPLAY_GHOST_STRATEGY,
+            )
+        else:
+            ghost_path = random.choice(ghost_pool)
+
+        if not ghost_path:
+            self.active_ghost = None
+            return None
+
+        ghost_name = os.path.basename(ghost_path).replace(".pt", "")
+        self.active_ghost = {"path": ghost_path, "name": ghost_name}
+        self.active_ghost_selected_at = self.trainer.total_games
+        return self.active_ghost
+
+    def _pick_selfplay_opponent(self):
+        """Choose whether self-play should face the live model or the active ghost."""
+        if random.random() >= SELFPLAY_GHOST_FRACTION:
+            return None
+        return self._get_active_ghost()
+
     def play_step(self, train=True):
         """
         Advance all games by one step.
@@ -96,7 +187,7 @@ class VectorACGamePlayer:
         
         actions = []
         current_players = []
-        model_decision_indices = []  # Games where model needs to make a decision
+        decision_groups = {}  # (controller_type, controller_id) -> [game_indices]
         
         # 2. Determine actions for all games
         for i in range(self.batch_size):
@@ -145,11 +236,16 @@ class VectorACGamePlayer:
                 actions.append(-1)
                 continue
             
-            ptype = self.game_compositions[i]['player_types'][cp]
+            composition = self.game_compositions[i]
+            controller = composition['controllers'][cp]
+            ptype = composition['player_types'][cp]
             
-            if ptype in ('Model', 'SelfPlay'):
-                # Model makes the decision — will be batched below
-                model_decision_indices.append(i)
+            if controller in ('Model', 'SelfPlay', 'Ghost'):
+                if controller == 'Ghost':
+                    group_key = ('Ghost', composition['ghost_paths'][cp])
+                else:
+                    group_key = ('Main', None)
+                decision_groups.setdefault(group_key, []).append(i)
                 actions.append(-2)  # Placeholder marker
             else:
                 # Bot makes the decision — no trajectory needed
@@ -158,77 +254,86 @@ class VectorACGamePlayer:
                 actions.append(action)
 
         # 3. Batched Model Action Selection via Policy Head
-        if model_decision_indices:
-            temperature = self.get_temperature(self.trainer.total_games)
-            
-            # Gather states and legal masks for all model decisions
-            batch_states = []
-            batch_legal_masks = []
-            batch_legal_moves = []
-            
-            for idx in model_decision_indices:
-                game = self.env.get_game(idx)
-                lmoves = ludo_cpp.get_legal_moves(game)
-                batch_legal_moves.append(lmoves)
-                
-                # State tensor from C++ encoder
-                state_tensor = ludo_cpp.encode_state(game)
-                batch_states.append(state_tensor)
-                
-                # Legal mask (4 tokens)
-                legal_mask = np.zeros(4, dtype=np.float32)
-                for m in lmoves:
-                    legal_mask[m] = 1.0
-                batch_legal_masks.append(legal_mask)
-            
-            # Batch forward pass — ONE pass for all model decisions
-            states_t = torch.from_numpy(np.stack(batch_states)).to(self.device, dtype=torch.float32)
-            masks_t = torch.from_numpy(np.stack(batch_legal_masks)).to(self.device, dtype=torch.float32)
-            
-            with torch.no_grad():
-                policy_logits = self.trainer.model.forward_policy_only(states_t, masks_t)
-                
-                # Base probabilities at T=1.0 (for PPO old_log_prob — must match training)
-                probs_base = F.softmax(policy_logits, dim=1)
-                
-                # Apply temperature for ACTION SAMPLING (exploration)
-                if temperature != 1.0:
-                    sample_logits = policy_logits / temperature
-                    probs_sample = F.softmax(sample_logits, dim=1)
+        if decision_groups:
+            main_temperature = self.get_temperature(self.trainer.total_games)
+
+            for (controller, controller_id), indices in decision_groups.items():
+                batch_states = []
+                batch_legal_masks = []
+                batch_legal_moves = []
+
+                for idx in indices:
+                    game = self.env.get_game(idx)
+                    lmoves = ludo_cpp.get_legal_moves(game)
+                    batch_legal_moves.append(lmoves)
+
+                    state_tensor = ludo_cpp.encode_state(game)
+                    batch_states.append(state_tensor)
+
+                    legal_mask = np.zeros(4, dtype=np.float32)
+                    for move in lmoves:
+                        legal_mask[move] = 1.0
+                    batch_legal_masks.append(legal_mask)
+
+                states_t = torch.from_numpy(np.stack(batch_states)).to(self.device, dtype=torch.float32)
+                masks_t = torch.from_numpy(np.stack(batch_legal_masks)).to(self.device, dtype=torch.float32)
+
+                if controller == 'Ghost':
+                    model = self._load_ghost_model(controller_id)
+                    sample_temperature = 1.0
                 else:
-                    probs_sample = probs_base
-                
-                sampled_actions = torch.multinomial(probs_sample, num_samples=1).squeeze(1)
-                
-                # Compute old_log_prob from base (T=1.0) distribution for PPO ratio
-                old_log_probs = torch.log(
-                    probs_base.gather(1, sampled_actions.unsqueeze(1)).squeeze(1) + 1e-8
-                )
-            
-            sampled_np = sampled_actions.cpu().numpy()
-            old_lp_np = old_log_probs.cpu().numpy()
-            
-            for j, idx in enumerate(model_decision_indices):
-                action = int(sampled_np[j])
-                lmoves = batch_legal_moves[j]
-                
-                # Safety: ensure sampled action is actually legal
-                if action not in lmoves:
-                    action = random.choice(lmoves)
-                
-                actions[idx] = action
-                
-                # Store model's trajectory (with old_log_prob for PPO)
-                if train:
+                    model = self.trainer.model
+                    sample_temperature = main_temperature
+
+                if model is None:
+                    for j, idx in enumerate(indices):
+                        lmoves = batch_legal_moves[j]
+                        action = random.choice(lmoves)
+                        actions[idx] = action
+                    continue
+
+                with torch.no_grad():
+                    policy_logits = model.forward_policy_only(states_t, masks_t)
+                    probs_base = F.softmax(policy_logits, dim=1)
+
+                    if sample_temperature != 1.0:
+                        sample_logits = policy_logits / sample_temperature
+                        probs_sample = F.softmax(sample_logits, dim=1)
+                    else:
+                        probs_sample = probs_base
+
+                    sampled_actions = torch.multinomial(probs_sample, num_samples=1).squeeze(1)
+                    old_log_probs = torch.log(
+                        probs_sample.gather(1, sampled_actions.unsqueeze(1)).squeeze(1) + 1e-8
+                    )
+
+                sampled_np = sampled_actions.cpu().numpy()
+                old_lp_np = old_log_probs.cpu().numpy()
+
+                for j, idx in enumerate(indices):
+                    action = int(sampled_np[j])
+                    lmoves = batch_legal_moves[j]
+
+                    if action not in lmoves:
+                        action = random.choice(lmoves)
+
+                    actions[idx] = action
+
                     cp = current_players[idx]
+                    if not train:
+                        continue
+                    if cp not in self.game_compositions[idx]['train_players']:
+                        continue
+
                     if cp not in self.trajectories[idx]:
                         self.trajectories[idx][cp] = []
-                    self.trajectories[idx][cp].append((
-                        batch_states[j],
-                        action,
-                        batch_legal_masks[j],
-                        float(old_lp_np[j]),   # old_log_prob at T=1.0 for PPO
-                    ))
+                    self.trajectories[idx][cp].append({
+                        'state': batch_states[j],
+                        'action': action,
+                        'legal_mask': batch_legal_masks[j],
+                        'old_log_prob': float(old_lp_np[j]),
+                        'temperature': float(sample_temperature),
+                    })
         
         # Save pre-step states for reward computation
         pre_step_states = []
@@ -274,13 +379,12 @@ class VectorACGamePlayer:
                 # Append to the LAST trajectory entry for this player
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:
-                    tup = self.trajectories[i][cp][last_idx]
-                    # Currently tup is (state, action, mask, old_lp)
-                    if len(tup) == 4:
-                        self.trajectories[i][cp][last_idx] = tup + (step_reward,)
+                    step = self.trajectories[i][cp][last_idx]
+                    step['step_reward'] = step_reward
             if dones_np[i]:
                 winner = info_list[i]['winner']
-                mpid = self.game_compositions[i]['model_player']
+                composition = self.game_compositions[i]
+                mpid = composition['model_player']
                 
                 if winner == -1:
                     outcome = "Timeout"
@@ -290,12 +394,14 @@ class VectorACGamePlayer:
                     outcome = "Win" if model_won else "Loss"
                 
                 # Train on this game's trajectories
-                if train and winner >= 0 and self.trajectories[i]:
-                    train_stats = self.trainer.train_on_game(
-                        self.trajectories[i],
-                        winner,
-                        mpid
-                    )
+                if train and winner >= 0:
+                    for train_player in composition['train_players']:
+                        if train_player in self.trajectories[i]:
+                            self.trainer.train_on_game(
+                                self.trajectories[i],
+                                winner,
+                                train_player
+                            )
                     self.trainer.total_games += 1
                 
                 # Stats
@@ -307,7 +413,7 @@ class VectorACGamePlayer:
                     self.recent_wins = self.recent_wins[-100:]
 
                 # Capture identities before reset
-                identities = self.game_compositions[i]['player_types']
+                identities = composition['player_types']
 
                 # Reset game
                 self.env.reset_game(i)
@@ -371,27 +477,58 @@ class VectorACGamePlayer:
             model_player = random.choice(seats)
             opponent_seat = 2 if model_player == 0 else 0
             player_types = ['Inactive'] * 4
+            controllers = ['Inactive'] * 4
+            ghost_paths = [None] * 4
+            train_players = {model_player}
             player_types[model_player] = 'Model'
+            controllers[model_player] = 'Model'
             if game_type == 'SelfPlay':
-                player_types[opponent_seat] = 'SelfPlay'
+                ghost_info = self._pick_selfplay_opponent()
+                if ghost_info is not None:
+                    player_types[opponent_seat] = ghost_info['name']
+                    controllers[opponent_seat] = 'Ghost'
+                    ghost_paths[opponent_seat] = ghost_info['path']
+                else:
+                    player_types[opponent_seat] = 'SelfPlay'
+                    controllers[opponent_seat] = 'SelfPlay'
+                    train_players.add(opponent_seat)
             elif game_type == 'Random':
                 player_types[opponent_seat] = 'Random'
+                controllers[opponent_seat] = 'Random'
             else:
                 player_types[opponent_seat] = game_type
-            return {'model_player': model_player, 'player_types': player_types}
+                controllers[opponent_seat] = game_type
+            return {
+                'model_player': model_player,
+                'player_types': player_types,
+                'controllers': controllers,
+                'ghost_paths': ghost_paths,
+                'train_players': sorted(train_players),
+            }
             
         model_player = random.randint(0, 3)
         player_types = ['Model'] * 4
+        controllers = ['Model'] * 4
+        ghost_paths = [None] * 4
         if game_type != 'SelfPlay':
             bot_seats = [i for i in range(4) if i != model_player]
             if game_type == 'Random':
                 for seat in bot_seats:
                     player_types[seat] = 'Random'
+                    controllers[seat] = 'Random'
             else:
                 primary_seat = random.choice(bot_seats)
                 player_types[primary_seat] = game_type
+                controllers[primary_seat] = game_type
                 remaining_seats = [s for s in bot_seats if s != primary_seat]
                 bot_options = list(BOT_CLASSES.keys()) + ['Random']
                 for seat in remaining_seats:
                     player_types[seat] = random.choice(bot_options)
-        return {'model_player': model_player, 'player_types': player_types}
+                    controllers[seat] = player_types[seat]
+        return {
+            'model_player': model_player,
+            'player_types': player_types,
+            'controllers': controllers,
+            'ghost_paths': ghost_paths,
+            'train_players': [model_player],
+        }

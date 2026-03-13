@@ -21,10 +21,10 @@ from collections import defaultdict
 
 class EloTracker:
     """
-    4-player Elo rating system.
-    
-    In a 4-player game, the winner beats 3 losers.
-    Each win/loss pair contributes K/3 to the rating change.
+    N-player Elo rating system that ignores inactive seats.
+
+    In an N-player game, the winner beats all active losers.
+    Each win/loss pair contributes K / (N - 1) to the rating change.
     """
     
     def __init__(self, k_factor=32, initial_rating=1500, save_path=None):
@@ -49,7 +49,7 @@ class EloTracker:
     
     def update_from_game(self, identities, winner_idx, game_num=None):
         """
-        Update Elo ratings from a 4-player game result.
+        Update Elo ratings from a game result.
         
         Args:
             identities: List of 4 names (e.g. ['Main', 'Heuristic', 'Main', 'Main'])
@@ -58,26 +58,43 @@ class EloTracker:
         """
         if winner_idx < 0 or winner_idx >= 4:
             return
-        
+
+        active_entries = [
+            (idx, name) for idx, name in enumerate(identities)
+            if name != 'Inactive'
+        ]
+        if len(active_entries) < 2:
+            return
+
+        active_indices = {idx for idx, _ in active_entries}
+        if winner_idx not in active_indices:
+            return
+
         winner_name = identities[winner_idx]
-        loser_names = [identities[i] for i in range(4) if i != winner_idx]
-        
+        loser_names = [
+            name for idx, name in active_entries
+            if idx != winner_idx
+        ]
+        if not loser_names:
+            return
+
         winner_rating = self.get_rating(winner_name)
-        
+        weight = self.k / max(1, len(loser_names))
+
         for loser_name in loser_names:
+            if loser_name == winner_name:
+                continue
             loser_rating = self.get_rating(loser_name)
             
             expected_win = self.expected_score(winner_rating, loser_rating)
             expected_lose = self.expected_score(loser_rating, winner_rating)
             
-            # Each of 3 matchups contributes K/3
-            weight = self.k / 3
             self.ratings[winner_name] += weight * (1 - expected_win)
             self.ratings[loser_name] += weight * (0 - expected_lose)
         
         # Record history
         if game_num is not None:
-            for name in set(identities):
+            for _, name in active_entries:
                 self.history[name].append((game_num, round(self.ratings[name], 1)))
     
     def select_ghost(self, ghost_pool, main_name='Main', strategy='adversarial'):

@@ -103,7 +103,7 @@ class ActorCriticTrainer:
         Training only happens when the buffer reaches PPO_BUFFER_GAMES.
         
         Args:
-            trajectories: dict mapping player_id → list of (state_np, action, legal_mask_np, old_log_prob)
+            trajectories: dict mapping player_id → list of step dicts
             winner: int, the player_id who won (or -1 for draw)
             model_player: int, which player was controlled by the model
             
@@ -131,8 +131,7 @@ class ActorCriticTrainer:
         
         for i in reversed(range(len(trajectory))):
             step = trajectory[i]
-            # step[4] is the dense step_reward if available
-            shaped_reward = step[4] if len(step) > 4 else 0.0
+            shaped_reward = step.get('step_reward', 0.0)
             
             # Terminal signal only applies to the very last step
             if i == len(trajectory) - 1:
@@ -146,10 +145,11 @@ class ActorCriticTrainer:
         # Buffer each step with its corresponding return
         for i, step in enumerate(trajectory):
             self._ppo_buffer.append({
-                'state': step[0],
-                'action': step[1],
-                'legal_mask': step[2],
-                'old_log_prob': step[3],
+                'state': step['state'],
+                'action': step['action'],
+                'legal_mask': step['legal_mask'],
+                'old_log_prob': step['old_log_prob'],
+                'temperature': step.get('temperature', 1.0),
                 'z': discounted_returns[i],  # True discounted return for this specific step
             })
         self._ppo_games_buffered += 1
@@ -194,6 +194,11 @@ class ActorCriticTrainer:
             [s['old_log_prob'] for s in self._ppo_buffer],
             dtype=torch.float32, device=self.device
         )
+
+        all_temperatures = torch.tensor(
+            [s.get('temperature', 1.0) for s in self._ppo_buffer],
+            dtype=torch.float32, device=self.device
+        )
         
         all_returns = torch.tensor(
             [s['z'] for s in self._ppo_buffer],
@@ -229,6 +234,7 @@ class ActorCriticTrainer:
                 mb_actions = all_actions[mb_idx]
                 mb_masks = all_masks[mb_idx]
                 mb_old_lp = all_old_lp[mb_idx]
+                mb_temperatures = all_temperatures[mb_idx]
                 mb_returns = all_returns[mb_idx]
                 mb_advantages = all_advantages[mb_idx]
                 
@@ -239,9 +245,12 @@ class ActorCriticTrainer:
                 # Advantage: Pre-computed and Normalized over batch
                 advantage = mb_advantages
                 
-                # New log probs under current (updated) policy
+                # Reconstruct the exact behavior policy used for sampling.
+                behavior_temps = mb_temperatures.clamp_min(1e-6).unsqueeze(1)
+                behavior_logits = torch.log(policy + 1e-8) / behavior_temps
+                behavior_policy = F.softmax(behavior_logits, dim=1)
                 new_lp = torch.log(
-                    policy.gather(1, mb_actions.unsqueeze(1)).squeeze(1) + 1e-8
+                    behavior_policy.gather(1, mb_actions.unsqueeze(1)).squeeze(1) + 1e-8
                 )
                 
                 # PPO ratio: π_new(a|s) / π_old(a|s)

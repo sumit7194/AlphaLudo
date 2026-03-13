@@ -45,6 +45,8 @@ DEFAULT_CONFIGS = {
         "TEMPERATURE_START": 1.1,        # Policy sampling temperature (lowered to avoid off-policy blunders)
         "TEMPERATURE_END": 0.95,         # Final temperature (slightly deterministic to exploit known win-paths)
         "TEMPERATURE_DECAY_GAMES": 20000, # Decay faster to rely on the stabilized Value head
+        "SELFPLAY_GHOST_FRACTION": 0.50, # In self-play, use a past ghost this often when snapshots exist
+        "SELFPLAY_GHOST_STRATEGY": "matched", # Ghost selection strategy: matched/adversarial/random
 
         # === Game Settings ===
         "BATCH_SIZE": 512,               # Run N games in parallel in C++
@@ -90,6 +92,8 @@ DEFAULT_CONFIGS = {
         "TEMPERATURE_START": 1.5,
         "TEMPERATURE_END": 1.0,
         "TEMPERATURE_DECAY_GAMES": 100,
+        "SELFPLAY_GHOST_FRACTION": 0.50,
+        "SELFPLAY_GHOST_STRATEGY": "matched",
         "BATCH_SIZE": 4,
         "MAX_MOVES_PER_GAME": 500,
         "GAME_COMPOSITION": {
@@ -152,6 +156,8 @@ PPO_MINIBATCH_SIZE = CONF["PPO_MINIBATCH_SIZE"]
 TEMPERATURE_START = CONF["TEMPERATURE_START"]
 TEMPERATURE_END = CONF["TEMPERATURE_END"]
 TEMPERATURE_DECAY_GAMES = CONF["TEMPERATURE_DECAY_GAMES"]
+SELFPLAY_GHOST_FRACTION = CONF["SELFPLAY_GHOST_FRACTION"]
+SELFPLAY_GHOST_STRATEGY = CONF["SELFPLAY_GHOST_STRATEGY"]
 BATCH_SIZE = CONF["BATCH_SIZE"]
 MAX_MOVES_PER_GAME = CONF["MAX_MOVES_PER_GAME"]
 GAME_COMPOSITION = CONF["GAME_COMPOSITION"]
