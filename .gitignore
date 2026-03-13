@@ -24,6 +24,7 @@ training_history.db
 !checkpoints_mastery/mastery_v3_prod/model_latest.pt
 !checkpoints_mastery/mastery_v3_prod/model_latest_only_self.pt
 !checkpoints_mastery/mastery_v3_prod/training_metrics.json
+!td_ludo/checkpoints/ac_v6_big/backups/*.pt
 
 # --- Logs & Data ---
 data/
@@ -61,3 +62,26 @@ yarn-error.log
 # --- Temporary/Backup Files ---
 *_backup.html
 config.json.bak
+apps/android/model.ptl
+apps/android/model.ptl
+apps/android/model_standard.pt
+apps/android/model.ptl
+checkpoints_mastery/mastery_v3_prod/elo_ratings.json
+checkpoints_mastery/mastery_v3_prod/model_latest.pt
+ludo_db
+ludo_db-shm
+ludo_db-wal
+ludo_db.sqlite-shm
+ludo_db.sqlite-wal
+ludo_db_v2.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite
+snapshot.json
+td_ludo/android/alphaludo_mobile.ptl
+td_ludo/checkpoints/td_v2_11ch/model_latest.pt
+checkpoints_mastery/mastery_v3_prod/elo_ratings.json
+apps/android/model.ptl
+checkpoints_mastery/mastery_v3_prod/model_latest.pt
+checkpoints_mastery/mastery_v3_prod/training_metrics.json
+checkpoints_mastery/mastery_v3_prod/wc_stats.json
