@@ -251,5 +251,42 @@ Game 515K  → 530K   v3 calibrated rewards (too quiet, failed) ❌
   - ✅ Score token: +0.40 (kept — always objectively good)
 - **Hypothesis**: The capture/kill rewards impose a bias that says "capturing is always worth +0.20." This may prevent the model from discovering advanced strategies where NOT capturing (e.g., blocking, sacrificing, holding position) is optimal. Removing them lets the model learn the true value of captures from game outcomes alone, while safe potential-based rewards still provide enough signal for PPO through dice noise.
 - **Risk**: Medium. The remaining rewards (spawn, forward, home, score) still provide ~60% of the original reward density. Unlike Experiments 4/5/6, we are NOT reducing all rewards — just removing the biased ones.
-- **Results**: *(pending)*
+- **Results**: **Failure (Regression).** Tracked from 323K to 427K games. 
+  - **Win rate trend:** Dropped steadily from ~56.5% peak back down to ~51.2% (approaching random play).
+  - **Evaluation:** Win rate against the baseline suite dropped from 74.4% to 69.6%.
+  - **Per-opponent Breakdown:** Suffered consistent 1.5% - 2.5% drops against Defensive, Aggressive, and Random bots.
+  - **Value Loss:** Increased from 0.733 to 0.740.
+- **Conclusion:** The sparse terminal reward of Ludo (+1/-1 over ~175 moves with high dice randomness) creates a **Credit Assignment Nightmare** for standard PPO. The model cannot discern the value of a mid-game capture purely from an outcome that happens 80 moves later. The shaped rewards were crucial priors, not harmful biases.
+
+---
+
+### Phase 8: MCTS Integration (Experiment 9 - AlphaZero Style)
+
+- **Rationale**: PPO with a single forward pass struggles with the variance of Ludo. To learn complex tactics without manual reward shaping, we need explicit search. MCTS reduces variance by simulating thousands of futures per move.
+- **Architecture Shift**: 
+  - Pivoted from PPO actor-critic to an AlphaZero-style loop.
+  - **C++ MCTS Engine**: Leveraged the existing `td_ludo_cpp::MCTSEngine` (Expecti-MCTS with chance nodes for dice rolls, UCB, Dirichlet noise).
+  - **Fixes**: Resolved a critical bug where the C++ engine hardcoded 21-channel states instead of AlphaLudoV5's 17-channel architecture.
+- **Training Loop (`train_mcts.py`)**:
+  1.  **Self-Play:** Run 64 parallel games. For every move, use the current V5 model to guide 50 MCTS simulations. MCTS returns refined policy probabilities.
+  2.  **Data Collection:** Store `(state, pi, winner)` triples.
+  3.  **Optimization:** Train the V5 model to predict the MCTS policy (Cross-Entropy) and the eventual game outcome (MSE).
+- **Warm Start**: Resuming from the `323K` model (our peak shaped-reward checkpoint). This gives MCTS strong structural priors and value estimates right out of the gate, avoiding the "garbage-in-garbage-out" trap of searching with a clueless policy.
+
+- **Results**: **Failure (Regression).** Tracked over 25 Iterations (100,000 transitions).
+  - **Win rate trend:** In a 1000-game head-to-head evaluation against the base `323K PPO` model, the trained MCTS model lost disastrously, achieving only a **34.7% win rate**.
+  - **Matchups vs Heuristics:** Plunged to ~28% out of a baseline 65-70%.
+- **Root Cause**: Ludo breaks the fundamental assumptions of AlphaZero. 
+  - *Extreme Stochasticity (Chance Nodes):* The 1/6 dice roll creates an exponentially branching search tree that dilutes MCTS simulations instantly. 200 simulations look nowhere "deep" into the future.
+  - *Value Target Noise:* Training the Value network purely on final terminal states ($z \in {-1, +1}$) over extremely long horizons (~400 moves) causes the network to unlearn strategy, since a 99% winning board position can result in a -$1.0$ label due to bad end-game dice luck.
+- **Conclusion & Pivot**: Pure MCTS self-play training is inefficient/ineffective for high-variance games like Ludo. 
+  - We have **abandoned MCTS training** and reverted `model_latest.pt` back to the **323K PPO Baseline**.
+  - We also **restored the Capture (+0.20) and Kill (-0.20) shaped rewards** in `reward_shaping.py`, as Experiment 8 proved that trying to surgically un-bias PPO just destroys its ability to assign credit in sparse terminal environments.
+
+---
+
+### Phase 9: Return to PPO with Enhanced Heuristics (Planned)
+
+- **Start**: Resuming from `323K` checkpoint with v1 dense combat rewards fully enabled.
+- **Goal**: Research and implement stronger heuristic bot algorithms globally to force the PPO agent to learn deeper tactics through harder curriculum opponents, before unpausing PPO training.
 

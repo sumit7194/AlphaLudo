@@ -50,19 +50,18 @@ DEFAULT_CONFIGS = {
         "BATCH_SIZE": 512,               # Run N games in parallel in C++
         "MAX_MOVES_PER_GAME": 10000,
         "GAME_COMPOSITION": {
-            "SelfPlay": 0.35,            # Deep self-correcting equilibrium
-            "Heuristic": 0.25,           # General logic grounding
-            "Aggressive": 0.15,          # Forced to learn survival/evasion
-            "Defensive": 0.15,           # Forced to learn active breaching
-            "Racing": 0.05,              # Forced to learn speed pacing (DOMINATED)
-            "Random": 0.05,              # Keep baseline exploration defense active
+            "SelfPlay": 0.40,            # Deep self-correcting equilibrium
+            "Expert": 0.25,              # The newly optimized elite bot
+            "Heuristic": 0.15,           # General logic grounding
+            "Aggressive": 0.10,          # Forced to learn survival/evasion
+            "Defensive": 0.10,           # Forced to learn active breaching
         },
         "NUM_ACTIVE_PLAYERS": 2,         # 2-Player Mode (P0 vs P2)
 
         # === Evaluation ===
         "EVAL_INTERVAL": 2000,          # Games between evaluations
         "EVAL_GAMES": 500,              # Games per evaluation round
-        "EARLY_STOP_PATIENCE": 10,      # Stop training if eval WR drops for N consecutive evals
+        "EARLY_STOP_PATIENCE": 100,     # Stop training if eval WR drops for N consecutive evals
 
         # === Checkpointing ===
         "SAVE_INTERVAL": 300,           # Seconds between checkpoint saves

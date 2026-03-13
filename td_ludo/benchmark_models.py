@@ -19,25 +19,18 @@ from src.config import MAX_MOVES_PER_GAME
 
 MODELS_CONFIG = [
     {
-        "name": "V6 Big (SL Pre-trained)",
-        "path": "checkpoints/ac_v5/model_sl.pt",
+        "name": "MCTS V1 (25 Iters)",
+        "path": "checkpoints/mcts_v1/model_latest.pt",
         "in_channels": 17,
         "num_blocks": 10,
         "num_channels": 128
     },
     {
-        "name": "V5 Medium (Best RL 65.8%)",
-        "path": "checkpoints/ac_v5/model_best_v5_64ch.pt",
+        "name": "Base Model (323k)",
+        "path": "checkpoints/ac_v6_big/backups/model_latest_323k_shaped.pt",
         "in_channels": 17,
-        "num_blocks": 5,
-        "num_channels": 64
-    },
-    {
-        "name": "V4 Small (Legacy 11ch)",
-        "path": "checkpoints/ac_v5_11ch/model_latest.pt",
-        "in_channels": 11,
-        "num_blocks": 5,
-        "num_channels": 64
+        "num_blocks": 10,
+        "num_channels": 128
     }
 ]
 

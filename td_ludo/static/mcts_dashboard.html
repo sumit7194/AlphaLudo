@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaLudo MCTS Training Dashboard</title>
+    <!-- Keep the exact same beautiful fonts and theme from the PPO dashboard -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f111a;
+            --bg-card: #181b2a;
+            --bg-card-hover: #1f2335;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent-primary: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.4);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --border: rgba(255,255,255,0.08);
+            
+            --chart-val: #3b82f6;
+            --chart-pol: #8b5cf6;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            margin: 0;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .status-badge {
+            padding: 0.5rem 1rem;
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 999px;
+            font-weight: 600;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .grid-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 3px;
+            background: linear-gradient(90deg, var(--accent-primary), transparent);
+            opacity: 0.5;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+            border-color: rgba(255,255,255,0.15);
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2.25rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            color: white;
+            line-height: 1;
+        }
+
+        .stat-sub {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        .grid-charts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        .chart-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            height: 400px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+        
+        .chart-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: white;
+            margin: 0;
+        }
+
+        .chart-current {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+        
+        .val-text { color: var(--chart-val); }
+        .pol-text { color: var(--chart-pol); }
+
+        .terminal-container {
+            background: #090a10;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-top: 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            color: #94a3b8;
+            height: 250px;
+            overflow-y: auto;
+        }
+        
+        .terminal-container pre {
+            margin: 0;
+            white-space: pre-wrap;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div>
+            <h1>AlphaLudo MCTS Training</h1>
+            <div style="color: var(--text-muted); margin-top: 0.5rem;">AlphaZero MCTS Self-Play Dashboard</div>
+        </div>
+        <div class="status-badge" id="conn-status">
+            <div class="status-dot"></div>
+            Live Monitor Active
+        </div>
+    </header>
+
+    <div class="grid-stats">
+        <div class="stat-card">
+            <div class="stat-label">Uptime</div>
+            <div class="stat-value" id="val-uptime">00:00:00</div>
+            <div class="stat-sub">Since process started</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-label">Current Iteration</div>
+            <div class="stat-value" id="val-iteration">0</div>
+            <div class="stat-sub">Training round</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-label">Replay Buffer</div>
+            <div class="stat-value" id="val-buffer">0</div>
+            <div class="stat-sub">Total transitions (max 100k)</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-label">Simulation Speed</div>
+            <div class="stat-value" id="val-speed">0.0s</div>
+            <div class="stat-sub">Sec per simulation step</div>
+        </div>
+    </div>
+
+    <div class="grid-charts">
+        <!-- Value Loss Chart -->
+        <div class="chart-container">
+            <div class="chart-header">
+                <h2 class="chart-title">Value Loss (MSE)</h2>
+                <div class="chart-current val-text" id="val-vloss">0.000</div>
+            </div>
+            <div style="height: 320px; width: 100%;">
+                <canvas id="vLossChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Policy Loss Chart -->
+        <div class="chart-container">
+            <div class="chart-header">
+                <h2 class="chart-title">Policy Loss (CE)</h2>
+                <div class="chart-current pol-text" id="val-ploss">0.000</div>
+            </div>
+            <div style="height: 320px; width: 100%;">
+                <canvas id="pLossChart"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Terminal Logs -->
+    <div class="terminal-container">
+        <div class="stat-label" style="margin-bottom: 1rem;">Live Terminal Output</div>
+        <pre id="val-logs">Waiting for logs...</pre>
+    </div>
+</div>
+
+<script>
+    // --- Utils ---
+    function formatUptime(seconds) {
+        if (!seconds) return "00:00:00";
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+
+    // --- Chart.js Setup ---
+    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.font.family = "'JetBrains Mono', monospace";
+    
+    function createChart(ctx, label, colorStops, borderColor) {
+        const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+        gradient.addColorStop(0, colorStops[0]);
+        gradient.addColorStop(1, colorStops[1]);
+
+        return new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(200).fill(''),
+                datasets: [{
+                    label: label,
+                    data: Array(200).fill(null),
+                    borderColor: borderColor,
+                    backgroundColor: gradient,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 }, // Disable animation for live data
+                interaction: {
+                    intersect: false,
+                    mode: 'index',
+                },
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        display: false,
+                        grid: { display: false }
+                    },
+                    y: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.05)',
+                            drawBorder: false
+                        },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    }
+
+    const vCtx = document.getElementById('vLossChart').getContext('2d');
+    const pCtx = document.getElementById('pLossChart').getContext('2d');
+    
+    const vLossChart = createChart(vCtx, 'Value Loss', ['rgba(59, 130, 246, 0.2)', 'rgba(59, 130, 246, 0)'], '#3b82f6');
+    const pLossChart = createChart(pCtx, 'Policy Loss', ['rgba(139, 92, 246, 0.2)', 'rgba(139, 92, 246, 0)'], '#8b5cf6');
+
+    // --- Polling Logic ---
+    async function pollMetrics() {
+        try {
+            const res = await fetch('/api/metrics');
+            if (!res.ok) throw new Error("Network response was not ok");
+            const data = await res.json();
+            
+            // Update Top Cards
+            document.getElementById('val-uptime').textContent = formatUptime(data.uptime_sec);
+            document.getElementById('val-iteration').textContent = data.iteration;
+            document.getElementById('val-buffer').textContent = data.buffer_size.toLocaleString();
+            document.getElementById('val-speed').textContent = data.last_step_time.toFixed(1) + 's';
+            
+            // Update Chart Headers
+            document.getElementById('val-vloss').textContent = data.current_v_loss.toFixed(4);
+            document.getElementById('val-ploss').textContent = data.current_p_loss.toFixed(4);
+            
+            // Update Charts
+            if (data.history.v_loss.length > 0) {
+                // Pad data to maxlen (200) to keep chart wide
+                const vData = [...Array(Math.max(0, 200 - data.history.v_loss.length)).fill(null), ...data.history.v_loss];
+                const pData = [...Array(Math.max(0, 200 - data.history.p_loss.length)).fill(null), ...data.history.p_loss];
+
+                vLossChart.data.datasets[0].data = vData;
+                pLossChart.data.datasets[0].data = pData;
+                vLossChart.update();
+                pLossChart.update();
+            }
+            
+            // Update Logs
+            if (data.logs && data.logs.length > 0) {
+                document.getElementById('val-logs').textContent = data.logs.join('\n');
+                // Auto scroll to bottom
+                const termBox = document.querySelector('.terminal-container');
+                termBox.scrollTop = termBox.scrollHeight;
+            }
+
+            // Connection OK
+            document.getElementById('conn-status').innerHTML = '<div class="status-dot"></div> Live Monitor Active';
+            document.getElementById('conn-status').style.color = 'var(--success)';
+            document.getElementById('conn-status').style.borderColor = 'rgba(16, 185, 129, 0.2)';
+
+        } catch (e) {
+            console.error("Polling error:", e);
+            document.getElementById('conn-status').innerHTML = 'Offline / Connecting...';
+            document.getElementById('conn-status').style.color = 'var(--danger)';
+            document.getElementById('conn-status').style.borderColor = 'rgba(239, 68, 68, 0.2)';
+        }
+    }
+
+    // Start polling immediately, then every 2 seconds
+    pollMetrics();
+    setInterval(pollMetrics, 2000);
+
+</script>
+</body>
+</html>

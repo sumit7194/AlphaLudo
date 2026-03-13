@@ -7,9 +7,10 @@ Provides immediate, tangible rewards for:
 - Entering the home stretch (+0.10)
 - Scoring a token (+0.40)
 
-Removed (Experiment 8 — non-potential-based / biased):
-- Capturing opponent tokens: was +0.20, now 0 (let model discover capture value from outcomes)
-- Getting killed: was -0.20, now 0 (let model discover death cost from outcomes)
+- Capturing opponent tokens: +0.20
+- Getting killed: -0.20
+
+These biased rewards act as strong priors in the highly stochastic Ludo environment.
 
 All remaining rewards are potential-based (derived from own state changes),
 which are mathematically guaranteed to preserve the optimal policy (Ng et al. 1999).
@@ -66,21 +67,19 @@ def compute_shaped_reward(state, next_state, player):
         if p1 >= 0 and p2 > p1:
             reward += 0.005 * (p2 - p1)
             
-        # Got killed / sent to base — REMOVED (Experiment 8: non-potential-based bias)
-        # if p1 >= 0 and p2 == -1:
-        #     reward -= 0.20
+        # Got killed / sent to base
+        if p1 >= 0 and p2 == -1:
+            reward -= 0.20
             
-    # 2. Evaluate opponent captures — REMOVED (Experiment 8: non-potential-based bias)
-    # Capture reward (+0.20) removed to let the model discover the true value
-    # of captures from game outcomes alone.
-    # for opp in range(4):
-    #     if opp == player:
-    #         continue
-    #     opp_pos_old = state.player_positions[opp]
-    #     opp_pos_new = next_state.player_positions[opp]
-    #     for i in range(4):
-    #         if opp_pos_old[i] >= 0 and opp_pos_new[i] == -1:
-    #             reward += 0.20
+    # 2. Evaluate opponent captures
+    for opp in range(4):
+        if opp == player:
+            continue
+        opp_pos_old = state.player_positions[opp]
+        opp_pos_new = next_state.player_positions[opp]
+        for i in range(4):
+            if opp_pos_old[i] >= 0 and opp_pos_new[i] == -1:
+                reward += 0.20
                 
     return reward
 

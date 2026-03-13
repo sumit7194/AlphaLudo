@@ -392,8 +392,8 @@ std::vector<std::pair<int, float>> MCTSEngine::get_root_stats() {
 }
 
 std::vector<float> MCTSEngine::get_leaf_tensors() {
-  // 21 channels * 15 * 15 = 4725 floats per leaf
-  int tensor_size = 21 * BOARD_SIZE * BOARD_SIZE;
+  // 17 channels (V5 Architecture) * 15 * 15 = 3825 floats per leaf
+  int tensor_size = 17 * BOARD_SIZE * BOARD_SIZE;
 
   // Note: current_leaves was resized in select_leaves to (batch_size *
   // parallel_sims)
