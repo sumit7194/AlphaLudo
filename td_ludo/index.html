@@ -1031,7 +1031,7 @@
             document.getElementById('throughputLabel').textContent = `${fmt(stats.games_per_minute, 0)} GPM`;
 
             // Fill recent opponent stats
-            const opps = stats.recent_opponent_stats || {};
+            const opps = stats.recent_opponent_stats || stats.opponent_stats || {};
             const updateOppKpi = (id, name, targetColorNum) => {
                 const el = document.getElementById(id);
                 const sub = document.getElementById(id + 'Sub');
@@ -1191,15 +1191,17 @@
         }
 
         function updateGamesTab(gamesData) {
-            if (!gamesData || !gamesData.recent_games) return;
+            // API returns flat list [] or {recent_games: []}
+            const games = Array.isArray(gamesData) ? gamesData : (gamesData && gamesData.recent_games);
+            if (!games) return;
 
             const list = document.getElementById('gameList');
-            if (gamesData.recent_games.length === 0) {
+            if (games.length === 0) {
                 list.innerHTML = '<div class="no-data">No games recorded yet</div>';
                 return;
             }
 
-            list.innerHTML = gamesData.recent_games.map(g => {
+            list.innerHTML = games.map(g => {
                 let resultClass = 'result-loss';
                 let resultText = 'LOSS';
 
@@ -1303,24 +1305,8 @@
         }
 
         // ============================================================
-        // Polling
+        // Polling (single poll function below, after spectator logic)
         // ============================================================
-        async function poll() {
-            const [stats, metrics, eloData, gamesData] = await Promise.all([
-                fetchJSON('/api/stats'),
-                fetchJSON('/api/metrics'),
-                fetchJSON('/api/elo'),
-                fetchJSON('/api/games'),
-            ]);
-
-            if (stats && Object.keys(stats).length > 0) {
-                updateKPIs(stats);
-                updateOverviewCharts(metrics);
-                updateEloTab(eloData);
-                updateGamesTab(gamesData);
-                updateOpponentsTab(stats);
-            }
-        }
 
         // Spectator Logic
         const cvs = document.getElementById('ludoBoard');
@@ -1489,13 +1475,29 @@
         }
 
         async function poll() {
-            const stats = await fetchJSON('/api/stats'); // Fetch stats first to check connection
+            const [stats, metrics, eloData, gamesData, sysData] = await Promise.all([
+                fetchJSON('/api/stats'),
+                fetchJSON('/api/metrics'),
+                fetchJSON('/api/elo'),
+                fetchJSON('/api/games'),
+                fetchJSON('/api/system'),
+            ]);
+
             const connected = stats && Object.keys(stats).length > 0;
             const dot = document.getElementById('statusDot');
             dot.className = connected ? 'dot pulse' : 'dot offline';
 
             if (connected) {
-                await updateDashboard();
+                updateKPIs(stats);
+                updateOverviewCharts(metrics);
+                updateEloTab(eloData);
+                updateGamesTab(gamesData);
+                updateOpponentsTab(stats);
+            }
+
+            if (sysData) {
+                document.getElementById('sysCPU').textContent = (sysData.cpu_percent || 0) + '%';
+                document.getElementById('sysRAM').textContent = (sysData.memory_percent || 0) + '%';
             }
 
             pollCount++;

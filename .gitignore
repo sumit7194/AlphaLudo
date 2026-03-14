@@ -21,9 +21,9 @@ experiment_*/
 training_history.db
 
 # Allow specific production models in mastery_v3_prod
-!checkpoints_mastery/mastery_v3_prod/model_latest.pt
-!checkpoints_mastery/mastery_v3_prod/model_latest_only_self.pt
-!checkpoints_mastery/mastery_v3_prod/training_metrics.json
+# !checkpoints_mastery/mastery_v3_prod/model_latest.pt
+# !checkpoints_mastery/mastery_v3_prod/model_latest_only_self.pt
+# !checkpoints_mastery/mastery_v3_prod/training_metrics.json
 !td_ludo/checkpoints/ac_v6_big/backups/*.pt
 
 # --- Logs & Data ---

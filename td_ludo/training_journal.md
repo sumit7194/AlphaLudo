@@ -285,8 +285,230 @@ Game 515K  → 530K   v3 calibrated rewards (too quiet, failed) ❌
 
 ---
 
-### Phase 9: Return to PPO with Enhanced Heuristics (Planned)
+### Phase 9: Expert Bot Curriculum Enhancement
 
-- **Start**: Resuming from `323K` checkpoint with v1 dense combat rewards fully enabled.
-- **Goal**: Research and implement stronger heuristic bot algorithms globally to force the PPO agent to learn deeper tactics through harder curriculum opponents, before unpausing PPO training.
+- **Start**: 323K games (resumed from `model_latest_323k_shaped.pt` — shaped rewards fully restored after Exp 8/9 failures)
+- **End**: 382K games (~59K games run)
+- **Change**: Added `Expert` bot to game composition. Expert bot is a hand-coded heuristic combining forward progress + capture aggression + safe-square awareness — harder than individual Aggressive/Defensive/Racing bots.
+- **Matchmaking (Phase 9)**: SelfPlay 40%, Expert 25%, Heuristic 15%, Aggressive 10%, Defensive 10%
 
+#### Results
+
+| Metric | Value |
+|--------|-------|
+| **Total Games** | **382,010** |
+| **Total PPO Updates** | **407,502** |
+| **Final Eval WR** | **70.6%** |
+| Best Eval WR (all time) | 77.4% (at ~170K games) |
+| Rolling WR (100g) | ~53% |
+| Policy Entropy | 0.46 |
+| ELO (main model) | 1,581.9 |
+| Value Loss | 0.817 (stable, at ceiling) |
+| Policy Loss | ~0.0 (PPO fully clipped) |
+
+#### Per-Opponent Lifetime Win Rates (Final)
+
+| Opponent | Win Rate | Games |
+|----------|----------|-------|
+| vs Random | 82.5% | 33,663 |
+| vs Expert | 60.6% | 14,873 |
+| vs Heuristic | 54.7% | 110,786 |
+| vs Aggressive | 54.6% | 60,299 |
+| vs Defensive | 54.4% | 60,587 |
+| vs Racing | 54.3% | 17,433 |
+| vs SelfPlay | 49.8% | 180,839 |
+
+#### Analysis
+
+- **Plateau confirmed.** Model settled into 70-73% eval WR oscillation with no signs of breaking through. Expert curriculum added useful data (60.6% WR vs Expert) but did not shift the capability ceiling.
+- **PPO fully converged.** Policy loss ~0, clip fraction ~10% — policy barely changing. Optimizer at local optimum.
+- **Ghost ELO parity.** Highest-ELO agents are now past ghosts (ghost_422276 @ 1660, ghost_366230 @ 1639) sitting *above* the current model (1581). Sign of mild regression/forgetting — common PPO failure mode at end of training.
+- **Value Loss ceiling.** Locked at ~0.81 — irreducible stochastic noise floor of Ludo dice. Critic cannot compress variance of a 175-move, 1/6 probability game any further with this architecture.
+
+#### Checkpoint State at Close of V6 Era
+
+- `backups/model_final_v6_382k_70pct.pt` — final checkpoint before V7 overhaul
+- `backups/model_best_v6_77pct_170k.pt` — all-time best (77.4% eval WR, ~170K games)
+- See `CHECKPOINT_README.md` for full file inventory
+
+---
+
+---
+
+# V6 Era — Final Summary & Archive (March 2026)
+
+> **Status: ARCHIVED. V7 architecture overhaul begins.**
+
+## Overall Training Timeline
+
+```
+-- SL Warm Start ----------------  86% val acc, ~58% WR vs bots
+-- Exp 7: PPO Rapid Learning ----  0 to 100K    |  WR: 56% to 70% (rising)
+-- Exp 7: Peak ------------------  ~170K        |  WR: 77.4% (ALL-TIME BEST)
+-- Exp 7: Plateau ---------------  100K to 323K  |  WR: 73% +/- 2%
+-- Exp 8: Unbias Attempt --------  323K to 427K  |  WR: 75% to 69.6% FAILED
+-- Exp 9: MCTS Integration ------  25 iters     |  WR: 34.7% vs baseline ABANDONED
+-- Phase 9: Expert Curriculum ---  323K to 382K  |  WR: 70-73%, plateau continues
+```
+
+## What Worked
+
+- **Dense v1 rewards** — the dopamine-heavy shaped reward set is the backbone of all learning
+- **PPO with ghost self-play pool** — ghosts prevented catastrophic forgetting and provided diverse opponents
+- **SL warm start** — starting from a supervised policy (86% val acc) dramatically sped up early RL learning
+- **Large architecture** (128ch, 10 res blocks) — enabled more complex strategy representation vs earlier v4/v5 models
+
+## What Didn't Work
+
+- **PBRS** (Exp 1) — unavoidable gamma-leak in long games
+- **Reward scaling down** (Exp 4, 6) — signal-to-noise collapses with dice variance
+- **Removing capture/kill rewards** (Exp 8) — credit assignment breaks without dense shaped rewards in sparse terminal environments
+- **MCTS/AlphaZero-style training** (Exp 9) — extreme stochasticity kills MCTS signal; 200 sims ~= 6 ply in a 4-branch dice tree
+- **PPO alone past 73%** — policy gradient near zero; architecture hitting expressivity ceiling
+
+## Hard Capability Ceiling Hypothesis
+
+The model plateaued at 73-77% win rate. Likely causes:
+
+1. **Input representation** — 17 channels capture token positions but lack higher-order spatial reasoning (relative distances, blocking formations, threat maps)
+2. **Policy head bottleneck** — 4-logit output (one per token) loses move-type semantics; cannot distinguish "move A to safe square" vs "move A into danger"
+3. **Reward bias** — v1 rewards incentivize capture/scoring greedily; model may be stuck in a locally optimal aggressive strategy
+4. **PPO variance ceiling** — even with batch=512 games, a 175-move stochastic game creates variance that flat-lr PPO cannot overcome
+
+## Recommendations for V7
+
+1. **Richer input channels** — path-distance features, threat fields, safe-path highlighting
+2. **Move-type-aware policy head** — encode action semantics rather than pure 4-token logits
+3. **Value decomposition** — per-token value heads or auxiliary prediction tasks to improve credit assignment
+4. **Consider SAC** — natural entropy regularization suited to stochastic environments; handles dice variance better than standard PPO
+5. **Stronger curriculum opponents** — rule-based agents with even 1-ply look-ahead (using dice averaging) would be meaningfully harder than current heuristics
+
+---
+---
+
+# Post-V6 Mechanistic Interpretability (March 2026)
+
+> **Purpose**: Diagnose the 73-77% ceiling by probing what the V6 model actually learned internally.
+> Full results and visualizations in `discussion/` directory.
+
+---
+
+### Experiment 10: Channel Ablation Study
+
+- **Method**: Zeroed each of 17 input channels individually on 500 random states + curated tactical buckets (200 states each). Measured Policy KL divergence and Critic MAE vs baseline.
+- **Key Findings**:
+  - **Policy** most sensitive to own token positions: Ch 0 (My Token 0) → KL = 0.384, Ch 1 → KL = 0.188
+  - **Critic** dominated by opponent locked % (Ch 10) → MAE = 1.807 — massively above all others
+  - **Dice channels** globally washed out (KL < 0.02) but **extremely strong when conditioned on specific rolls** (Roll 6: Ch 16 Policy KL = 0.398)
+  - **Captures** are a combined spatial + dice phenomenon: opponent density (Ch 4 KL = 1.033) dominates in capture-available states, with multiple dice channels contributing
+- **Implication**: Model treats dice channels as broadcast modifiers, not integrated tactical signals. Processing is reactive, not anticipatory.
+- Full results: `discussion/RESULTS_ablation.md`
+
+---
+
+### Experiment 11: Dice Sensitivity Analysis
+
+- **Method**: For 300 states, swept dice roll 1-6, measuring policy shift (JS divergence, action flips) in both masked (legal moves enforced) and unmasked (raw preference) modes.
+- **Key Findings**:
+  - **295/300 states** flip preferred action across dice rolls (unmasked) — model's behavior is almost entirely dice-determined
+  - Roll 6 dominates action concentration: top-prob 0.525 vs 0.31-0.33 for rolls 1-5
+  - Masked JS divergence (0.139) much higher than unmasked (0.035) — legal move constraints amplify dice sensitivity
+  - **Capture-available states** show highest sensitivity across all metrics
+  - **Home stretch 2+ states**: masked policies become extremely confident on many rolls
+- **Implication**: The model is a sophisticated lookup table: `f(board, dice) → action`. It has no evidence of multi-turn planning, threat anticipation, or velocity-based reasoning.
+- Full results: `discussion/RESULTS_diceSensitivity.md`
+
+---
+
+### Experiment 12: Linear Probing on GAP Features
+
+- **Method**: Extracted 128-dim GAP vector from backbone, trained logistic regression probes on 2,500 decision states for 5 game concepts.
+- **Results**:
+
+| Concept | Balanced Accuracy | Majority Baseline |
+|---|---:|---:|
+| can_capture_this_turn | 0.881 | 0.956 |
+| leading_token_in_danger | 0.739 | 0.937 |
+| home_stretch_count | 0.731 | 0.683 |
+| **eventual_win** | **0.787** | **0.531** |
+| closest_token_to_home | 0.577 | 0.377 |
+
+- **Key Findings**:
+  - **Eventual winner strongly decodable** (0.787 bal acc) — backbone carries an explicit global advantage signal
+  - Progress-to-home concepts are easier than exact token identity — model encodes race progress more cleanly than positional specifics
+  - Tactical concepts (capture, danger) are present but sparse/imbalanced in training data
+- **Implication**: The backbone *knows* who's winning but the reactive architecture can't translate this into multi-step planning. The advantage signal exists but is trapped behind single-step decision-making.
+- Full results: `discussion/RESULTS_linearProbing.md`
+
+---
+
+### Mech Interp Conclusion
+
+The V6 CNN is a **sophisticated reactive player**: it reads the current board + dice, consults internal representations that encode global advantage and tactical opportunities, and selects a locally optimal move. But it has **zero temporal reasoning** — no velocity tracking, no threat persistence memory, no multi-turn setup capability.
+
+This explains the 73-77% ceiling: reactive heuristic-like play is sufficient to beat scripted bots ~75% of the time, but cannot discover higher-order strategies that require looking at *how the board has been evolving* rather than just *what the board currently shows*.
+
+---
+---
+
+# V7 Architecture Decision — Sequence Transformer (March 2026)
+
+> **Status: DESIGN PHASE.** Architecture and training plan finalized. Implementation begins.
+
+## Why Transformer + 1D Sequence
+
+The mech interp results (Experiments 10-12) conclusively showed:
+- CNN processes the board reactively with no temporal context
+- The backbone encodes global advantage but can't use it for planning
+- The 15×15 spatial grid is a wasteful encoding for what is fundamentally a 1D track game
+- Strategy in Ludo requires temporal reasoning (velocity, threat persistence, multi-turn setups) that a single-frame CNN cannot provide
+
+A Transformer with self-attention over a context window of past turns directly addresses all four limitations.
+
+## V7 Architecture Spec
+
+| Parameter | Value |
+|---|---|
+| **Input (per turn)** | 1D state vector: 8 token positions (int 0-58) + 3 global scalars + 6-dim dice one-hot + 1 historical action |
+| **Position Encoding** | nn.Embedding(60, embed_dim) for token positions; nn.Embedding(5, embed_dim) for actions |
+| **Tactical Flags** | None — raw positions only, let attention learn spatial relationships |
+| **Context Window** | K=16 past turns (sliding window over game trajectory) |
+| **Model** | Transformer, embed_dim=128, 4 attention heads, 4 layers |
+| **Policy Head** | Linear(embed_dim → 4) from CLS token or last-turn embedding |
+| **Value Head** | Linear(embed_dim → 1, tanh) from same |
+| **Estimated Params** | ~800K-1M (vs V6's 3M) |
+| **Target Device** | 16GB M4 Mac Mini (MPS) |
+
+### What Attention Enables
+
+- **Cross-token reasoning**: Self-attention between all 8 tokens learns threat relationships (my token near opponent token), blocking formations, and race competition
+- **Cross-turn reasoning**: Context window K=16 turns provides velocity information (which tokens are advancing/stalled), threat persistence (opponent lingering near my piece for N turns), and game phase detection
+- **Dice-conditioned planning**: Rather than reactively flipping action on dice roll (as V6 does), the model can learn "if I get a 6 next turn" contingency from observing dice patterns
+
+## V7 Training Plan
+
+### Stage 1: SL Warmstart
+- Generate 50K-100K bot-vs-bot games in 1D sequence format
+- Mix of Heuristic, Aggressive, Defensive, Expert bots
+- Store complete game trajectories; slice into K=16 context windows at training time
+- Train transformer for 1-2 epochs, target ~80% action prediction accuracy
+- Purpose: bootstrap position embeddings, legal move patterns, basic board understanding
+
+### Stage 2: PPO RL (Primary Training)
+- Dense v1 rewards (proven effective, do not change reward structure simultaneously with architecture)
+- Same curriculum progression as V6: start easy (Random-heavy) → gradually increase difficulty → Expert
+- Ghost self-play pool (save model snapshots as past-self opponents)
+- Target: 80%+ eval WR (breaking V6's 77.4% ceiling)
+
+### Stage 3: SAC Experiment (V7.1)
+- Once PPO validates the architecture at 80%+ WR, experiment with Discrete SAC
+- Short replay buffer: last 5K-10K complete game trajectories (not individual transitions)
+- Automatic temperature (α) tuning
+- Key advantage: sample efficiency (10x+ reuse per game) + natural entropy regularization
+- Key risk: distributional shift from off-policy context windows — mitigate with short buffer
+- Purpose: determine if SAC can push past PPO's new ceiling
+
+## V7 Design References
+
+- Architecture evolution discussion: `discussion/AlphaLudo Architecture Evolution_ From Reactive CNN to Strategic Sequence Transformer.docx`
+- 1D state vector specification: `discussion/The 2-Player 1D State Vector .docx`
