@@ -242,17 +242,25 @@ def train_sl(args):
     start_epoch = 0
 
     # Resume from SL checkpoint if exists
-    if os.path.exists(CHECKPOINT_PATH) and not args.fresh:
+    start_batch = 0
+    if not args.fresh and os.path.exists(CHECKPOINT_PATH):
         print(f"[SL] Attempting to resume from {CHECKPOINT_PATH}...")
         try:
             ckpt = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
             model.load_state_dict(ckpt['model_state_dict'])
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             start_epoch = ckpt.get('epoch', 0)
+            start_batch = ckpt.get('batch_idx', 0)
             best_val_acc = ckpt.get('val_acc', 0.0)
-            print(f"[SL] Resumed from epoch {start_epoch + 1}, best acc: {best_val_acc*100:.1f}%")
+            print(f"[SL] Loaded weights from {CHECKPOINT_PATH} (Epoch {start_epoch + 1}, Batch {start_batch})")
         except Exception as e:
-            print(f"[SL] Could not resume: {e}. Starting fresh.")
+            print(f"[SL] Could not load checkpoint weights: {e}. Starting from baseline/random.")
+
+    # Apply manual overrides if provided (these won't block weight loading)
+    if not args.fresh and args.resume_epoch is not None:
+        start_epoch = args.resume_epoch
+        start_batch = args.resume_batch or 0
+        print(f"[SL] Manual override: starting from epoch {start_epoch + 1}, batch {start_batch}")
 
     print(f"\n{'='*60}")
     print(f"  V7 Supervised Learning Training")
@@ -272,7 +280,13 @@ def train_sl(args):
             batch_count = 0
 
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]")
-            for tok, cont, acts_seq, seq_mask, target_action, legal_mask, value in pbar:
+            for batch_idx, (tok, cont, acts_seq, seq_mask, target_action, legal_mask, value) in enumerate(pbar):
+                # Handle resuming within epoch
+                if epoch == start_epoch and batch_idx < start_batch:
+                    if batch_idx == 0:
+                        print(f"[SL] Skipping {start_batch} batches to resume...")
+                    continue
+
                 tok = tok.to(device)
                 cont = cont.to(device)
                 acts_seq = acts_seq.to(device)
@@ -322,6 +336,7 @@ def train_sl(args):
                 if batch_count % SAVE_INTERVAL == 0:
                     torch.save({
                         'epoch': epoch,
+                        'batch_idx': batch_idx + 1,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'val_acc': best_val_acc,
@@ -375,6 +390,7 @@ def train_sl(args):
                 torch.save(model.state_dict(), SAVE_PATH)
                 torch.save({
                     'epoch': epoch + 1,
+                    'batch_idx': 0,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'val_acc': val_acc,
@@ -384,6 +400,7 @@ def train_sl(args):
                 # Still save checkpoint for resumability
                 torch.save({
                     'epoch': epoch + 1,
+                    'batch_idx': 0,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'val_acc': best_val_acc,
@@ -393,6 +410,7 @@ def train_sl(args):
         print("\n[SL] Interrupted! Saving checkpoint...")
         torch.save({
             'epoch': epoch if 'epoch' in dir() else 0,
+            'batch_idx': batch_idx if 'batch_idx' in dir() else 0,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'val_acc': best_val_acc,
@@ -419,6 +437,10 @@ if __name__ == "__main__":
                         help=f"Batch size (default: {BATCH_SIZE})")
     parser.add_argument("--fresh", action='store_true',
                         help="Ignore existing SL checkpoint and start fresh")
+    parser.add_argument("--resume-epoch", type=int, default=None,
+                        help="Force resume from specific epoch index (0-based)")
+    parser.add_argument("--resume-batch", type=int, default=0,
+                        help="Force resume from specific batch index within epoch")
     args = parser.parse_args()
 
     # Override globals with args

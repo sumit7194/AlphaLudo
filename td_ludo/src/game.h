@@ -40,9 +40,13 @@ get_legal_moves(const GameState &state); // Returns list of token indices (0-3)
 GameState apply_move(const GameState &state, int token_index);
 int get_winner(const GameState &state); // Returns -1 if none, 0-3 if winner
 
-// Tensorization - 11 Channels (Cleaned 2P Afterstate)
-// Spatial: (11, 15, 15) -> writes 2475 floats
+// Tensorization - 17 Channels (V6 encoding)
+// Spatial: (17, 15, 15) -> writes 3825 floats
 void write_state_tensor(const GameState &state, float *buffer);
+
+// V9 Tensorization - 14 Channels (Optimized encoding)
+// Spatial: (14, 15, 15) -> writes 3150 floats
+void write_state_tensor_v9(const GameState &state, float *buffer);
 
 // Helper to reset state
 GameState create_initial_state();    // 4-player
