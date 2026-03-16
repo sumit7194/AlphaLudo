@@ -500,3 +500,137 @@ void write_state_tensor(const GameState &state, float *buffer) {
               buffer + ((channel_idx + 1) * spatial_size), 1.0f);
   }
 }
+
+// =============================================================================
+// V9 Encoder: 14-Channel Architecture
+// =============================================================================
+// 0-3:  My Tokens (Distinct Identity 0,1,2,3)
+// 4-7:  Opponent Tokens (Distinct Identity 0,1,2,3)
+// 8:    Safe Zones (0.5)
+// 9:    My Home Path
+// 10:   Opponent Home Path (skip inactive)
+// 11:   My Locked % (broadcast)
+// 12:   Opp Locked % (broadcast)
+// 13:   Dice Roll (single channel, value = roll / 6.0)
+
+void write_state_tensor_v9(const GameState &state, float *buffer) {
+  int num_channels = 14;
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+  clear_buffer(buffer, num_channels * spatial_size);
+
+  int current_p = state.current_player;
+  int k = current_p; // Rotation steps (CCW)
+
+  // --- CHANNELS 0-3: My Tokens (Distinct Identity) ---
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    int r, c;
+    if (pos == BASE_POS)
+      get_board_coords(current_p, pos, r, c, t);
+    else
+      get_board_coords(current_p, pos, r, c);
+
+    if (r >= 0) {
+      write_tensor_val(buffer, t, r, c, 1.0f, k);
+    }
+  }
+
+  // --- CHANNELS 4-7: Opponent Tokens (Distinct Identity) ---
+  // In 2P mode: one active opponent. Find them and write their 4 tokens.
+  // In 4P mode: use first active opponent's tokens (2P is primary use case).
+  int opp_p = -1;
+  for (int offset = 1; offset < 4; ++offset) {
+    int candidate = (current_p + offset) % 4;
+    if (state.active_players[candidate]) {
+      opp_p = candidate;
+      break;
+    }
+  }
+
+  if (opp_p >= 0) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int pos = state.player_positions[opp_p][t];
+      int r, c;
+      if (pos == BASE_POS)
+        get_board_coords(opp_p, pos, r, c, t);
+      else
+        get_board_coords(opp_p, pos, r, c);
+
+      if (r >= 0) {
+        write_tensor_val(buffer, 4 + t, r, c, 1.0f, k);
+      }
+    }
+  }
+
+  // --- CHANNEL 8: Safe Zones ---
+  for (int pl = 0; pl < NUM_PLAYERS; ++pl) {
+    for (int s : SAFE_INDICES) {
+      int r, c;
+      get_board_coords(pl, s, r, c);
+      if (r >= 0) {
+        write_tensor_val(buffer, 8, r, c, 0.5f, k, false);
+      }
+    }
+  }
+
+  // --- CHANNEL 9: My Home Path ---
+  for (int i = 0; i < 5; ++i) {
+    int home_pos = 51 + i;
+    int r, c;
+    get_board_coords(current_p, home_pos, r, c);
+    if (r >= 0) {
+      write_tensor_val(buffer, 9, r, c, 1.0f, k, false);
+    }
+  }
+
+  // --- CHANNEL 10: Opponent Home Path (skip inactive) ---
+  for (int offset = 1; offset < 4; ++offset) {
+    int opp = (current_p + offset) % 4;
+    if (!state.active_players[opp])
+      continue;
+
+    for (int i = 0; i < 5; ++i) {
+      int home_pos = 51 + i;
+      int r, c;
+      get_board_coords(opp, home_pos, r, c);
+      if (r >= 0) {
+        write_tensor_val(buffer, 10, r, c, 1.0f, k, false);
+      }
+    }
+  }
+
+  // --- CHANNEL 11: My Locked % (broadcast) ---
+  int my_locked = 0;
+  for (int t = 0; t < 4; ++t)
+    if (state.player_positions[current_p][t] == BASE_POS)
+      my_locked++;
+  std::fill(buffer + (11 * spatial_size), buffer + (12 * spatial_size),
+            (float)my_locked / 4.0f);
+
+  // --- CHANNEL 12: Opp Locked % (broadcast) ---
+  int opp_locked = 0;
+  int active_opp_tokens = 0;
+  for (int pl = 0; pl < 4; ++pl) {
+    if (pl == current_p)
+      continue;
+    if (!state.active_players[pl])
+      continue;
+    active_opp_tokens += 4;
+    for (int t = 0; t < 4; ++t)
+      if (state.player_positions[pl][t] == BASE_POS)
+        opp_locked++;
+  }
+  float opp_locked_val = (active_opp_tokens > 0)
+                             ? (float)opp_locked / (float)active_opp_tokens
+                             : 0.0f;
+  std::fill(buffer + (12 * spatial_size), buffer + (13 * spatial_size),
+            opp_locked_val);
+
+  // --- CHANNEL 13: Dice Roll (single value = roll / 6.0) ---
+  int roll = state.current_dice_roll;
+  if (roll >= 1 && roll <= 6) {
+    float dice_val = (float)roll / 6.0f;
+    std::fill(buffer + (13 * spatial_size), buffer + (14 * spatial_size),
+              dice_val);
+  }
+}
