@@ -357,6 +357,11 @@ class FastLearner:
                 if 'optimizer_state_dict' in checkpoint:
                     try:
                         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                        # Move optimizer state tensors to correct device
+                        for state in self.optimizer.state.values():
+                            for k, v in state.items():
+                                if isinstance(v, torch.Tensor):
+                                    state[k] = v.to(self.device)
                     except Exception as e:
                         print(f"[Learner] Warning: Could not load optimizer state: {e}")
                 self.total_updates = checkpoint.get('total_updates', 0)
