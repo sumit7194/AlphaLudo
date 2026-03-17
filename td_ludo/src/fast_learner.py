@@ -351,6 +351,19 @@ class FastLearner:
                 state_dict = checkpoint
 
             state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+
+            # Handle context_length mismatch (e.g. checkpoint K=16, model K=8)
+            model_K = self.config.get('context_length', 16)
+            if 'temporal_pos_embed.weight' in state_dict:
+                ckpt_K = state_dict['temporal_pos_embed.weight'].shape[0]
+                if ckpt_K != model_K:
+                    print(f"[Learner] Adapting pos_embed from K={ckpt_K} to K={model_K}")
+                    state_dict['temporal_pos_embed.weight'] = state_dict['temporal_pos_embed.weight'][:model_K]
+            if 'causal_mask' in state_dict:
+                ckpt_K = state_dict['causal_mask'].shape[0]
+                if ckpt_K != model_K:
+                    state_dict['causal_mask'] = state_dict['causal_mask'][:model_K, :model_K]
+
             self.model.load_state_dict(state_dict)
 
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -500,6 +513,15 @@ def learner_worker(trajectory_queue, stats_queue,
         else:
             state_dict = checkpoint
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+        # Handle context_length mismatch
+        if 'temporal_pos_embed.weight' in state_dict:
+            ckpt_K = state_dict['temporal_pos_embed.weight'].shape[0]
+            if ckpt_K != context_length:
+                state_dict['temporal_pos_embed.weight'] = state_dict['temporal_pos_embed.weight'][:context_length]
+        if 'causal_mask' in state_dict:
+            ckpt_K = state_dict['causal_mask'].shape[0]
+            if ckpt_K != context_length:
+                state_dict['causal_mask'] = state_dict['causal_mask'][:context_length, :context_length]
         model.load_state_dict(state_dict)
         print(f"[Learner] Loaded SL weights from {sl_weights_path}")
     else:

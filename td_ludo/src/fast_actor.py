@@ -25,6 +25,19 @@ V9_EMBED_DIM = 80
 NUM_ACTION_CLASSES = 5  # 0-3 pieces, 4=pass/none
 
 
+def _adapt_state_dict_context(state_dict, model_K):
+    """Slice positional embeddings and causal mask if checkpoint has different K."""
+    if 'temporal_pos_embed.weight' in state_dict:
+        ckpt_K = state_dict['temporal_pos_embed.weight'].shape[0]
+        if ckpt_K != model_K:
+            state_dict['temporal_pos_embed.weight'] = state_dict['temporal_pos_embed.weight'][:model_K]
+    if 'causal_mask' in state_dict:
+        ckpt_K = state_dict['causal_mask'].shape[0]
+        if ckpt_K != model_K:
+            state_dict['causal_mask'] = state_dict['causal_mask'][:model_K, :model_K]
+    return state_dict
+
+
 class TurnHistory:
     """Lightweight turn history for actor (CPU). Same logic as TurnHistoryV9."""
 
@@ -117,6 +130,10 @@ class FastActor:
         self.active_ghost_selected_at = 0
         self.ghost_refresh_interval = 1000
 
+        # Stats (must be set before _random_composition)
+        self.total_games = 0
+        self.model_wins = 0
+
         # Per-game state
         self.game_compositions = [self._random_composition() for _ in range(batch_size)]
         self.turn_histories = {}
@@ -130,10 +147,6 @@ class FastActor:
 
         # Trajectory collection (compact: only store per-turn data)
         self.game_trajectories = [{} for _ in range(batch_size)]
-
-        # Stats
-        self.total_games = 0
-        self.model_wins = 0
 
     def get_temperature(self, total_games):
         t_start = self.config.get('temp_start', 1.1)
@@ -447,6 +460,7 @@ class FastActor:
         """Load model weights from file (for periodic sync from learner)."""
         try:
             state_dict = torch.load(weight_path, map_location='cpu', weights_only=True)
+            state_dict = _adapt_state_dict_context(state_dict, self.context_length)
             self.model.load_state_dict(state_dict)
             return True
         except Exception:
@@ -476,6 +490,7 @@ class FastActor:
         checkpoint = torch.load(ghost_path, map_location='cpu', weights_only=False)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+        state_dict = _adapt_state_dict_context(state_dict, self.context_length)
         model.load_state_dict(state_dict)
         model.eval()
         for param in model.parameters():
@@ -617,6 +632,7 @@ def actor_worker(actor_id, batch_size, context_length,
     if os.path.exists(weight_path):
         try:
             state_dict = torch.load(weight_path, map_location='cpu', weights_only=True)
+            state_dict = _adapt_state_dict_context(state_dict, context_length)
             model.load_state_dict(state_dict)
         except Exception as e:
             print(f"[Actor {actor_id}] Warning: could not load initial weights: {e}")
