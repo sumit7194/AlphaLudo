@@ -170,9 +170,9 @@ def main():
                         help='Start fresh (purge run data)')
     parser.add_argument('--device', type=str, default=None,
                         help='Learner device override')
-    parser.add_argument('--actors', type=int, default=0,
+    parser.add_argument('--actors', type=int, default=2,
                         help='Number of actor processes (0=auto)')
-    parser.add_argument('--actor-batch', type=int, default=64,
+    parser.add_argument('--actor-batch', type=int, default=32,
                         help='Games per actor process')
     parser.add_argument('--context-length', type=int, default=16,
                         help='Transformer context window')
