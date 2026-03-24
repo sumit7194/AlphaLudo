@@ -466,29 +466,28 @@ class ActorCriticTrainer:
             # --- Last 500 Games Opponent Stats ---
             try:
                 import sqlite3
-                conn = sqlite3.connect(game_db.db_path)
-                c = conn.cursor()
-                c.execute('''
-                    SELECT 
-                        CASE WHEN model_player_idx = 0 THEN p2 ELSE p0 END as opponent,
-                        COUNT(*) as total_games,
-                        SUM(CASE WHEN winner = model_player_idx THEN 1 ELSE 0 END) as wins
-                    FROM (SELECT * FROM games ORDER BY id DESC LIMIT 500)
-                    GROUP BY opponent
-                ''')
-                recent_stats = {}
-                for row in c.fetchall():
-                    opp_name = row[0]
-                    games = row[1]
-                    wins = row[2]
-                    if opp_name not in ('Inactive', 'Model') and games > 0:
-                        recent_stats[opp_name] = {
-                            'wins': wins,
-                            'games': games,
-                            'win_rate': round((wins / games) * 100, 1)
-                        }
-                stats['recent_opponent_stats'] = recent_stats
-                conn.close()
+                with sqlite3.connect(game_db.db_path) as conn:
+                    c = conn.cursor()
+                    c.execute('''
+                        SELECT
+                            CASE WHEN model_player_idx = 0 THEN p2 ELSE p0 END as opponent,
+                            COUNT(*) as total_games,
+                            SUM(CASE WHEN winner = model_player_idx THEN 1 ELSE 0 END) as wins
+                        FROM (SELECT * FROM games ORDER BY id DESC LIMIT 500)
+                        GROUP BY opponent
+                    ''')
+                    recent_stats = {}
+                    for row in c.fetchall():
+                        opp_name = row[0]
+                        games = row[1]
+                        wins = row[2]
+                        if opp_name not in ('Inactive', 'Model') and games > 0:
+                            recent_stats[opp_name] = {
+                                'wins': wins,
+                                'games': games,
+                                'win_rate': round((wins / games) * 100, 1)
+                            }
+                    stats['recent_opponent_stats'] = recent_stats
             except Exception:
                 pass
         

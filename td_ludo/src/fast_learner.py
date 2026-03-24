@@ -45,11 +45,18 @@ class FastLearner:
         self.ppo_minibatch_size = config.get('ppo_minibatch_size', 256)
         self.context_length = config.get('context_length', 16)
 
+        # Core ML Neural Engine for CNN feature pre-computation
+        self._coreml_model = None
+        self._coreml_batch_size = 256
+        self._coreml_update_counter = 0
+        if config.get('use_coreml', False):
+            self._init_coreml()
+
         # PPO buffer (list of ready-to-train step dicts)
         self._ppo_buffer = []
         self._games_buffered = 0
 
-        # Stats
+        # Stats (note: total_updates may be set by checkpoint resume)
         self.total_updates = 0
         self.total_games = 0
         self.best_win_rate = 0.0
@@ -64,6 +71,92 @@ class FastLearner:
         self.recent_approx_kl = deque(maxlen=1000)
 
         self.metrics_history = []
+
+    def _init_coreml(self):
+        """Try to initialize Core ML model for Neural Engine CNN acceleration."""
+        try:
+            import coremltools as ct
+            self._ct = ct
+            self._convert_coreml()
+        except ImportError:
+            print("[Learner] coremltools not available — using GPU for CNN")
+        except Exception as e:
+            print(f"[Learner] Core ML init failed: {e} — using GPU for CNN")
+
+    def _convert_coreml(self):
+        """Convert current CNN backbone to Core ML for Neural Engine."""
+        import coremltools as ct
+
+        import copy
+
+        # Extract backbone as standalone module (deep copy to CPU)
+        class _Backbone(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.stem = copy.deepcopy(model.stem)
+                self.res_blocks = copy.deepcopy(model.res_blocks)
+                self.cnn_proj = copy.deepcopy(model.cnn_proj)
+            def forward(self, x):
+                out = self.stem(x)
+                for block in self.res_blocks:
+                    residual = out
+                    out = block(out)
+                    out = F.relu(out + residual)
+                out = F.adaptive_avg_pool2d(out, 1).flatten(1)
+                return self.cnn_proj(out)
+
+        backbone = _Backbone(self.model).cpu().eval()
+        bs = self._coreml_batch_size
+        example = torch.randn(bs, V9_IN_CHANNELS, 15, 15)
+
+        with torch.no_grad():
+            traced = torch.jit.trace(backbone, example)
+
+        ml_model = ct.convert(
+            traced,
+            inputs=[ct.TensorType(name='grid', shape=(bs, V9_IN_CHANNELS, 15, 15))],
+            outputs=[ct.TensorType(name='features')],
+            compute_precision=ct.precision.FLOAT32,
+            compute_units=ct.ComputeUnit.ALL,
+            minimum_deployment_target=ct.target.macOS15,
+        )
+        self._coreml_model = ml_model
+        print(f"[Learner] Core ML Neural Engine enabled (batch={bs})")
+
+    def _refresh_coreml(self):
+        """Re-convert Core ML model after weight update (every 10 PPO updates)."""
+        self._coreml_update_counter += 1
+        if self._coreml_model is not None and self._coreml_update_counter % 10 == 0:
+            try:
+                self._convert_coreml()
+            except Exception as e:
+                print(f"[Learner] Core ML refresh failed: {e}")
+
+    def _compute_cnn_ane(self, flat_grids_np):
+        """
+        Compute CNN features using Neural Engine via Core ML.
+        flat_grids_np: (total, 14, 15, 15) numpy float32
+        Returns: (total, embed_dim) numpy float32
+        """
+        bs = self._coreml_batch_size
+        total = flat_grids_np.shape[0]
+        all_features = []
+
+        for i in range(0, total, bs):
+            chunk = flat_grids_np[i:i + bs]
+            actual_bs = chunk.shape[0]
+
+            if actual_bs < bs:
+                # Pad to batch size
+                padded = np.zeros((bs, V9_IN_CHANNELS, 15, 15), dtype=np.float32)
+                padded[:actual_bs] = chunk
+                result = self._coreml_model.predict({'grid': padded})
+                all_features.append(result['features'][:actual_bs])
+            else:
+                result = self._coreml_model.predict({'grid': chunk})
+                all_features.append(result['features'])
+
+        return np.concatenate(all_features, axis=0)
 
     def add_game_data(self, game_data):
         """
@@ -443,6 +536,12 @@ class FastLearner:
             'is_stagnated': False,
             'timestamp': time.time(),
         }
+        # Alpha gate value (transformer contribution)
+        import math
+        if hasattr(self.model, 'transformer_alpha'):
+            raw = self.model.transformer_alpha.item()
+            stats['alpha_gate'] = round(math.tanh(raw), 4)
+            stats['alpha_gate_raw'] = round(raw, 4)
         if self.last_eval_wr is not None:
             stats['eval_win_rate'] = round(self.last_eval_wr * 100, 1)
 
@@ -475,6 +574,9 @@ class FastLearner:
         }
         if eval_win_rate is not None:
             entry['eval_win_rate'] = round(eval_win_rate, 4)
+        if hasattr(self.model, 'transformer_alpha'):
+            import math
+            entry['alpha_gate'] = round(math.tanh(self.model.transformer_alpha.item()), 4)
         self.metrics_history.append(entry)
         try:
             with open(metrics_path, 'w') as f:
@@ -487,7 +589,8 @@ def learner_worker(trajectory_queue, stats_queue,
                    weight_path, weight_version, total_games_counter,
                    stop_event,
                    device_str, config, checkpoint_dir, ghosts_dir,
-                   resume_path=None, sl_weights_path=None):
+                   resume_path=None, sl_weights_path=None,
+                   weight_update_queue=None):
     """
     Learner process entry point.
     Runs on MPS/CUDA, consumes trajectories, does PPO updates.
@@ -626,6 +729,13 @@ def learner_worker(trajectory_queue, stats_queue,
             learner.export_weights(weight_path)
             weight_version.value += 1
             last_weight_export = now
+
+            # Notify inference server of new weights
+            if weight_update_queue is not None:
+                try:
+                    weight_update_queue.put_nowait(weight_path)
+                except Exception:
+                    pass
 
             # Print update
             win_rate = sum(rolling_wins) / max(1, len(rolling_wins))

@@ -347,9 +347,11 @@ class FastActor:
         pre_states = []
         for i in range(self.batch_size):
             game = self.env.get_game(i)
-            pre_states.append(
-                {p: list(game.player_positions[p]) for p in range(4)}
-            )
+            pre_states.append({
+                'positions': {p: list(game.player_positions[p]) for p in range(4)},
+                'scores': list(game.scores),
+                'active_players': list(game.active_players),
+            })
 
         # Step environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -371,12 +373,15 @@ class FastActor:
                     next_game = self.env.get_game(i)
 
                     class _S:
-                        def __init__(self, pos):
-                            self.player_positions = pos
+                        def __init__(self, positions, scores, active_players):
+                            self.player_positions = positions
+                            self.scores = scores
+                            self.active_players = active_players
 
+                    pre = pre_states[i]
                     reward = compute_shaped_reward(
-                        _S(pre_states[i]),
-                        _S(next_game.player_positions),
+                        _S(pre['positions'], pre['scores'], pre['active_players']),
+                        _S(next_game.player_positions, next_game.scores, next_game.active_players),
                         cp,
                     )
                     traj['step_rewards'][-1] = reward
@@ -637,6 +642,12 @@ def actor_worker(actor_id, batch_size, context_length,
         except Exception as e:
             print(f"[Actor {actor_id}] Warning: could not load initial weights: {e}")
 
+    # Optional int8 dynamic quantization for faster CPU inference
+    if config.get('quantize_actors', False):
+        model = torch.quantization.quantize_dynamic(
+            model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+
     actor = FastActor(model, batch_size, context_length, config)
 
     local_weight_version = weight_version.value
@@ -690,3 +701,415 @@ def actor_worker(actor_id, batch_size, context_length,
 
     print(f"[Actor {actor_id}] Shutting down ({games_played} games, "
           f"{wins}/{games_played} wins)")
+
+
+# =============================================================================
+# GPU-Backed Actor Worker — sends inference to centralized GPU server
+# =============================================================================
+
+def actor_worker_gpu(actor_id, batch_size, context_length,
+                     trajectory_queue, stats_queue,
+                     request_queue, response_queue,
+                     total_games_counter, stop_event,
+                     config):
+    """
+    Actor process that uses a centralized GPU inference server.
+    No model is loaded in this process — all inference goes through queues.
+    CPU cores are freed for game simulation only.
+    """
+    import td_ludo_cpp as ludo_cpp
+    from src.heuristic_bot import (
+        HeuristicLudoBot, AggressiveBot, DefensiveBot,
+        RacingBot, RandomBot, ExpertBot,
+    )
+    from src.reward_shaping import compute_shaped_reward
+
+    bot_classes = {
+        'Heuristic': HeuristicLudoBot,
+        'Aggressive': AggressiveBot,
+        'Defensive': DefensiveBot,
+        'Racing': RacingBot,
+        'Random': RandomBot,
+        'Expert': ExpertBot,
+    }
+    bots = {name: cls() for name, cls in bot_classes.items()}
+
+    game_composition = config.get('game_composition', {
+        'SelfPlay': 0.40, 'Expert': 0.25, 'Heuristic': 0.15,
+        'Aggressive': 0.10, 'Defensive': 0.10,
+    })
+    ghosts_dir = config.get('ghosts_dir', '')
+    selfplay_ghost_fraction = config.get('selfplay_ghost_fraction', 0.5)
+    max_moves = config.get('max_moves', 10000)
+    num_active_players = config.get('num_active_players', 2)
+    K = context_length
+
+    two_player = num_active_players == 2
+    env = ludo_cpp.VectorGameState(batch_size, two_player)
+
+    # Per-game state
+    def _random_composition():
+        r = random.random()
+        cumulative = 0.0
+        game_type = 'SelfPlay'
+        for gtype, prob in game_composition.items():
+            cumulative += prob
+            if r < cumulative:
+                game_type = gtype
+                break
+
+        seats = [0, 2]
+        model_player = random.choice(seats)
+        opponent_seat = 2 if model_player == 0 else 0
+        player_types = ['Inactive'] * 4
+        controllers = ['Inactive'] * 4
+        train_players = {model_player}
+
+        player_types[model_player] = 'Model'
+        controllers[model_player] = 'Model'
+
+        if game_type == 'SelfPlay':
+            # With GPU server, self-play opponent also uses the server
+            # (ghost support simplified — both sides use current model)
+            ghost_pool = []
+            if ghosts_dir and os.path.exists(ghosts_dir):
+                ghost_pool = sorted([
+                    os.path.join(ghosts_dir, f) for f in os.listdir(ghosts_dir)
+                    if f.startswith('ghost_') and f.endswith('.pt')
+                ], reverse=True)
+
+            use_ghost = (random.random() < selfplay_ghost_fraction and ghost_pool)
+            if use_ghost:
+                # Ghost games: opponent uses a heuristic bot as proxy
+                # (ghost model loading on CPU was the old way — too slow)
+                # Instead, opponent uses Expert bot for ghost-like difficulty
+                player_types[opponent_seat] = 'Expert'
+                controllers[opponent_seat] = 'Expert'
+            else:
+                player_types[opponent_seat] = 'SelfPlay'
+                controllers[opponent_seat] = 'SelfPlay'
+                train_players.add(opponent_seat)
+        else:
+            player_types[opponent_seat] = game_type
+            controllers[opponent_seat] = game_type
+
+        return {
+            'model_player': model_player,
+            'player_types': player_types,
+            'controllers': controllers,
+            'ghost_paths': [None] * 4,
+            'train_players': sorted(train_players),
+        }
+
+    compositions = [_random_composition() for _ in range(batch_size)]
+    turn_histories = {}
+    for i in range(batch_size):
+        for p in range(4):
+            turn_histories[(i, p)] = TurnHistory(K, V9_EMBED_DIM)
+
+    last_actions = np.full((batch_size, 4), 4, dtype=np.int64)
+    consecutive_sixes = np.zeros((batch_size, 4), dtype=int)
+    move_counts = np.zeros(batch_size, dtype=int)
+    game_trajectories = [{} for _ in range(batch_size)]
+
+    total_games = 0
+    model_wins = 0
+    games_played = 0
+    wins = 0
+    last_stats_time = time.time()
+
+    def _get_temperature(total_games_g):
+        t_start = config.get('temp_start', 1.1)
+        t_end = config.get('temp_end', 0.95)
+        t_decay = config.get('temp_decay_games', 20000)
+        if total_games_g >= t_decay:
+            return t_end
+        return t_start - (total_games_g / t_decay) * (t_start - t_end)
+
+    print(f"[Actor {actor_id}] Started (batch={batch_size}, GPU-backed)")
+
+    while not stop_event.is_set():
+        total_games_global = total_games_counter.value
+        temperature = _get_temperature(total_games_global)
+
+        # === Phase 1: Advance all games, collect model decisions needed ===
+        actions = [0] * batch_size
+        current_players = [0] * batch_size
+        model_decisions = []  # (game_idx, current_player, legal_moves, grid, legal_mask)
+
+        for i in range(batch_size):
+            game = env.get_game(i)
+            if game.is_terminal:
+                actions[i] = -1
+                current_players[i] = -1
+                continue
+
+            cp = game.current_player
+            current_players[i] = cp
+
+            if move_counts[i] >= max_moves:
+                game.is_terminal = True
+                actions[i] = -1
+                continue
+
+            if game.current_dice_roll == 0:
+                roll = random.randint(1, 6)
+                game.current_dice_roll = roll
+                if roll == 6:
+                    consecutive_sixes[i, cp] += 1
+                else:
+                    consecutive_sixes[i, cp] = 0
+                if consecutive_sixes[i, cp] >= 3:
+                    next_p = (cp + 1) % 4
+                    while not game.active_players[next_p]:
+                        next_p = (next_p + 1) % 4
+                    game.current_player = next_p
+                    game.current_dice_roll = 0
+                    consecutive_sixes[i, cp] = 0
+                    actions[i] = -1
+                    continue
+
+            legal_moves = ludo_cpp.get_legal_moves(game)
+            if not legal_moves:
+                next_p = (cp + 1) % 4
+                while not game.active_players[next_p]:
+                    next_p = (next_p + 1) % 4
+                game.current_player = next_p
+                game.current_dice_roll = 0
+                actions[i] = -1
+                continue
+
+            comp = compositions[i]
+            controller = comp['controllers'][cp]
+
+            if controller in ('Model', 'SelfPlay'):
+                grid = ludo_cpp.encode_state_v9(game)
+                history = turn_histories[(i, cp)]
+                last_act = int(last_actions[i, cp])
+                history.add_turn(grid, action=last_act, cnn_feature=None)
+
+                legal_mask = np.zeros(4, dtype=np.float32)
+                for m in legal_moves:
+                    legal_mask[m] = 1.0
+
+                model_decisions.append((i, cp, legal_moves, grid, legal_mask))
+                actions[i] = -2  # placeholder
+            else:
+                bot = bots.get(comp['player_types'][cp], bots['Random'])
+                actions[i] = bot.select_move(game, legal_moves)
+
+        # === Phase 2: Batch inference via GPU server ===
+        if model_decisions:
+            n = len(model_decisions)
+            batch_grids = np.stack([d[3] for d in model_decisions])  # (n, 14, 15, 15)
+            batch_legal = np.stack([d[4] for d in model_decisions])  # (n, 4)
+
+            # Build cached context sequences (K-1 previous features + placeholder for new)
+            batch_cached = np.zeros((n, K - 1, V9_EMBED_DIM), dtype=np.float32)
+            batch_acts = np.full((n, K), 4, dtype=np.int64)
+            batch_mask = np.ones((n, K), dtype=bool)
+
+            for j, (game_idx, cp, _, _, _) in enumerate(model_decisions):
+                history = turn_histories[(game_idx, cp)]
+                # Get cached sequence but only K-1 items (last slot will be new CNN)
+                n_valid = len(history._grids)
+                n_prev = min(n_valid - 1, K - 1)  # exclude the just-added grid
+                n_pad = (K - 1) - n_prev
+
+                if n_prev > 0:
+                    start = max(0, len(history._cnn_features) - 1 - n_prev)
+                    end = len(history._cnn_features) - 1  # exclude last (not yet computed)
+                    for fi, feat in enumerate(history._cnn_features[start:end]):
+                        if feat is not None:
+                            batch_cached[j, n_pad + fi] = feat
+
+                # Actions: include all K (the last action is the one just taken)
+                acts = history._actions[-min(n_valid, K):]
+                a_pad = K - len(acts)
+                batch_acts[j, a_pad:] = np.array(acts, dtype=np.int64)
+                batch_mask[j, a_pad:] = False  # valid positions
+
+            # Send request to GPU server
+            request = {
+                'actor_id': actor_id,
+                'new_grids': batch_grids,
+                'cached_features': batch_cached,
+                'prev_actions': batch_acts,
+                'seq_mask': batch_mask,
+                'legal_mask': batch_legal,
+                'temperature': temperature,
+            }
+
+            try:
+                request_queue.put(request, timeout=5.0)
+                response = response_queue.get(timeout=10.0)
+            except Exception:
+                # Server timeout — use random actions as fallback
+                for j, (game_idx, cp, legal_moves, _, _) in enumerate(model_decisions):
+                    actions[game_idx] = random.choice(legal_moves)
+                    last_actions[game_idx, cp] = actions[game_idx]
+                model_decisions_with_response = False
+            else:
+                model_decisions_with_response = True
+
+            if model_decisions_with_response:
+                sampled_np = response['sampled_actions']
+                old_lps_np = response['old_log_probs']
+                new_cnn_np = response['new_cnn_features']
+
+                for j, (game_idx, cp, legal_moves, grid, legal_mask) in enumerate(model_decisions):
+                    action = int(sampled_np[j])
+                    if action not in legal_moves:
+                        action = random.choice(legal_moves)
+
+                    actions[game_idx] = action
+                    last_actions[game_idx, cp] = action
+
+                    # Update CNN feature cache in turn history
+                    turn_histories[(game_idx, cp)]._cnn_features[-1] = new_cnn_np[j]
+
+                    # Store trajectory step
+                    if cp in compositions[game_idx]['train_players']:
+                        if cp not in game_trajectories[game_idx]:
+                            game_trajectories[game_idx][cp] = {
+                                'grids': [], 'actions': [], 'legal_masks': [],
+                                'old_log_probs': [], 'temperatures': [], 'step_rewards': [],
+                            }
+                        traj = game_trajectories[game_idx][cp]
+                        traj['grids'].append(grid.copy())
+                        traj['actions'].append(action)
+                        traj['legal_masks'].append(legal_mask.copy())
+                        traj['old_log_probs'].append(float(old_lps_np[j]))
+                        traj['temperatures'].append(float(temperature))
+                        traj['step_rewards'].append(0.0)
+
+        # === Phase 3: Step environment and compute rewards ===
+        pre_states = []
+        for i in range(batch_size):
+            game = env.get_game(i)
+            pre_states.append({
+                'positions': {p: list(game.player_positions[p]) for p in range(4)},
+                'scores': list(game.scores),
+                'active_players': list(game.active_players),
+            })
+
+        final_actions = [a if a >= 0 else -1 for a in actions]
+        for i, a in enumerate(final_actions):
+            if a >= 0:
+                move_counts[i] += 1
+
+        _, _, dones_np, info_list = env.step(final_actions)
+
+        # === Phase 4: Rewards and game completions ===
+        completed = []
+        for i in range(batch_size):
+            cp = current_players[i]
+            if cp >= 0 and cp in game_trajectories[i]:
+                traj = game_trajectories[i][cp]
+                if traj['step_rewards']:
+                    next_game = env.get_game(i)
+                    class _S:
+                        def __init__(self, positions, scores, active_players):
+                            self.player_positions = positions
+                            self.scores = scores
+                            self.active_players = active_players
+                    pre = pre_states[i]
+                    reward = compute_shaped_reward(
+                        _S(pre['positions'], pre['scores'], pre['active_players']),
+                        _S(next_game.player_positions, next_game.scores, next_game.active_players),
+                        cp)
+                    traj['step_rewards'][-1] = reward
+
+            if dones_np[i]:
+                winner = info_list[i]['winner']
+                comp = compositions[i]
+                mpid = comp['model_player']
+                model_won = (winner == mpid) if winner >= 0 else False
+
+                if winner >= 0:
+                    for train_player in comp['train_players']:
+                        if train_player in game_trajectories[i]:
+                            traj = game_trajectories[i][train_player]
+                            if traj['grids']:
+                                game_data = _package_game_standalone(
+                                    traj, winner, train_player, comp, num_active_players)
+                                completed.append(game_data)
+
+                total_games += 1
+                if model_won:
+                    model_wins += 1
+
+                env.reset_game(i)
+                compositions[i] = _random_composition()
+                consecutive_sixes[i] = 0
+                game_trajectories[i] = {}
+                last_actions[i] = 4
+                move_counts[i] = 0
+                for p in range(4):
+                    turn_histories[(i, p)].reset()
+
+        # Send completed games to learner
+        for game_data in completed:
+            try:
+                trajectory_queue.put(game_data, timeout=5.0)
+            except Exception:
+                if stop_event.is_set():
+                    break
+                continue
+            games_played += 1
+            if game_data['game_info']['model_won']:
+                wins += 1
+
+        # Stats
+        now = time.time()
+        if now - last_stats_time > 10.0:
+            try:
+                stats_queue.put({
+                    'type': 'actor_stats', 'actor_id': actor_id,
+                    'games': games_played, 'wins': wins, 'timestamp': now,
+                }, block=False)
+            except Exception:
+                pass
+            last_stats_time = now
+
+    print(f"[Actor {actor_id}] Shutting down ({games_played} games, "
+          f"{wins}/{games_played} wins)")
+
+
+def _package_game_standalone(traj, winner, model_player, composition, n_active):
+    """Package a completed game's trajectory (standalone version for GPU actor)."""
+    T = len(traj['grids'])
+    loss_penalty = -1.0 / max(1, n_active - 1)
+    z = 1.0 if model_player == winner else loss_penalty
+    gamma = 0.999
+
+    returns = np.zeros(T, dtype=np.float32)
+    R = 0.0
+    for i in reversed(range(T)):
+        r_t = traj['step_rewards'][i]
+        if i == T - 1:
+            r_t += z
+        R = r_t + gamma * R
+        returns[i] = R
+
+    step_actions = np.array(traj['actions'], dtype=np.int64)
+    prev_actions = np.full(T, 4, dtype=np.int64)
+    if T > 1:
+        prev_actions[1:] = step_actions[:-1]
+
+    return {
+        'player_grids': np.stack(traj['grids']),
+        'prev_actions': prev_actions,
+        'step_actions': step_actions,
+        'legal_masks': np.stack(traj['legal_masks']),
+        'old_log_probs': np.array(traj['old_log_probs'], dtype=np.float32),
+        'temperatures': np.array(traj['temperatures'], dtype=np.float32),
+        'returns': returns,
+        'game_info': {
+            'winner': winner,
+            'model_won': model_player == winner,
+            'model_player': model_player,
+            'identities': composition['player_types'],
+            'total_moves': T,
+        },
+    }

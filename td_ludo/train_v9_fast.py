@@ -190,6 +190,14 @@ def main():
                         help='Path to SL pre-trained weights')
     parser.add_argument('--queue-size', type=int, default=500,
                         help='Max trajectory queue size')
+    parser.add_argument('--gpu-actors', action='store_true', default=False,
+                        help='Use GPU inference server for actors (experimental)')
+    parser.add_argument('--no-gpu-actors', dest='gpu_actors', action='store_false',
+                        help='Use CPU actors (default)')
+    parser.add_argument('--quantize-actors', action='store_true', default=False,
+                        help='Use int8 quantized models for actor inference')
+    parser.add_argument('--coreml', action='store_true', default=False,
+                        help='Use Core ML Neural Engine for CNN feature pre-computation')
     args = parser.parse_args()
 
     # Fresh start
@@ -271,15 +279,22 @@ def main():
         'ghost_save_interval': 2000,
         'max_ghosts': 20,
         'early_stop_patience': 100,
+        'quantize_actors': args.quantize_actors,
+        'use_coreml': args.coreml,
     }
 
     # Dashboard
     if not args.no_dashboard:
         start_dashboard_server(port=args.port)
 
+    use_gpu_actors = args.gpu_actors
+    arch_label = (f"{num_actors} GPU-backed actors + 1 {device_str} inference server + 1 {device_str} learner"
+                  if use_gpu_actors
+                  else f"{num_actors} CPU actors + 1 {device_str} learner")
+
     print(f"\n{'='*60}")
     print(f"  TD-Ludo V9 FAST Training — Multi-Process")
-    print(f"  Architecture: {num_actors} CPU actors + 1 {device_str} learner")
+    print(f"  Architecture: {arch_label}")
     print(f"  Parallel games: {total_parallel}")
     print(f"  PPO buffer: {args.ppo_buffer} steps")
     print(f"  Context: K={args.context_length}")
@@ -296,8 +311,10 @@ def main():
     print(f"{'='*60}\n")
 
     # Import worker functions (must be importable for spawn)
-    from src.fast_actor import actor_worker
     from src.fast_learner import learner_worker
+
+    # Weight update queue for inference server
+    weight_update_queue = mp.Queue(maxsize=10) if use_gpu_actors else None
 
     # Start learner process
     learner_proc = mp.Process(
@@ -309,6 +326,7 @@ def main():
             device_str, config, CHECKPOINT_DIR, GHOSTS_DIR,
             resume_path, sl_path,
         ),
+        kwargs={'weight_update_queue': weight_update_queue},
         name='learner',
         daemon=False,
     )
@@ -324,24 +342,71 @@ def main():
     else:
         print("[Main] Warning: timed out waiting for initial weights")
 
-    # Start actor processes
+    # Start inference server and actors
+    inference_proc = None
     actor_procs = []
-    for i in range(num_actors):
-        proc = mp.Process(
-            target=actor_worker,
+
+    if use_gpu_actors:
+        from src.inference_server import inference_server_worker
+        from src.fast_actor import actor_worker_gpu
+
+        # Create per-actor response queues
+        request_queue = mp.Queue(maxsize=num_actors * 2)
+        response_queues = [mp.Queue(maxsize=4) for _ in range(num_actors)]
+
+        # Start inference server
+        inference_proc = mp.Process(
+            target=inference_server_worker,
             args=(
-                i, actor_batch, args.context_length,
-                trajectory_queue, stats_queue,
-                WEIGHT_SYNC_PATH, weight_version, total_games_counter,
-                STOP_EVENT,
-                config,
+                args.context_length, device_str,
+                request_queue, response_queues,
+                weight_update_queue, STOP_EVENT,
+                WEIGHT_SYNC_PATH,
             ),
-            name=f'actor-{i}',
+            name='inference-server',
             daemon=False,
         )
-        proc.start()
-        actor_procs.append(proc)
-        print(f"[Main] Actor {i} started (PID {proc.pid})")
+        inference_proc.start()
+        print(f"[Main] Inference server started (PID {inference_proc.pid})")
+        time.sleep(1.0)  # Let server initialize
+
+        # Start GPU-backed actors
+        for i in range(num_actors):
+            proc = mp.Process(
+                target=actor_worker_gpu,
+                args=(
+                    i, actor_batch, args.context_length,
+                    trajectory_queue, stats_queue,
+                    request_queue, response_queues[i],
+                    total_games_counter, STOP_EVENT,
+                    config,
+                ),
+                name=f'actor-{i}',
+                daemon=False,
+            )
+            proc.start()
+            actor_procs.append(proc)
+            print(f"[Main] Actor {i} started (PID {proc.pid}, GPU-backed)")
+    else:
+        from src.fast_actor import actor_worker
+
+        # Original CPU actor mode
+        for i in range(num_actors):
+            proc = mp.Process(
+                target=actor_worker,
+                args=(
+                    i, actor_batch, args.context_length,
+                    trajectory_queue, stats_queue,
+                    WEIGHT_SYNC_PATH, weight_version, total_games_counter,
+                    STOP_EVENT,
+                    config,
+                ),
+                name=f'actor-{i}',
+                daemon=False,
+            )
+            proc.start()
+            actor_procs.append(proc)
+            print(f"[Main] Actor {i} started (PID {proc.pid})")
 
     start_time = time.time()
 
@@ -395,6 +460,13 @@ def main():
         if proc.is_alive():
             print(f"[Main] Actor {i} didn't stop, terminating...")
             proc.terminate()
+
+    # Wait for inference server
+    if inference_proc is not None:
+        inference_proc.join(timeout=10)
+        if inference_proc.is_alive():
+            print("[Main] Inference server didn't stop, terminating...")
+            inference_proc.terminate()
 
     # Wait for learner (give it more time to save)
     learner_proc.join(timeout=30)

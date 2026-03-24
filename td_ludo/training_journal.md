@@ -512,3 +512,52 @@ A Transformer with self-attention over a context window of past turns directly a
 
 - Architecture evolution discussion: `discussion/AlphaLudo Architecture Evolution_ From Reactive CNN to Strategic Sequence Transformer.docx`
 - 1D state vector specification: `discussion/The 2-Player 1D State Vector .docx`
+
+---
+
+## V6 Strategic Reward Overhaul
+
+### Experiment 10: Strategic Reward Shaping v2.0
+
+- **Date**: March 25, 2026
+- **Resume from**: V6 latest checkpoint (382K games, 70.6% eval WR)
+- **Architecture**: AlphaLudoV3 (128ch, 10 ResBlocks, 17ch input, ~3M params)
+- **Pipeline**: train.py + game_player.py (V6 pipeline, ~64 GPM)
+
+#### Motivation
+
+Mech interp (Experiments 10-12 in `discussion/`) showed V6 is a "sophisticated lookup table" — reads board + dice, makes locally optimal moves, but has zero strategic reasoning. The root cause is the reward function: it rewards outcomes (captures, scoring) but not setup behaviors (chasing, safety-seeking, blocking).
+
+V9 (CNN + Transformer) attempted to fix this with temporal context, but the weaker CNN backbone (80ch vs 128ch) and insufficient training meant it never matched V6's spatial perception. The hypothesis now: **better rewards on V6's strong CNN will teach strategic play without needing temporal context**.
+
+#### Changes: 6 New Strategic Rewards (added on top of all v1.1 rewards)
+
+| Reward | Trigger | Magnitude | Design |
+|--------|---------|-----------|--------|
+| **Chase target** | Moved token gains new capturable opp in dice range (1-6) | +0.06 per target | Delta-based, skip safe/stacked targets |
+| **Safety transition** | Token escapes danger (opp 1-6 behind) to safe/stacked position | +0.08 | Only when token was actually endangered |
+| **Danger reduction** | Fewer own tokens in danger after move | +0.06 per token | Delta-based, max(delta, 0) |
+| **Stack formed** | New 2+ token stack on main track | +0.07 per stack | Delta-based, main track only |
+| **Leader capture** | Capture the score leader | +0.08 bonus | On top of existing +0.20 |
+| **Endgame urgency** | Score token when opp has 3+ scored | +0.15 bonus | On top of existing +0.40 |
+
+#### Design Principles
+1. All existing v1.1 rewards preserved exactly (Exp 8 proved removal hurts)
+2. Delta-based: reward state transitions, not static states (avoids PBRS γ-leak from Exp 1)
+3. Magnitudes ≥ 0.05 (Exp 4/6 showed weaker signals drown in dice noise)
+4. max(delta, 0) pattern: only reward improvement, never penalize lack of it
+5. Safety transition requires actual danger (opponent 1-6 behind), not just any unsafe→safe
+
+#### Smoke Test Results (200 random games)
+- Avg reward/game: ~9.7 (was ~7.5 with v1.1 only)
+- New rewards add ~2.0-2.5 per game on top of existing ~7.0
+- Terminal ±1.0 still dominates returns over full episode (γ=0.999, ~44 player moves)
+
+#### Monitoring Plan
+- Run 15K+ games minimum before judging (per journal rules)
+- Watch: entropy > 0.35, policy loss < 0.05, eval WR trend
+- Key question: does the model start chasing/blocking/seeking safety?
+- Backup: `checkpoints/ac_v6_big/backups/model_latest_382k_pre_strategic_rewards.pt`
+
+#### Results
+*(To be filled after training)*

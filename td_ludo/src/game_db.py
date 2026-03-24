@@ -111,20 +111,23 @@ class GameDB:
         finally:
             conn.close()
     
-    def get_all_stats(self):
+    def get_all_stats(self, limit=2000):
         """
-        Get aggregate win/game counts for all models.
-        
+        Get aggregate win/game counts for all models (recent games only).
+
+        Args:
+            limit: Number of recent games to analyze (default 2000, avoids full-table scan)
+
         Returns:
             dict: { 'Name': {'wins': int, 'games': int, 'win_rate': float}, ... }
         """
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        
+
         stats = defaultdict(lambda: {'wins': 0, 'games': 0, 'win_rate': 0.0})
-        
+
         try:
-            c.execute('SELECT p0, p1, p2, p3, winner FROM games')
+            c.execute('SELECT p0, p1, p2, p3, winner FROM games ORDER BY id DESC LIMIT ?', (limit,))
             for p0, p1, p2, p3, winner in c.fetchall():
                 players = [p0, p1, p2, p3]
                 unique = set(players)
@@ -132,7 +135,7 @@ class GameDB:
                     stats[name]['games'] += 1
                     if winner >= 0 and players[winner] == name:
                         stats[name]['wins'] += 1
-            
+
             # Calculate win rates
             for name in stats:
                 g = stats[name]['games']
@@ -142,39 +145,42 @@ class GameDB:
             print(f"[GameDB] Stats error: {e}")
         finally:
             conn.close()
-        
+
         return dict(stats)
     
-    def get_opponent_stats(self, model_name='Main'):
+    def get_opponent_stats(self, model_name='Main', limit=2000):
         """
-        Get win rates broken down by opponent type.
-        
+        Get win rates broken down by opponent type (recent games only).
+
+        Args:
+            model_name: Name of the model player
+            limit: Number of recent games to analyze (default 2000)
+
         Returns:
             dict: { 'Heuristic': {'wins': int, 'games': int, 'win_rate': float}, ... }
         """
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        
+
         opponent_stats = defaultdict(lambda: {'wins': 0, 'games': 0, 'win_rate': 0.0})
-        
+
         try:
-            c.execute('SELECT p0, p1, p2, p3, winner FROM games')
+            c.execute('SELECT p0, p1, p2, p3, winner FROM games ORDER BY id DESC LIMIT ?', (limit,))
             for p0, p1, p2, p3, winner in c.fetchall():
                 players = [p0, p1, p2, p3]
-                
-                # Find opponents in this game
+
                 model_in_game = model_name in players
                 if not model_in_game:
                     continue
-                
+
                 opponents = set(p for p in players if p != model_name)
                 model_won = winner >= 0 and players[winner] == model_name
-                
+
                 for opp in opponents:
                     opponent_stats[opp]['games'] += 1
                     if model_won:
                         opponent_stats[opp]['wins'] += 1
-            
+
             for opp in opponent_stats:
                 g = opponent_stats[opp]['games']
                 if g > 0:
@@ -184,7 +190,7 @@ class GameDB:
             print(f"[GameDB] Opponent stats error: {e}")
         finally:
             conn.close()
-        
+
         return dict(opponent_stats)
     
     def get_recent_games(self, n=50):

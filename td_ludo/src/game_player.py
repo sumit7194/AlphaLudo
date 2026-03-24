@@ -135,6 +135,8 @@ class VectorACGamePlayer:
             old_path, old_model = next(iter(self.ghost_cache.items()))
             del self.ghost_cache[old_path]
             del old_model
+        import gc
+        gc.collect()
 
         return model
 
@@ -338,14 +340,12 @@ class VectorACGamePlayer:
         # Save pre-step states for reward computation
         pre_step_states = []
         for i in range(self.batch_size):
-            # Must copy the state or extract needed info if GameState mutates.
-            # Fortunately get_game returns a reference the C++ object, so we need to copy?
-            # Actually, `compute_shaped_reward` only needs `player_positions`.
-            # Let's extract original positions for all 4 players for all batch games.
             game = self.env.get_game(i)
-            # Create a simple struct/dict to hold the old positions
-            old_pos = {p: list(game.player_positions[p]) for p in range(4)}
-            pre_step_states.append(old_pos)
+            pre_step_states.append({
+                'positions': {p: list(game.player_positions[p]) for p in range(4)},
+                'scores': list(game.scores),
+                'active_players': list(game.active_players),
+            })
             
         # 4. Step Environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -366,13 +366,20 @@ class VectorACGamePlayer:
                 # Since C++ GameState is mutated, self.env.get_game(i) is now the NEXT state.
                 next_game = self.env.get_game(i)
                 
-                # compute_shaped_reward expects objects with .player_positions
+                # compute_shaped_reward expects objects with .player_positions, .scores, .active_players
                 class DummyState:
-                    def __init__(self, pos):
-                        self.player_positions = pos
-                
-                dummy_old = DummyState(pre_step_states[i])
-                dummy_new = DummyState(next_game.player_positions)
+                    def __init__(self, positions, scores, active_players):
+                        self.player_positions = positions
+                        self.scores = scores
+                        self.active_players = active_players
+
+                pre = pre_step_states[i]
+                dummy_old = DummyState(pre['positions'], pre['scores'], pre['active_players'])
+                dummy_new = DummyState(
+                    next_game.player_positions,
+                    next_game.scores,
+                    next_game.active_players,
+                )
                 
                 step_reward = compute_shaped_reward(dummy_old, dummy_new, cp)
                 

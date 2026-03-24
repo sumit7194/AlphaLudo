@@ -92,10 +92,13 @@ class EloTracker:
             self.ratings[winner_name] += weight * (1 - expected_win)
             self.ratings[loser_name] += weight * (0 - expected_lose)
         
-        # Record history
+        # Record history (capped at 5000 entries per player to prevent memory leak)
         if game_num is not None:
+            max_history = 5000
             for _, name in active_entries:
                 self.history[name].append((game_num, round(self.ratings[name], 1)))
+                if len(self.history[name]) > max_history:
+                    self.history[name] = self.history[name][-max_history:]
     
     def select_ghost(self, ghost_pool, main_name='Main', strategy='adversarial'):
         """

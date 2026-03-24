@@ -659,6 +659,11 @@
                     <div class="kpi-value accent-amber" id="kpiEntropy">—</div>
                 </div>
                 <div class="kpi-card">
+                    <div class="kpi-label">Alpha Gate</div>
+                    <div class="kpi-value accent-purple" id="kpiAlphaGate">—</div>
+                    <div class="kpi-sub" id="kpiAlphaGateSub">transformer blend</div>
+                </div>
+                <div class="kpi-card">
                     <div class="kpi-label">Temperature</div>
                     <div class="kpi-value accent-blue" id="kpiTemperature">—</div>
                 </div>
@@ -725,6 +730,10 @@
                 <div class="chart-card">
                     <div class="chart-title">Eval Win Rate</div>
                     <div class="chart-container"><canvas id="chartEval"></canvas></div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Alpha Gate (Transformer Blend)</div>
+                    <div class="chart-container"><canvas id="chartAlphaGate"></canvas></div>
                 </div>
             </div>
 
@@ -937,6 +946,7 @@
             charts.td = mkChart('chartEntropy', 'Policy Entropy', 'rgba(245,158,11,1)', { min: 0, max: 1.5 });
             charts.eps = mkChart('chartAdvantage', 'Advantage', 'rgba(59,130,246,1)', { min: -1, max: 1 });
             charts.eval = mkChart('chartEval', 'Eval WR', 'rgba(168,85,247,1)', { min: 0, max: 100 });
+            charts.alphaGate = mkChart('chartAlphaGate', 'Alpha Gate', 'rgba(168,85,247,1)', { min: 0, max: 1 });
 
             // Elo chart (multi-line)
             charts.elo = new Chart(document.getElementById('chartElo'), {
@@ -1020,6 +1030,13 @@
 
             if (document.getElementById('kpiTemperature')) {
                 document.getElementById('kpiTemperature').textContent = stats.temperature !== undefined ? fmt(stats.temperature, 2) : '—';
+            }
+            if (document.getElementById('kpiAlphaGate')) {
+                const ag = stats.alpha_gate;
+                document.getElementById('kpiAlphaGate').textContent = ag !== undefined ? fmt(ag, 3) : '—';
+                if (ag !== undefined) {
+                    document.getElementById('kpiAlphaGateSub').textContent = `raw: ${stats.alpha_gate_raw !== undefined ? fmt(stats.alpha_gate_raw, 3) : '—'}`;
+                }
             }
 
             document.getElementById('kpiGPM').textContent = fmt(stats.games_per_minute, 0);
@@ -1127,6 +1144,13 @@
                 charts.eval.data.labels = evalWR.map(m => m.games);
                 charts.eval.data.datasets[0].data = evalWR.map(m => (m.eval_win_rate || 0) * 100);
                 charts.eval.update('none');
+            }
+
+            const alphaData = metrics.filter(m => m.alpha_gate !== undefined);
+            if (alphaData.length > 0) {
+                charts.alphaGate.data.labels = alphaData.map(m => m.games);
+                charts.alphaGate.data.datasets[0].data = alphaData.map(m => m.alpha_gate);
+                charts.alphaGate.update('none');
             }
         }
 
