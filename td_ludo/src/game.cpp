@@ -634,3 +634,265 @@ void write_state_tensor_v9(const GameState &state, float *buffer) {
               dice_val);
   }
 }
+
+// =============================================================================
+// V6.1 Encoder: 24-Channel Strategic Architecture
+// =============================================================================
+// Channels 0-16: Identical to write_state_tensor (17ch V6)
+// NEW:
+// 17-20: Opponent Tokens (Distinct Identity 0,1,2,3)
+// 21:    Danger Map (1.0 at own tokens with opponent 1-6 behind)
+// 22:    Capture Opportunity Map (1.0 at positions capturable with current dice)
+// 23:    Safe Landing Map (1.0 at safe positions reachable with current dice)
+
+void write_state_tensor_v6(const GameState &state, float *buffer) {
+  int num_channels = 24;
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+  clear_buffer(buffer, num_channels * spatial_size);
+
+  int current_p = state.current_player;
+  int k = current_p;
+  int dice = state.current_dice_roll;
+
+  // === CHANNELS 0-16: Exact copy of write_state_tensor logic ===
+
+  // Ch 0-3: My Tokens
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    int r, c;
+    if (pos == BASE_POS)
+      get_board_coords(current_p, pos, r, c, t);
+    else
+      get_board_coords(current_p, pos, r, c);
+    if (r >= 0)
+      write_tensor_val(buffer, t, r, c, 1.0f, k);
+  }
+
+  // Ch 4: Opponent Density
+  for (int offset = 1; offset < 4; ++offset) {
+    int opp_p = (current_p + offset) % 4;
+    if (!state.active_players[opp_p])
+      continue;
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int pos = state.player_positions[opp_p][t];
+      int r, c;
+      if (pos == BASE_POS)
+        get_board_coords(opp_p, pos, r, c, t);
+      else
+        get_board_coords(opp_p, pos, r, c);
+      if (r >= 0)
+        write_tensor_val(buffer, 4, r, c, 0.25f, k);
+    }
+  }
+
+  // Ch 5: Safe Zones
+  for (int pl = 0; pl < NUM_PLAYERS; ++pl) {
+    for (int s : SAFE_INDICES) {
+      int r, c;
+      get_board_coords(pl, s, r, c);
+      if (r >= 0)
+        write_tensor_val(buffer, 5, r, c, 0.5f, k, false);
+    }
+  }
+
+  // Ch 6: My Home Path
+  for (int i = 0; i < 5; ++i) {
+    int r, c;
+    get_board_coords(current_p, 51 + i, r, c);
+    if (r >= 0)
+      write_tensor_val(buffer, 6, r, c, 1.0f, k, false);
+  }
+
+  // Ch 7: Opponent Home Path
+  for (int offset = 1; offset < 4; ++offset) {
+    int opp_p = (current_p + offset) % 4;
+    if (!state.active_players[opp_p])
+      continue;
+    for (int i = 0; i < 5; ++i) {
+      int r, c;
+      get_board_coords(opp_p, 51 + i, r, c);
+      if (r >= 0)
+        write_tensor_val(buffer, 7, r, c, 1.0f, k, false);
+    }
+  }
+
+  // Ch 8: Score Diff
+  int my_score = state.scores[current_p];
+  int max_opp = 0;
+  for (int pl = 0; pl < NUM_PLAYERS; ++pl)
+    if (pl != current_p)
+      max_opp = std::max(max_opp, (int)state.scores[pl]);
+  std::fill(buffer + (8 * spatial_size), buffer + (9 * spatial_size),
+            (float)(my_score - max_opp) / 4.0f);
+
+  // Ch 9: My Locked %
+  int my_locked = 0;
+  for (int t = 0; t < 4; ++t)
+    if (state.player_positions[current_p][t] == BASE_POS)
+      my_locked++;
+  std::fill(buffer + (9 * spatial_size), buffer + (10 * spatial_size),
+            (float)my_locked / 4.0f);
+
+  // Ch 10: Opp Locked %
+  int opp_locked = 0;
+  int active_opp_tokens = 0;
+  for (int pl = 0; pl < 4; ++pl) {
+    if (pl == current_p || !state.active_players[pl])
+      continue;
+    active_opp_tokens += 4;
+    for (int t = 0; t < 4; ++t)
+      if (state.player_positions[pl][t] == BASE_POS)
+        opp_locked++;
+  }
+  std::fill(buffer + (10 * spatial_size), buffer + (11 * spatial_size),
+            active_opp_tokens > 0 ? (float)opp_locked / (float)active_opp_tokens
+                                  : 0.0f);
+
+  // Ch 11-16: Dice One-Hot
+  if (dice >= 1 && dice <= 6) {
+    int ch = 11 + (dice - 1);
+    std::fill(buffer + (ch * spatial_size), buffer + ((ch + 1) * spatial_size),
+              1.0f);
+  }
+
+  // === CHANNELS 17-20: Individual Opponent Tokens ===
+  int opp_p = -1;
+  for (int offset = 1; offset < 4; ++offset) {
+    int candidate = (current_p + offset) % 4;
+    if (state.active_players[candidate]) {
+      opp_p = candidate;
+      break;
+    }
+  }
+  if (opp_p >= 0) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int pos = state.player_positions[opp_p][t];
+      int r, c;
+      if (pos == BASE_POS)
+        get_board_coords(opp_p, pos, r, c, t);
+      else
+        get_board_coords(opp_p, pos, r, c);
+      if (r >= 0)
+        write_tensor_val(buffer, 17 + t, r, c, 1.0f, k);
+    }
+  }
+
+  // === CHANNEL 21: Danger Map ===
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int my_pos = state.player_positions[current_p][t];
+    if (my_pos < 0 || my_pos > 50)
+      continue;
+    int my_abs = get_absolute_pos(current_p, my_pos);
+    if (my_abs < 0)
+      continue;
+    if (is_safe_pos(my_abs))
+      continue;
+    bool stacked = false;
+    for (int t2 = 0; t2 < NUM_TOKENS; ++t2) {
+      if (t2 == t) continue;
+      int op = state.player_positions[current_p][t2];
+      if (op >= 0 && op <= 50 && get_absolute_pos(current_p, op) == my_abs) {
+        stacked = true;
+        break;
+      }
+    }
+    if (stacked) continue;
+    bool endangered = false;
+    for (int op = 0; op < NUM_PLAYERS; ++op) {
+      if (op == current_p || !state.active_players[op]) continue;
+      for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+        int op_pos = state.player_positions[op][ot];
+        if (op_pos < 0 || op_pos > 50) continue;
+        int op_abs = get_absolute_pos(op, op_pos);
+        if (op_abs < 0) continue;
+        int dist = (my_abs - op_abs + 52) % 52;
+        if (dist >= 1 && dist <= 6) { endangered = true; break; }
+      }
+      if (endangered) break;
+    }
+    if (endangered) {
+      int r, c;
+      get_board_coords(current_p, my_pos, r, c);
+      if (r >= 0) write_tensor_val(buffer, 21, r, c, 1.0f, k, false);
+    }
+  }
+
+  // === CHANNEL 22: Capture Opportunity Map ===
+  if (dice >= 1 && dice <= 6) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int my_pos = state.player_positions[current_p][t];
+      int landing;
+      if (my_pos == BASE_POS) {
+        if (dice != 6) continue;
+        landing = 0;
+      } else if (my_pos >= 0) {
+        landing = my_pos + dice;
+      } else {
+        continue;
+      }
+      if (landing < 0 || landing > 50) continue;
+      int landing_abs = get_absolute_pos(current_p, landing);
+      if (landing_abs < 0 || is_safe_pos(landing_abs)) continue;
+      for (int op = 0; op < NUM_PLAYERS; ++op) {
+        if (op == current_p || !state.active_players[op]) continue;
+        int opp_count = 0;
+        for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+          int op_pos = state.player_positions[op][ot];
+          if (op_pos >= 0 && op_pos <= 50 &&
+              get_absolute_pos(op, op_pos) == landing_abs)
+            opp_count++;
+        }
+        if (opp_count == 1) {
+          int r, c;
+          get_board_coords(current_p, landing, r, c);
+          if (r >= 0) write_tensor_val(buffer, 22, r, c, 1.0f, k, false);
+        }
+      }
+    }
+  }
+
+  // === CHANNEL 23: Safe Landing Map ===
+  if (dice >= 1 && dice <= 6) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int my_pos = state.player_positions[current_p][t];
+      int landing;
+      if (my_pos == BASE_POS) {
+        if (dice != 6) continue;
+        landing = 0;
+      } else if (my_pos >= 0) {
+        landing = my_pos + dice;
+      } else {
+        continue;
+      }
+      if (landing > 56) continue;
+      bool safe = false;
+      if (landing == 56 || landing == HOME_POS) {
+        safe = true;
+      } else if (landing > 50 && landing < 56) {
+        safe = true;
+      } else if (landing >= 0 && landing <= 50) {
+        int landing_abs = get_absolute_pos(current_p, landing);
+        if (landing_abs >= 0) {
+          if (is_safe_pos(landing_abs)) {
+            safe = true;
+          } else {
+            for (int t2 = 0; t2 < NUM_TOKENS; ++t2) {
+              if (t2 == t) continue;
+              int op = state.player_positions[current_p][t2];
+              if (op >= 0 && op <= 50 &&
+                  get_absolute_pos(current_p, op) == landing_abs) {
+                safe = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (safe) {
+        int r, c;
+        get_board_coords(current_p, landing, r, c);
+        if (r >= 0) write_tensor_val(buffer, 23, r, c, 1.0f, k, false);
+      }
+    }
+  }
+}

@@ -267,7 +267,7 @@ class VectorACGamePlayer:
                     lmoves = ludo_cpp.get_legal_moves(game)
                     batch_legal_moves.append(lmoves)
 
-                    state_tensor = ludo_cpp.encode_state(game)
+                    state_tensor = ludo_cpp.encode_state_v6(game)
                     batch_states.append(state_tensor)
 
                     legal_mask = np.zeros(4, dtype=np.float32)
@@ -337,6 +337,8 @@ class VectorACGamePlayer:
         
         # Save pre-step states for reward computation
         pre_step_states = []
+        pre_step_scores = []
+        pre_step_active = []
         for i in range(self.batch_size):
             # Must copy the state or extract needed info if GameState mutates.
             # Fortunately get_game returns a reference the C++ object, so we need to copy?
@@ -346,6 +348,8 @@ class VectorACGamePlayer:
             # Create a simple struct/dict to hold the old positions
             old_pos = {p: list(game.player_positions[p]) for p in range(4)}
             pre_step_states.append(old_pos)
+            pre_step_scores.append(list(game.scores))
+            pre_step_active.append(list(game.active_players))
             
         # 4. Step Environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -368,11 +372,13 @@ class VectorACGamePlayer:
                 
                 # compute_shaped_reward expects objects with .player_positions
                 class DummyState:
-                    def __init__(self, pos):
+                    def __init__(self, pos, scores=None, active=None):
                         self.player_positions = pos
+                        self.scores = scores or [0,0,0,0]
+                        self.active_players = active or [True,False,True,False]
                 
-                dummy_old = DummyState(pre_step_states[i])
-                dummy_new = DummyState(next_game.player_positions)
+                dummy_old = DummyState(pre_step_states[i], pre_step_scores[i], pre_step_active[i])
+                dummy_new = DummyState(next_game.player_positions, list(next_game.scores), list(next_game.active_players))
                 
                 step_reward = compute_shaped_reward(dummy_old, dummy_new, cp)
                 

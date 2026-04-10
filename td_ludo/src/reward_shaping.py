@@ -1,9 +1,10 @@
 """
-Strategic Reward Shaping for TD-Ludo (v2.0)
+Strategic Reward Shaping for TD-Ludo (v2.2 — noise-pruned)
 
-Builds on proven v1.1 dense rewards with 6 new strategic rewards that
-incentivize setup behaviors (chasing, safety-seeking, blocking, etc.)
-rather than just outcomes (captures, scoring).
+Builds on proven v1.1 dense rewards with 4 strategic rewards that are
+empirically win-correlated. Chase and stack rewards were removed after
+300-game decomposition analysis showed they were pure noise (win-loss
+delta < 0.005), contributing to elevated value loss without learning signal.
 
 EXISTING (proven, do not modify):
 - Moving a token out of the base (+0.05)
@@ -13,19 +14,21 @@ EXISTING (proven, do not modify):
 - Capturing opponent tokens: +0.20
 - Getting killed: -0.20
 
-NEW STRATEGIC (v2.0):
-- Chase target acquired: +0.06 per new opponent in dice range
-- Safety transition: +0.08 for moving unsafe → safe/stacked
-- Danger reduction: +0.06 per own token removed from danger
-- Stack formed: +0.07 per new protective stack created
-- Leader capture bonus: +0.08 when capturing the score leader
-- Endgame score urgency: +0.15 when scoring while opponent has 3
+STRATEGIC (v2.2 — win-correlated only):
+- Safety transition: +0.025 for escaping danger to safe position
+- Danger reduction: +0.02 per own token removed from danger
+- Leader capture bonus: +0.025 when capturing the score leader
+- Endgame score urgency: +0.05 when scoring while opponent has 3
+
+REMOVED (v2.2 — verified noise):
+- Chase target acquired: delta=+0.005 between wins/losses (neutral)
+- Stack formed: delta=-0.002 between wins/losses (neutral)
 
 Design principles:
 - Delta-based (reward transitions, not states) to avoid persistent bias
 - max(delta, 0) pattern — only reward improvement, never penalize
-- Magnitudes ≥ 0.05 (dice noise drowns weaker signals)
 - All existing rewards preserved exactly
+- Every strategic reward empirically validated against win correlation
 """
 
 import td_ludo_cpp as ludo_cpp
@@ -84,39 +87,6 @@ def _is_safe_position(state, player, pos):
     return _is_safe_square(player, pos) or _is_stacked(state, player, pos)
 
 
-def _count_capturable_targets_in_range(state, player, token_idx):
-    """
-    Count opponent tokens within dice range (1-6 steps ahead) that are capturable.
-    Only counts opponents on main track, not on safe squares, not stacked.
-    """
-    my_pos = state.player_positions[player][token_idx]
-    if not _is_on_main_track(my_pos):
-        return 0
-
-    my_abs = _get_abs_pos(player, my_pos)
-    count = 0
-
-    for opp in range(4):
-        if opp == player or not state.active_players[opp]:
-            continue
-        for t in range(4):
-            opp_pos = state.player_positions[opp][t]
-            if not _is_on_main_track(opp_pos):
-                continue
-            opp_abs = _get_abs_pos(opp, opp_pos)
-            # Distance I need to travel to reach opponent (circular)
-            dist = (opp_abs - my_abs) % 52
-            if 1 <= dist <= 6:
-                # Check opponent is actually capturable (not safe/stacked)
-                if opp_abs in SAFE_SQUARES:
-                    continue
-                if _is_stacked(state, opp, opp_pos):
-                    continue
-                count += 1
-
-    return count
-
-
 def _count_endangered_tokens(state, player):
     """
     Count how many of player's tokens are in danger:
@@ -153,16 +123,6 @@ def _count_endangered_tokens(state, player):
             count += 1
 
     return count
-
-
-def _count_stacks(state, player):
-    """Count number of stack formations (2+ tokens at same main-track position)."""
-    positions = {}
-    for t in range(4):
-        pos = state.player_positions[player][t]
-        if _is_on_main_track(pos):
-            positions[pos] = positions.get(pos, 0) + 1
-    return sum(1 for c in positions.values() if c >= 2)
 
 
 def _find_moved_token(state, next_state, player):
@@ -254,24 +214,20 @@ def compute_shaped_reward(state, next_state, player):
                 capture_occurred = True
 
     # =========================================================================
-    # SECTION 2: NEW STRATEGIC REWARDS (v2.0)
+    # SECTION 2: STRATEGIC REWARDS (v2.2 — noise-pruned)
+    #
+    # Removed chase (+0.02) and stack (+0.02) after empirical analysis:
+    # 300-game decomposition showed chase delta=+0.005 and stack delta=-0.002
+    # between wins/losses — pure noise that inflated value loss without
+    # providing learning signal. Remaining rewards are all win-correlated.
     # =========================================================================
 
     moved_token = _find_moved_token(state, next_state, player)
 
-    # --- 2a. Chase Target Acquired (+0.06) ---
-    # Reward gaining new capturable opponents within dice range
-    if moved_token >= 0:
-        targets_before = _count_capturable_targets_in_range(state, player, moved_token)
-        targets_after = _count_capturable_targets_in_range(next_state, player, moved_token)
-        delta_targets = targets_after - targets_before
-        if delta_targets > 0:
-            reward += 0.06 * delta_targets
-
-    # --- 2b. Safety Transition (+0.08) ---
+    # --- 2a. Safety Transition (+0.025) ---
     # Reward moving from an endangered position to a safe one.
-    # Only fires when the token was actually in danger (opponent 1-6 behind),
-    # not just any unsafe→safe transition (which is too frequent).
+    # Only fires when the token was actually in danger (opponent 1-6 behind).
+    # Win-correlation delta: +0.009
     if moved_token >= 0:
         old_pos = our_pos_old[moved_token]
         new_pos = our_pos_new[moved_token]
@@ -297,26 +253,20 @@ def compute_shaped_reward(state, next_state, player):
                     if was_endangered:
                         break
                 if was_endangered:
-                    reward += 0.08
+                    reward += 0.025
 
-    # --- 2c. Danger Reduction (+0.06 per token) ---
+    # --- 2b. Danger Reduction (+0.02 per token) ---
     # Reward reducing the count of own endangered tokens
+    # Win-correlation delta: +0.024 (strongest strategic signal)
     danger_before = _count_endangered_tokens(state, player)
     danger_after = _count_endangered_tokens(next_state, player)
     delta_danger = danger_before - danger_after  # positive = reduced danger
     if delta_danger > 0:
-        reward += 0.06 * delta_danger
+        reward += 0.02 * delta_danger
 
-    # --- 2d. Stack Formed (+0.07) ---
-    # Reward creating new protective stacks
-    stacks_before = _count_stacks(state, player)
-    stacks_after = _count_stacks(next_state, player)
-    delta_stacks = stacks_after - stacks_before
-    if delta_stacks > 0:
-        reward += 0.07 * delta_stacks
-
-    # --- 2e. Leader Capture Bonus (+0.08) ---
+    # --- 2c. Leader Capture Bonus (+0.025) ---
     # Extra reward for capturing the player who is currently winning
+    # Win-correlation delta: +0.011
     if capture_occurred:
         victim = _identify_captured_opponent(state, next_state, player)
         if victim >= 0:
@@ -324,16 +274,17 @@ def compute_shaped_reward(state, next_state, player):
                 state.scores[i] for i in range(4) if i != player
             )
             if max_opp_score > 0 and state.scores[victim] == max_opp_score:
-                reward += 0.08
+                reward += 0.025
 
-    # --- 2f. Endgame Score Urgency (+0.15) ---
+    # --- 2d. Endgame Score Urgency (+0.05) ---
     # Bonus for scoring when opponent is close to winning (3+ tokens home)
+    # Win-correlation delta: +0.011
     if scored_this_move:
         max_opp_score = max(
             state.scores[i] for i in range(4) if i != player
         )
         if max_opp_score >= 3:
-            reward += 0.15
+            reward += 0.05
 
     return reward
 

@@ -77,6 +77,14 @@ class ActorCriticTrainer:
         # PPO buffer (accumulates steps across games, trains in batches)
         self._ppo_buffer = []
         self._ppo_games_buffered = 0
+
+        # Running return normalization (fixes value head positive bias)
+        # Without this, returns are always positive (+1 to +7) due to dense rewards,
+        # causing the value head to predict ~+3 for all states and providing
+        # poor advantage estimates. Normalizing centers returns around 0.
+        self._return_running_mean = 0.0
+        self._return_running_std = 1.0
+        self._return_stats_initialized = False
         
         # Tracking
         self.total_updates = 0
@@ -200,11 +208,31 @@ class ActorCriticTrainer:
             dtype=torch.float32, device=self.device
         )
         
-        all_returns = torch.tensor(
+        all_returns_raw = torch.tensor(
             [s['z'] for s in self._ppo_buffer],
             dtype=torch.float32, device=self.device
         )
-        
+
+        # Normalize returns to zero-mean, unit-std using running statistics.
+        # Raw returns are always positive (+1 to +7 from dense rewards), which
+        # causes the value head to predict ~+3 for all states. Normalizing brings
+        # returns into a bounded range centered at 0, making the value head's
+        # job tractable and preventing the slow policy degradation observed
+        # from 170K→820K games.
+        with torch.no_grad():
+            batch_mean = all_returns_raw.mean().item()
+            batch_std = all_returns_raw.std().item()
+            if not self._return_stats_initialized:
+                self._return_running_mean = batch_mean
+                self._return_running_std = max(batch_std, 1e-6)
+                self._return_stats_initialized = True
+            else:
+                # Exponential moving average (α=0.01 for stability)
+                self._return_running_mean = 0.99 * self._return_running_mean + 0.01 * batch_mean
+                self._return_running_std = 0.99 * self._return_running_std + 0.01 * max(batch_std, 1e-6)
+
+            all_returns = (all_returns_raw - self._return_running_mean) / (self._return_running_std + 1e-8)
+
         # Track stats across all mini-batches
         total_policy_loss = 0.0
         total_value_loss = 0.0
@@ -213,7 +241,7 @@ class ActorCriticTrainer:
         total_clip_frac = 0.0
         total_approx_kl = 0.0
         n_minibatches = 0
-        
+
         # Precompute and normalize advantages over the *entire* buffer once per update
         with torch.no_grad():
             all_values = self.model(all_states, all_masks)[1].squeeze(-1)
@@ -537,6 +565,8 @@ class ActorCriticTrainer:
             'last_ghost_game': self.last_ghost_game,
             'metrics_history': self.metrics_history,
             'last_eval_wr': getattr(self, 'last_eval_wr', None),
+            'return_running_mean': self._return_running_mean,
+            'return_running_std': self._return_running_std,
         }
         
         # Save to temp file first, then rename (atomic)
@@ -592,6 +622,11 @@ class ActorCriticTrainer:
                 self.last_ghost_game = checkpoint.get('last_ghost_game', 0)
                 self.metrics_history = checkpoint.get('metrics_history', [])
                 self.last_eval_wr = checkpoint.get('last_eval_wr', None)
+                # Restore return normalization stats (if available)
+                if 'return_running_mean' in checkpoint:
+                    self._return_running_mean = checkpoint['return_running_mean']
+                    self._return_running_std = checkpoint['return_running_std']
+                    self._return_stats_initialized = True
                 print(f"[Trainer] Loaded full checkpoint: {self.total_games} games, {self.total_updates} updates")
             else:
                 # Raw weights

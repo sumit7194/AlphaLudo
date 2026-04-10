@@ -1,1 +1,0 @@
-{"step": 146800, "cycle": 169, "epoch": 1, "total_cycles": 200, "epochs_per_cycle": 2, "total_samples_trained": 150323200, "policy_loss": 0.20473120325660132, "value_loss": 0.6464529317545603, "samples_per_sec": 263610.5177672244, "duration_sec": 570.2473530769348, "buffer_gb": 8.0, "timestamp": 1770827783.980639}

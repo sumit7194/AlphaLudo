@@ -1,0 +1,56 @@
+{
+  "can_capture_this_turn": {
+    "accuracy": 0.938,
+    "balanced_accuracy": 0.8808482312666414,
+    "baseline": 0.9556,
+    "class_counts": {
+      "False": 2389,
+      "True": 111
+    },
+    "num_classes": 2
+  },
+  "closest_token_to_home": {
+    "accuracy": 0.582,
+    "balanced_accuracy": 0.5772004520417453,
+    "baseline": 0.3768,
+    "class_counts": {
+      "0": 942,
+      "1": 621,
+      "2": 476,
+      "3": 461
+    },
+    "num_classes": 4
+  },
+  "eventual_win": {
+    "accuracy": 0.788,
+    "balanced_accuracy": 0.7865114411882779,
+    "baseline": 0.5308,
+    "class_counts": {
+      "False": 1173,
+      "True": 1327
+    },
+    "num_classes": 2
+  },
+  "home_stretch_count": {
+    "accuracy": 0.826,
+    "balanced_accuracy": 0.7314959722080465,
+    "baseline": 0.6834733893557423,
+    "class_counts": {
+      "0": 1708,
+      "1": 586,
+      "2": 172,
+      "3": 33
+    },
+    "num_classes": 4
+  },
+  "leading_token_in_danger": {
+    "accuracy": 0.784,
+    "balanced_accuracy": 0.7390491452991452,
+    "baseline": 0.9368,
+    "class_counts": {
+      "False": 2342,
+      "True": 158
+    },
+    "num_classes": 2
+  }
+}

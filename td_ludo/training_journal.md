@@ -559,5 +559,239 @@ V9 (CNN + Transformer) attempted to fix this with temporal context, but the weak
 - Key question: does the model start chasing/blocking/seeking safety?
 - Backup: `checkpoints/ac_v6_big/backups/model_latest_382k_pre_strategic_rewards.pt`
 
+#### Results (v2.0 — never deployed)
+The v2.0 strategic rewards were committed (Mar 25) but **never actually deployed to training**. The local working copy retained v1.1 rewards throughout, so the ac_v6_big run from 382K→632K trained entirely on v1.1. The v2.0 code existed only in git history.
+
+---
+
+### Experiment 10: Empirical Reward Decomposition & v2.2 Noise-Pruned Rewards
+**Date**: 2026-03-28 | **Games at start**: ~632K (v1.1 running)
+
+#### Motivation
+Before deploying strategic rewards, ran a 300-game decomposition analysis to verify which rewards actually correlate with winning. Played current model (AlphaLudoV6-Big, 128ch/10res) vs Expert bot, tracked per-game reward totals split by win/loss.
+
+#### Key Finding: v1.1 Rewards vs Strategic Rewards
+
+| Category | Win avg | Loss avg | Delta | Signal strength |
+|----------|---------|----------|-------|-----------------|
+| **v1.1 total** | +5.34 | +3.67 | **+1.67** | Strong |
+| **Strategic total** | +0.43 | +0.37 | **+0.058** | 29x weaker |
+
+#### Per-Component Win-Loss Correlation
+
+| Reward | Win avg | Loss avg | Delta | Verdict |
+|--------|---------|----------|-------|---------|
+| score | +1.60 | +0.84 | +0.76 | WIN-CORR (strongest) |
+| forward | +2.31 | +1.72 | +0.59 | WIN-CORR |
+| capture | +0.69 | +0.47 | +0.22 | WIN-CORR |
+| home_stretch | +0.39 | +0.24 | +0.14 | WIN-CORR |
+| danger_reduction | +0.12 | +0.09 | **+0.024** | WIN-CORR (best strategic) |
+| leader_capture | +0.04 | +0.03 | **+0.011** | WIN-CORR |
+| endgame_urgency | +0.04 | +0.03 | **+0.011** | WIN-CORR |
+| safety_transition | +0.05 | +0.04 | **+0.009** | WIN-CORR |
+| **chase_target** | +0.13 | +0.12 | **+0.005** | **NEUTRAL (noise)** |
+| **stack_formed** | +0.06 | +0.06 | **-0.002** | **NEUTRAL (noise)** |
+
+#### Decision: Deploy v2.2 (noise-pruned)
+- **Removed**: chase (+0.02) and stack (+0.02) — verified noise, no win correlation
+- **Kept**: safety (+0.025), danger_reduction (+0.02), leader_capture (+0.025), endgame_urgency (+0.05)
+- Magnitudes kept at current levels; will increase in a future experiment if the model plateaus again
+
+#### Additional Context: Training State at 632K
+- Eval WR: ~66-69% (rolling avg), plateau since ~460K
+- Value loss: 0.92 (stable but elevated from 0.78 pre-382K)
+- Entropy: 0.51 (slowly rising)
+- Game length: ~190 moves (up from 176 pre-382K)
+- vs Expert: trending down from 60.6% (300-382K) to 51.2% (600-640K)
+- vs Heuristic: trending down from 56.2% to 50.0%
+
+#### Monitoring Plan
+- Watch value loss: should stay ≤0.92 or ideally decrease (fewer noise sources)
+- Watch eval WR: looking for recovery above 69% plateau
+- Watch vs Expert/Heuristic WR: should stabilize or improve
+- If no improvement after 50K games, consider increasing magnitudes of remaining 4 rewards
+- This is the first time strategic rewards are actually deployed to training
+
+---
+
+### Experiment 11: Return Normalization Fix & V6 Degradation Root Cause
+**Date**: 2026-03-31 | **Model**: V6 (ac_v6_big)
+
+#### Discovery: PPO Value Head Drift
+Analysis of V6 training history revealed the model peaked at 77.4% eval (170K games) then declined monotonically to 57% (820K games). Root cause investigation:
+
+1. **Value head positive bias**: Returns from dense rewards are always positive (+1 to +7), even for losses. The value head learned to predict ~+3.5 for all states, providing poor advantage estimates.
+2. **Missing return normalization**: Standard PPO implementations normalize returns to zero-mean/unit-std. This was missing from the trainer, causing the value head to operate on large, always-positive targets.
+3. **Original system worked differently**: The pre-rewrite trainer (pre-300K) used TD(0) with tanh-bounded values and PBRS rewards (zero-mean by design), which implicitly avoided this issue.
+
+#### Fix Applied
+Added running mean/std return normalization to `src/trainer.py`:
+```python
+all_returns = (all_returns_raw - running_mean) / (running_std + 1e-8)
+```
+Running stats use exponential moving average (α=0.01) and persist in checkpoints.
+
 #### Results
-*(To be filled after training)*
+- Value loss dropped from 0.92 → 0.27 (massive improvement)
+- Model stopped degrading — held steady at 70-71% eval from 262K→522K
+- However, did not surpass the old 77.4% peak
+
+#### Championship Tournament (500 games per pair)
+Ran round-robin between V6 snapshots to measure actual strength:
+
+| Rank | Player | Overall WR |
+|------|--------|-----------|
+| 1 | V6_170k (best) | 61.5% |
+| 2 | V6_382k | 60.8% |
+| 3 | Ghost_570k | 55.6% |
+| 4 | V6_latest (675K) | 51.2% |
+| 5 | Expert_bot | 35.6% |
+| 6 | SL_pretrain | 35.3% |
+
+**Key finding**: V6_170k beats V6_latest 60-40%. More training made the model weaker.
+
+---
+
+### Experiment 12: V6.1 Strategic Input Encoding (24 channels)
+**Date**: 2026-04-03 | **Model**: V6.1 (ac_v6_1_strategic)
+
+#### Motivation
+Mech interp on V6 (522K) revealed information gaps in the 17-channel encoding:
+- Opponent tokens lumped as density (Ch 4) — can't distinguish stacked vs spread
+- No explicit danger information — CNN must compute threat distance from spatial correlation
+- No capture opportunity signal — requires cross-referencing token positions with dice
+- Score diff (Ch 8) completely unused by the model (0.000 ablation impact)
+
+#### Architecture: 24 Channels (17 existing + 7 new)
+
+| Channel | Content | Justification |
+|---------|---------|---------------|
+| 0-16 | Original V6 encoding | Unchanged, proven |
+| **17-20** | Individual opponent tokens (1.0 each) | Resolves density ambiguity |
+| **21** | Danger map (1.0 at endangered own tokens) | Direct threat signal |
+| **22** | Capture opportunity map (1.0 at capturable positions) | Direct tactical signal |
+| **23** | Safe landing map (1.0 at safe reachable positions) | Direct safety signal |
+
+**Model**: AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24) — ~3M params
+**Encoding**: `encode_state_v6()` implemented in C++ (game.cpp)
+
+#### Mech Interp Findings (informing V6.1 design)
+
+**Channel Ablation (522K V6)**:
+- Score diff (Ch 8): Policy KL = 0.000, Value MAE = 0.000 — completely ignored
+- Opp density (Ch 4): Value MAE = 0.216 — critical for value head but ambiguous
+- Dice 6 (Ch 16): Policy KL = 0.127 — special, much higher than dice 1-5
+
+**Linear Probes (128-dim GAP features)**:
+- game_phase: 96.2% balanced acc — perfectly decodable
+- can_capture_this_turn: 82.3% — model already detects captures (but not perfectly)
+- leading_token_in_danger: 81.4% — model already detects danger (but 18% gap)
+- eventual_win: 69.8% — moderate win prediction
+
+**CKA Similarity**:
+- Blocks 7-9: CKA > 0.98 in all phases — redundant
+- Blocks 3-5: CKA drops to 0.52-0.63 in late game — doing real work
+- Decision: Keep all 10 blocks for V6.1 (new inputs might activate previously redundant blocks)
+
+#### Training Setup
+- **SL pretraining**: Knowledge distillation from V6 teacher (522K model)
+  - V6 plays games (17ch encoding) → V6.1 encodes same states (24ch) → trains on V6's soft policy
+  - 500K states generated from 5,615 games, 4 epochs, 84.5% action prediction accuracy
+- **RL training**: PPO with v2.2 rewards + return normalization
+- **Rewards**: v2.2 noise-pruned (safety, danger_reduction, leader_capture, endgame_urgency)
+
+#### Results (as of 132K games)
+
+| Games | Eval WR | Value Loss | Entropy | Notes |
+|-------|---------|-----------|---------|-------|
+| 5K | 72.2% | 0.277 | 0.508 | SL baseline, first RL eval |
+| 25K | 76.8% | 0.262 | 0.421 | Rapid improvement |
+| 50K | **78.0%** | 0.261 | 0.395 | **New all-time best** (V6 peak was 77.4%) |
+| 75K | 75.4% | 0.259 | 0.389 | Slight dip |
+| 100K | 73.6% | 0.257 | 0.382 | Settled |
+| 130K | 74.8% | 0.257 | 0.387 | Plateau at ~74-76% |
+
+**Last 10 eval avg: 74.6%**
+
+#### Key Takeaways
+1. **V6.1 reached 78% in 50K games** — V6 needed 170K for 77.4%. SL distillation + strategic channels = 3.4x faster
+2. **New all-time best**: 78.0% eval WR surpasses V6's 77.4%
+3. **Value loss stable at 0.26** — return normalization working perfectly
+4. **Plateaued at ~74-76%** after the initial peak — similar pattern to V6 but at a higher baseline
+5. **Open question**: Is ~78% the theoretical ceiling for 2-player Ludo against Expert bot, or can we push further?
+
+#### Comparison: V6 vs V6.1
+
+| Metric | V6 (best) | V6.1 (best) |
+|--------|-----------|-------------|
+| Peak eval WR | 77.4% | **78.0%** |
+| Games to peak | 170K | **50K** |
+| Value loss at peak | 0.80 | **0.26** |
+| Params | 2.99M | 3.00M |
+| Input channels | 17 | 24 |
+| SL pretrained | Yes (bot imitation) | Yes (V6 distillation) |
+
+---
+
+## Hard Rules (updated)
+
+- ❌ Don't use PBRS in >100 move games
+- ❌ Don't scale intermediate rewards below 0.05
+- ❌ Don't change rewards mid-training without clearing buffer
+- ❌ Don't train PPO without return normalization
+- ❌ Don't remove tanh on value head without return normalization
+- ❌ Don't edit training code in worktrees — always edit main repo directly
+- ❌ Don't rebuild `td_ludo_cpp` without first deleting `td_ludo/td_ludo_cpp*.so` — Python prefers the local `.so` (editable install leftover) over the freshly installed site-packages wheel, silently using the stale build. Symptom: code changes don't take effect after `pip install .`
+- ❌ Don't change model input channels without auditing `src/mcts.cpp::get_leaf_tensors()` and `src/bindings.cpp::get_leaf_tensors` lambda — both hardcode the channel count. Currently set to 24 for V6.1; previously stuck at 17 which broke Exp 9 silently
+- ✅ DO use loud rewards
+- ✅ DO normalize returns (running mean/std) before advantage computation
+- ✅ DO use knowledge distillation from stronger model for SL pretraining
+- ✅ DO validate strategic rewards with empirical win-loss decomposition before deploying
+- ✅ DO let experiments run 15K+ games minimum
+- ✅ DO track per-opponent WR trends
+- ✅ DO run mech interp to inform architecture decisions
+
+---
+
+---
+
+### Experiment 13a: V6.1 Resume Training (2026-04-09)
+**Run**: ac_v6_1_strategic | **Games**: 155,464 → 239,513 (+84K) | **Platform**: GCP T4 (CUDA)
+
+Resumed V6.1 from its old peak (155K, eval 0.78) to test whether the plateau was an artifact of the earlier MPS-only training or a real ceiling. Ran for ~18 hours.
+
+**Result**: **+0.8pp improvement** (0.78 → 0.788) over 84K additional games. Plateau confirmed.
+
+- Best eval WR: **0.788** (hit once, never beaten across 17+ subsequent 500-game evals)
+- Eval moving avg: bounced in 74-76% band the entire run
+- Expert training WR stayed in 62-68% band across the run (no directional drift)
+- Elo oscillated 1440-1650 with no persistent advantage over self-generated ghosts
+- PPO metrics all healthy: vl≈0.26, entropy≈0.39, kl≈0.011, clip≈0.08, no NaN
+- GPM 130-140 on T4 (4× the old MPS throughput)
+
+Training paused at game 239,513. Checkpoints preserved:
+- `checkpoints/ac_v6_1_strategic/backups/v6_1_best_157k_wr788_20260410.pt` (peak snapshot)
+- `checkpoints/ac_v6_1_strategic/backups/v6_1_latest_239k_best788_20260410.pt` (post-resume)
+
+**Conclusion**: V6.1 architecture has genuinely plateaued at ~78-79% eval. Same conclusion as V6 at 77.4% and V6.2 at ~76%. Three architecture generations in the same neighborhood = real ceiling under PPO self-play, not a training bug.
+
+### Experiment 13b: Inference-Time MCTS Sweep (2026-04-10, in progress)
+**Run**: `checkpoints/mcts_eval/` | **Platform**: GCP T4
+
+First results of the MCTS-amplification experiment (Step 1 in `POST_V61_EXPERIMENT_PLAN.md`).
+
+**Phase A completed**: V6.1 raw vs Expert, 1000 games → **70.0% WR** (700W/300L). This is the clean baseline — lower than the noisy 74-76% moving average from training evals because of the larger sample and fewer per-bot variations.
+
+**Phase B+ running**: MCTS(25/50/100/200) vs Expert, plus head-to-head vs raw. Early signal: MCTS(25) at ~950 games (from the aborted first run) was showing 73% WR — +3pp over raw baseline.
+
+Full results will land here when the sweep completes (~25-35 hours ETA). In-flight dashboard at `http://35.201.209.164:8788/`.
+
+---
+
+## Active Experiment Plan (post-V6.1 plateau)
+
+As of 2026-04-10, V6.1 resume training from 155K → 239K games plateaued at 0.788 peak eval (+0.8pp over 84K games — effectively zero progress). Training paused. Next steps tracked in live plan doc:
+
+**→ `/Users/sumit/Github/AlphaLudo/discussion/POST_V61_EXPERIMENT_PLAN.md`**
+
+Summary: Step 1 = inference-time MCTS wrapping V6.1. Step 2 = conditional reward shaping (50% scale). Step 3 = Stochastic MuZero port (conditional, multi-week). Step 4 = human benchmark (parallel, user-driven).

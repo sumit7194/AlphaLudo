@@ -1,0 +1,68 @@
+{
+  "baseline": {
+    "win_rate": 100.0,
+    "games_completed": 676
+  },
+  "knockouts": [
+    {
+      "block": 0,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 669
+    },
+    {
+      "block": 1,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 694
+    },
+    {
+      "block": 2,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 666
+    },
+    {
+      "block": 3,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 690
+    },
+    {
+      "block": 4,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 674
+    },
+    {
+      "block": 5,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 686
+    },
+    {
+      "block": 6,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 694
+    },
+    {
+      "block": 7,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 686
+    },
+    {
+      "block": 8,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 698
+    },
+    {
+      "block": 9,
+      "win_rate": 100.0,
+      "delta": 0.0,
+      "games_completed": 686
+    }
+  ]
+}

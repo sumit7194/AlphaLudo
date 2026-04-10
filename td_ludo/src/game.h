@@ -44,6 +44,10 @@ int get_winner(const GameState &state); // Returns -1 if none, 0-3 if winner
 // Spatial: (17, 15, 15) -> writes 3825 floats
 void write_state_tensor(const GameState &state, float *buffer);
 
+// V6.1 Tensorization - 24 Channels (Strategic encoding)
+// Spatial: (24, 15, 15) -> writes 5400 floats
+void write_state_tensor_v6(const GameState &state, float *buffer);
+
 // V9 Tensorization - 14 Channels (Optimized encoding)
 // Spatial: (14, 15, 15) -> writes 3150 floats
 void write_state_tensor_v9(const GameState &state, float *buffer);

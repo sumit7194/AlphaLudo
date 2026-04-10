@@ -1,3 +1,11 @@
+# --- Refactor worker state (contains secrets / transient progress) ---
+.refactor_state.json
+.refactor_state.json.tmp
+.refactor_worker.py
+.refactor_cron_prompt.md
+.mcts_monitor_cron_prompt.md
+.RESTART_AFTER_POWER_LOSS.md
+
 # --- Python & Environment ---
 __pycache__/
 *.pyc
@@ -85,3 +93,28 @@ apps/android/model.ptl
 checkpoints_mastery/mastery_v3_prod/model_latest.pt
 checkpoints_mastery/mastery_v3_prod/training_metrics.json
 checkpoints_mastery/mastery_v3_prod/wc_stats.json
+
+# --- Added by .refactor_worker.py ---
+league_results.json
+ludo_db.sqlite
+td_ludo/checkpoints/ac_v6_big/backups/model_latest_phase9_expert_start.pt
+td_ludo/checkpoints/ac_v6_big/backups/model_best_phase9_expert_start.pt
+td_ludo/play/model_weights/model.pt
+gcp_snapshots/v61_final_20260410_0137/model_latest.pt
+gcp_snapshots/v61_final_20260410_0137/model_best.pt
+gcp_snapshots/v61_final_20260410_0137/live_stats.json
+gcp_snapshots/v61_final_20260410_0137/training_metrics.json
+gcp_snapshots/v62_final_20260409_1445/code/init_v62_from_v61.py
+gcp_snapshots/v62_final_20260409_1445/code/fast_learner_v62.py
+gcp_snapshots/v62_final_20260409_1445/code/fast_actor_v62.py
+gcp_snapshots/v62_final_20260409_1445/code/model_v6_2.py
+gcp_snapshots/v62_final_20260409_1445/code/evaluate_v6_2.py
+gcp_snapshots/v62_final_20260409_1445/code/train_v6_2_fast.py
+gcp_snapshots/v62_final_20260409_1445/code/test_v62_rezero.py
+v62_gcp_snapshot/init_v62_from_v61.py
+v62_gcp_snapshot/fast_learner_v62.py
+v62_gcp_snapshot/fast_actor_v62.py
+v62_gcp_snapshot/model_v6_2.py
+v62_gcp_snapshot/evaluate_v6_2.py
+v62_gcp_snapshot/train_v6_2_fast.py
+v62_gcp_snapshot/test_v62_rezero.py

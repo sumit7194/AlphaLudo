@@ -392,8 +392,9 @@ std::vector<std::pair<int, float>> MCTSEngine::get_root_stats() {
 }
 
 std::vector<float> MCTSEngine::get_leaf_tensors() {
-  // 17 channels (V5 Architecture) * 15 * 15 = 3825 floats per leaf
-  int tensor_size = 17 * BOARD_SIZE * BOARD_SIZE;
+  // 24 channels (V6.1 strategic encoding) * 15 * 15 = 5400 floats per leaf
+  // Previously hardcoded to 17ch, which broke MCTS for V6.1/V6.2 models.
+  int tensor_size = 24 * BOARD_SIZE * BOARD_SIZE;
 
   // Note: current_leaves was resized in select_leaves to (batch_size *
   // parallel_sims)
@@ -410,7 +411,7 @@ std::vector<float> MCTSEngine::get_leaf_tensors() {
     MCTSNode *leaf = current_leaves[i];
     if (leaf) {
       float *ptr = buffer.data() + (i * tensor_size);
-      write_state_tensor(leaf->state, ptr);
+      write_state_tensor_v6(leaf->state, ptr);
     }
   }
   return buffer;
