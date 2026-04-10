@@ -6,6 +6,11 @@
 .mcts_monitor_cron_prompt.md
 .RESTART_AFTER_POWER_LOSS.md
 
+# --- Claude Code agent state (worktrees, agent metadata) ---
+.claude/
+.agent/
+.codex_exports/
+
 # --- Python & Environment ---
 __pycache__/
 *.pyc
