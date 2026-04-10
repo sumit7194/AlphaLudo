@@ -35,7 +35,7 @@ training_history.db
 !td_ludo/checkpoints/ac_v6_big/backups/*.pt
 
 # --- Logs & Data ---
-data/
+/data/
 logs/
 *.log
 experiments/kickstart/buffer_current/
