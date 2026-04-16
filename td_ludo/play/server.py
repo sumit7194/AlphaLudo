@@ -2,7 +2,7 @@
 AlphaLudo Play — Web Server for Human vs AI Ludo
 
 Flask backend that manages game state via the C++ engine
-and runs AI inference via the AlphaLudoV5 PyTorch model.
+and runs AI inference via the AlphaLudoV5 model (V6.1, 24-channel strategic encoding).
 """
 
 import os
@@ -137,9 +137,9 @@ def generate_board_layout():
 # ── AI Model Loading ───────────────────────────────────────────
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
-    model = AlphaLudoV5(num_res_blocks=10, num_channels=128)
-    
-    checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    model = AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24)
+
+    checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     # Handle compiled model state dicts
     if any(k.startswith('_orig_mod.') for k in checkpoint.keys()):
         checkpoint = {k.replace('_orig_mod.', ''): v for k, v in checkpoint.items()}
@@ -359,7 +359,7 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': int(self.state.current_dice_roll) or roll_result['dice_roll']}
         
         # Model inference
-        state_tensor = ludo_cpp.encode_state(self.state)
+        state_tensor = ludo_cpp.encode_state_v6(self.state)
         legal_mask = np.zeros(4, dtype=np.float32)
         for m in legal:
             legal_mask[m] = 1.0

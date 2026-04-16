@@ -1,6 +1,6 @@
 """
-AlphaLudo V5 — Inference-only model for gameplay.
-Architecture: ResNet-10 (128ch) with 4-token policy head.
+AlphaLudo V6.1 — Inference-only model for gameplay.
+Architecture: ResNet-10 (128ch, 24-channel strategic input) with 4-token policy head.
 """
 
 import torch
@@ -25,7 +25,7 @@ class ResidualBlock(nn.Module):
 
 
 class AlphaLudoV5(nn.Module):
-    """V6 Big Brain: 128 channels, 10 residual blocks, ~3M params."""
+    """V6.1 Strategic: 128 channels, 10 residual blocks, 24-channel input, ~3M params."""
     
     def __init__(self, num_res_blocks=10, num_channels=128, in_channels=17):
         super().__init__()

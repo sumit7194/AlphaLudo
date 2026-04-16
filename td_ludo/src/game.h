@@ -52,6 +52,15 @@ void write_state_tensor_v6(const GameState &state, float *buffer);
 // Spatial: (14, 15, 15) -> writes 3150 floats
 void write_state_tensor_v9(const GameState &state, float *buffer);
 
+// V6.3 Tensorization - 27 Channels (Bonus-turn awareness)
+// Channels 0-23: identical to V6 (24ch strategic encoding)
+// Channel 24: bonus_turn_flag (broadcast 1.0 if dice == 6)
+// Channel 25: consecutive_sixes (broadcast 0.0/0.5/1.0 for 0/1/2 sixes)
+// Channel 26: two_roll_capture_map (1.0 where opponents capturable in 6+X combo)
+// Spatial: (27, 15, 15) -> writes 6075 floats
+void write_state_tensor_v6_3(const GameState &state, float *buffer,
+                              int consecutive_sixes_count);
+
 // Helper to reset state
 GameState create_initial_state();    // 4-player
 GameState create_initial_state_2p(); // 2-player (P0 vs P2)

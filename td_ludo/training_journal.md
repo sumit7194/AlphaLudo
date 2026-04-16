@@ -788,10 +788,149 @@ Full results will land here when the sweep completes (~25-35 hours ETA). In-flig
 
 ---
 
+### Experiment 13c: Inference-Time MCTS Sweep — COMPLETED (2026-04-10)
+**Run**: `checkpoints/mcts_eval/` | **Platform**: GCP T4 | **Games**: 14,500 across 9 matchups
+
+Tested whether MCTS search at inference time could amplify V6.1's policy priors.
+
+**Result: DECISIVE FAILURE.** More sims = worse play at every level tested.
+
+| Matchup | Sims | WR | Verdict |
+|---|---:|---:|---|
+| Raw vs Expert | 0 | **70.0%** | baseline |
+| MCTS(25) vs Expert | 25 | 69.8% | flat |
+| MCTS(50) vs Expert | 50 | 57.1% | −13pp |
+| MCTS(100) vs Expert | 100 | 51.0% | −19pp |
+| MCTS(200) vs Expert | 200 | 48.4% | −22pp |
+| MCTS(50) vs Raw (H2H) | 50 | 36.9% | raw wins 63% |
+| MCTS(100) vs Raw (H2H) | 100 | 36.6% | raw wins 63% |
+| MCTS(200) vs Raw (H2H) | 200 | 31.8% | raw wins 68% |
+
+Root cause: V5 value head is unbounded (no tanh), `torch.clamp(-1,1)` is lossy for pUCT. Ludo's 6× dice branching dilutes simulation budget into noise. MCTS amplifies noise when value estimates are themselves noisy.
+
+---
+
+### Experiment 13d: Reward Shaping 50% Reduction — COMPLETED (2026-04-11)
+**Run**: ac_v6_1_strategic (modified rewards) | **Games**: 239K → 269K (+30K) | **Platform**: GCP T4
+
+Halved all intermediate reward magnitudes (score 0.40→0.20, capture 0.20→0.10, etc.) to test whether reward saturation was the plateau cause.
+
+**Result: NEUTRAL-TO-MILDLY-HARMFUL.** Eval MA drifted from ~76% to ~74% (−2pp). Never exceeded pre-experiment best of 78.8%. No collapse (vl stayed <0.30, entropy healthy at 0.41), but zero improvement.
+
+**Conclusion**: The journal's v1 reward magnitudes are the optimal operating point. Saturation is NOT the plateau's cause. Rewards reverted to v2.2 after experiment.
+
+---
+
+### Experiment 13e: Human Benchmark (2026-04-11)
+Sumit played 3 games vs V6.1's best model (78.8% eval) via the Play web UI. Model lost all 3, but marginally — close games with only a few suboptimal moves.
+
+**Key observation**: the model's blind spot is **multi-turn planning**. It doesn't know that rolling 6 gives a bonus turn, so it can't plan 2-move sequences (chase-then-capture, spawn-then-advance). A human naturally does this ("if I roll a 6, I get another chance to catch that opponent 10 ahead").
+
+This observation directly motivated V6.3.
+
+---
+
+### Experiment 14: V6.3 — Bonus-Turn Awareness + Capture Prediction (2026-04-11, IN PROGRESS)
+**Run**: ac_v6_3_capture | **Base**: V6.1 model_best (56K games, eval 0.78) | **Architecture**: AlphaLudoV63
+
+V6.3 adds 3 new input channels (24→27) and 1 auxiliary prediction head to V6.1:
+
+**New input channels:**
+- Ch 24 `bonus_turn_flag`: broadcast 1.0 if dice=6 (player will get another turn)
+- Ch 25 `consecutive_sixes`: broadcast 0.0/0.5/1.0 for 0/1/2 consecutive 6s (warns of triple-6 penalty)
+- Ch 26 `two_roll_capture_map`: 1.0 at positions where opponents are capturable in a 6+X two-roll sequence (7-12 squares ahead)
+
+**Auxiliary capture prediction head:**
+- Linear(128→64→1) with sigmoid, branching from GAP features
+- Target: "did this player capture an opponent within the next 5 of their own turns?"
+- Loss: BCE at 0.1× weight, added to PPO loss
+- Purpose: forces the model to learn multi-step threat awareness from single-state snapshots
+
+**Weight transfer**: V6.1 stem conv zero-padded from (128,24,3,3) → (128,27,3,3). All other weights copied exactly. Aux head random-init. Model starts as V6.1-equivalent (init parity verified at diff=0.0).
+
+**Hypothesis**: the bonus-turn channels give the CNN explicit information it currently lacks (dice=6 → I get another action), and the aux head forces the backbone features to encode multi-step capture opportunities that improve both the aux prediction AND the policy.
+
+**Success criteria**: eval WR > 80% sustained (breaks the 78.8% all-time best).
+
+**Phase 1 results (0→140K games, aux ON with backbone gradient flow):**
+- Eval WR never surpassed initial 78.4% — averaged ~73.5%, declining trend
+- Entropy rose monotonically: 0.374 → 0.417
+- **Bug found**: aux head collapsed to predicting ~0.93 everywhere (true positive rate ~9%). The BCE loss with 0.1× weight was backpropagating bad gradients into the shared backbone, corrupting the learned V6.1 representations
+- **Fix**: `trainer_v63._ppo_update` now passes `detach_aux=True` to model forward — aux gradients only update aux head weights, not backbone. Added `pos_weight=10` to BCE for class imbalance.
+- Also fixed `recent_clip_fracs` → `recent_clip_fractions` attribute name bug in trainer
+
+**Phase 2 results (140K→170K games, aux detached + pos_weight):**
+- VM preempted at 170K. Eval WR still flat ~73%
+- Entropy continued rising
+
+**Phase 3 results (170K→310K games, aux detached + pos_weight, resumed after preemption):**
+- 148 evals total over 310K games. Best remained 78.4% (the very first eval from V6.1 init)
+- Eval WR trajectory: started 78.4%, declined to avg ~73%, latest readings 67-70%
+- Entropy: 0.374 → 0.462 (rising monotonically across all 310K games)
+- **Bug found again**: aux head re-collapsed to 0.90 mean despite detach. The `pos_weight=10` was overweighting rare positives, causing the head to predict 1 everywhere. Even though detached, the aux params consumed optimizer state and gradient norm budget.
+- **Key finding**: entropy at 308K (0.43) is actually LOWER than V6.1 init entropy (0.82). The "rising" trend was recovering from over-compressed policy, not diverging. This suggests the model may still be adapting.
+- BatchNorm running stats drifted significantly (running_var up to 0.42 in deep blocks) — expected with new channel distributions propagating through the network.
+- New channel stem weights learned slowly: Ch24 drift=0.003, Ch25=0.004, Ch26=0.006 (vs old channels ~0.01). Weak gradient signal from sparse new features.
+
+**Phase 4 results (310K→395K games, aux DISABLED):**
+- Disabled aux loss entirely (`aux_loss_coeff=0.0`). Pure PPO training with 27-channel input.
+- Rationale: aux head repeatedly collapsed and polluted optimizer. The 3 new channels should learn from policy/value gradients alone if they carry useful information.
+- Result: ~85K games of pure PPO training improved mean eval WR by only +1.5% (71.1% → 72.8%). Best eval WR never surpassed 78.4% (initial V6.1 weights). Plateau confirmed — V6.1-transferred backbone could not recover or exceed V6.1's performance.
+- Conclusion: weight transfer approach fundamentally broken. The backbone learned to use 24 channels first; adding 3 more channels post-hoc does not get integrated properly.
+- Archived this run to `checkpoints/_archive/v6_3_27ch_failed_2026_04_14/` for reference.
+
+**Phase 5 (2026-04-14, FRESH ATTEMPT: SL distillation + RL):**
+
+Different strategy after Phase 1-4 failure: train V6.3 from scratch via supervised learning on V6.1 self-play games, then RL from that SL baseline. This way the 27-channel architecture learns to use ALL channels from day one, not as zero-padded additions.
+
+**Step 1 — SL data generation (`generate_sl_data_v6_3.py`)**:
+- V6.1 best model plays 5,250 self-play games on GCP (8 minutes, batched 512 parallel games)
+- Records 1,000,345 (state_27ch, V6.1_policy_distribution, game_outcome) tuples
+- Pure V6.1 self-play (no heuristic bots) — clean teacher signal
+- V6.1 plays at temperature 1.0 with `encode_state_v6` (24ch); we save `encode_state_v6_3` (27ch) for the same state alongside V6.1's policy probs
+- Output: 101 NPZ chunks, 100 MB total
+
+**Step 2 — SL training (`train_sl_v6_3.py`)**:
+- Random-init V6.3 model (3,010,758 params)
+- Loss: `KL(V6.1_policy || student_policy) + 0.5 * smooth_l1(value, game_outcome)`
+- 250K samples in RAM (6 GB float32, fit on 14GB VM); 10 epochs, batch 512, AdamW lr=1e-3 with cosine schedule
+- 38 minutes total
+- **Final epoch: 94.6% val action-match accuracy** vs teacher, KL=0.019. Successful distillation.
+- **SL-only eval vs Expert (200 games): 74.0% WR** — only 4.8% below V6.1 (78.8%), much better than V6.1-transfer's 72-73% plateau
+
+**Step 3 — RL from SL checkpoint (`train_v6_3.py`, no `--resume`)**:
+- Loads `model_sl.pt` as starting weights, runs PPO with 27ch input, no aux head, return normalization on
+- Trained 156,040 games (205,182 PPO updates) over ~21 hours on T4
+- 77 evals (every 2K games)
+- **Best eval WR: 77.8%** (1.0% below V6.1's 78.8%)
+- **Mean eval WR: 73.7%**
+- **First 10 evals avg: 73.9%** (matches SL baseline 74.0%)
+- **Last 10 evals avg: 74.6%** (only +0.7% over the entire RL run)
+- Entropy stable at 0.40 (no collapse, no blow-up — much healthier than Phase 1-4)
+- vs Expert (recent): 59.4% WR
+
+**Final verdict on V6.3 (2026-04-16)**:
+
+V6.3 is a **failed hypothesis**, but cleanly:
+- The 27-channel architecture itself is fine (SL achieves 74% from random init)
+- Pure RL from a clean SL baseline trained healthy without instability
+- BUT 156K RL games could not break past V6.1's 78.8% ceiling — best eval was 77.8%
+- The 3 new channels (`bonus_turn_flag`, `consecutive_sixes`, `two_roll_capture_map`) provide **no measurable value** beyond what V6.1 already learned implicitly from the 24-channel encoding
+- V6.1 likely already encodes "dice=6 → bonus turn" through the dice channel + self-play learning. The explicit features are redundant.
+
+**Compared to all V6.3 attempts:**
+| Run | Method | Games | Best Eval | Mean Eval |
+|---|---|---|---|---|
+| V6.1 baseline | RL only (24ch) | 56K | 78.8% | ~76% |
+| V6.3 attempt 1 | V6.1 transfer + RL | 395K | 78.4% (init only) | 71-73% |
+| V6.3 attempt 2 | SL distill + RL | 156K | **77.8%** | **73.7%** |
+
+V6.3 is abandoned. The 78.8% V6.1 ceiling appears to be a fundamental property of the game/architecture combo, not an artifact of missing features.
+
+---
+
 ## Active Experiment Plan (post-V6.1 plateau)
 
-As of 2026-04-10, V6.1 resume training from 155K → 239K games plateaued at 0.788 peak eval (+0.8pp over 84K games — effectively zero progress). Training paused. Next steps tracked in live plan doc:
+As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.
 
 **→ `/Users/sumit/Github/AlphaLudo/discussion/POST_V61_EXPERIMENT_PLAN.md`**
-
-Summary: Step 1 = inference-time MCTS wrapping V6.1. Step 2 = conditional reward shaping (50% scale). Step 3 = Stochastic MuZero port (conditional, multi-week). Step 4 = human benchmark (parallel, user-driven).

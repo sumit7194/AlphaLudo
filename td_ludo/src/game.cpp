@@ -896,3 +896,117 @@ void write_state_tensor_v6(const GameState &state, float *buffer) {
     }
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// V6.3: 27-channel encoding (V6 + bonus-turn awareness)
+//
+// Channels 0-23: identical to write_state_tensor_v6
+// Channel 24:    bonus_turn_flag — broadcast 1.0 if current dice == 6
+// Channel 25:    consecutive_sixes — broadcast normalized (0/0.5/1.0)
+// Channel 26:    two_roll_capture_map — 1.0 at opponent positions
+//                capturable in a 6+X two-roll sequence (7-12 ahead)
+//
+// The consecutive_sixes_count is passed from Python because GameState
+// doesn't track it (it's managed by the game player's turn logic).
+// ═══════════════════════════════════════════════════════════════
+
+void write_state_tensor_v6_3(const GameState &state, float *buffer,
+                              int consecutive_sixes_count) {
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+
+  // Clear full 27-channel buffer, then write channels 0-23 via V6.
+  // V6 internally clears channels 0-23 (harmless double-clear).
+  clear_buffer(buffer, 27 * spatial_size);
+  write_state_tensor_v6(state, buffer);
+
+  int current_p = state.current_player;
+  int k = current_p; // rotation key for write_tensor_val
+  int dice = state.current_dice_roll;
+
+  // === CHANNEL 24: bonus_turn_flag (broadcast) ===
+  // 1.0 everywhere if current dice is 6 (player will get another turn).
+  // The dice one-hot (ch 16) already encodes "dice == 6", but as one of
+  // six planes. This broadcast makes the bonus-turn concept explicit as
+  // a standalone feature the CNN can detect with a single 1x1 filter.
+  if (dice == 6) {
+    float *ch24 = buffer + 24 * spatial_size;
+    std::fill(ch24, ch24 + spatial_size, 1.0f);
+  }
+
+  // === CHANNEL 25: consecutive_sixes (broadcast, normalized) ===
+  // 0 sixes = 0.0, 1 six = 0.5, 2 sixes = 1.0.
+  // At 2 consecutive sixes the model should play conservatively (one
+  // more 6 = triple penalty = turn lost, tokens sent home in some
+  // rule variants). Clamped to 2 because 3+ never occurs (penalty fires).
+  int clamped = consecutive_sixes_count < 2 ? consecutive_sixes_count : 2;
+  if (clamped > 0) {
+    float csix_val = clamped * 0.5f;
+    float *ch25 = buffer + 25 * spatial_size;
+    std::fill(ch25, ch25 + spatial_size, csix_val);
+  }
+
+  // === CHANNEL 26: two_roll_capture_map (spatial) ===
+  // For each own token, mark opponent positions that are capturable via
+  // a two-roll sequence: first roll = 6 (bonus turn), second roll = 1-6.
+  //
+  // Main-track tokens (pos 0-50):
+  //   Capturable range = pos+7 to pos+12 (6+1 to 6+6)
+  //
+  // Base tokens (pos == -1):
+  //   Spawn on 6 lands at pos 0, then move 1-6 → landing at pos 1-6.
+  //   Capturable range = 1 to 6.
+  //
+  // A position is capturable only if:
+  //   - It's on the main track (not home run, not safe square)
+  //   - Exactly 1 opponent token is there (no blockade)
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int my_pos = state.player_positions[current_p][t];
+
+    int range_start, range_end;
+    if (my_pos == BASE_POS) {
+      // Base token: spawn(6) → pos 0, then move 1-6 → pos 1..6
+      range_start = 1;
+      range_end = 6;
+    } else if (my_pos >= 0 && my_pos <= 50) {
+      // Main track: 6 + (1..6) = 7..12 ahead
+      range_start = my_pos + 7;
+      range_end = my_pos + 12;
+    } else {
+      continue; // home run or scored — can't capture from here
+    }
+
+    for (int target_rel = range_start; target_rel <= range_end;
+         ++target_rel) {
+      if (target_rel > 50)
+        continue; // can't capture in home run
+
+      int target_abs = get_absolute_pos(current_p, target_rel);
+      if (target_abs < 0)
+        continue;
+      if (is_safe_pos(target_abs))
+        continue; // can't capture on safe/globe square
+
+      // Count opponent tokens at this absolute position.
+      // Capturable only if exactly 1 (no blockade).
+      for (int op = 0; op < NUM_PLAYERS; ++op) {
+        if (op == current_p || !state.active_players[op])
+          continue;
+        int opp_count = 0;
+        for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+          int op_pos = state.player_positions[op][ot];
+          if (op_pos >= 0 && op_pos <= 50) {
+            int op_abs = get_absolute_pos(op, op_pos);
+            if (op_abs == target_abs)
+              opp_count++;
+          }
+        }
+        if (opp_count == 1) {
+          int r, c;
+          get_board_coords(current_p, target_rel, r, c);
+          if (r >= 0)
+            write_tensor_val(buffer, 26, r, c, 1.0f, k, false);
+        }
+      }
+    }
+  }
+}
