@@ -1054,6 +1054,46 @@ Secondary finding: **cosine LR schedule hit 0.00000 at end of epoch 3** because 
 
 ---
 
+**Iteration 2: 500K states, mixed V6.1 + V6.3 teachers, 3 epochs** (2026-04-21 03:31→05:13)
+
+Changes: `generate_sl_data_v10.py` extended to alternate between V6.1 (`model_best.pt`) and V6.3 (`model_best.pt`) teachers 50/50 per game — each game uses one teacher for both sides. Training input always V10-encoded (28ch), policy target is the teacher's softmax for that decision. Data gen now stores `teacher_id` per sample for diagnostics.
+
+Results after 3 epochs on 490K train / 10.5K val:
+
+| Metric | Iter 1 (150K V6.1) | **Iter 2 (500K mixed)** |
+|---|---|---|
+| Overall WR | 27.5% | **33.0%** (+5.5pp) |
+| Brier score | 0.1948 | **0.1849** |
+| Moves MAE | 12.94 | **11.7** |
+| Final val policy acc | 60.2% | 57.8% |
+| Final val win acc | 64.2% | **67.2%** |
+| [0.8, 1.0) bucket count | 284 (2.1%) | **726 (5.5%)** (2.6× more confident decisions) |
+| [0.8, 1.0) calibration | 0.848 → 0.842 | **0.899 → 0.935** (now UNDERconfident at top, which is excellent) |
+
+Per-bot WR: Aggressive 36.1%, Expert 27.8%, Heuristic 28.6%, Racing 34.5%, Defensive 19.4%, Random 57.7% (only 26 games vs Random, SE ~10pp).
+
+Read: architecture is working but **still undercooked**. The confidence distribution is shifting the right way — 2.6× more predictions cross the 0.8 threshold, and those are now slightly underconfident (predicts 90%, wins 94%). Mid-range calibration improved too (0.50→0.40 was previously 0.50→0.35). Policy acc being slightly lower (57.8% vs 60.2%) is expected: the mixed-teacher target is harder because V6.1 and V6.3 disagree on many positions.
+
+Training curves were still climbing at epoch 3 when the cosine LR hit zero:
+- Val win acc: 61.3 → 65.6 → 67.2 (still improving)
+- Val moves MAE: 13.1 → 12.2 → 12.3 (stalled)
+- Val policy acc: 56.3 → 56.4 → 57.8
+
+By strict decision rule thresholds (GOOD: WR ≥ 55% AND Brier < 0.20 AND train acc ≥ 80%), this is BAD (WR < 35 AND train acc ≤ 65). But the cron's tiebreaker rule — "prefer MIXED over BAD when ambiguous; more SL is cheap, architecture changes aren't" — applies. The quality improvements between iter 1 and iter 2 are too clean to ignore.
+
+**Iteration 3 (in progress)**: 15 epochs on same 500K mixed-teacher data, on MPS.
+- Decision to try MPS for SL training: benchmarked at 344 ms/batch (vs ~2s CPU), cutting 15-epoch wall time from ~8h to ~82 min.
+- Dataset reused (`--skip-data`).
+- Cosine LR schedule will now span 15 × 957 = 14,355 steps, giving the model real training time at non-trivial LR.
+- Expected finish ~05:35 AM.
+
+If Iter 3 still shows < 50% WR or < 80% train policy acc, next moves in order:
+1. Try larger model (128ch or 10 blocks — pick whichever gets us to ~2M params)
+2. Generate 1M states (double the data)
+3. Longer schedule (30+ epochs with warmup)
+
+---
+
 ## Active Experiment Plan (post-V6.1 plateau)
 
 As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.

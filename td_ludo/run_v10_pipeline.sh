@@ -102,7 +102,7 @@ fi
 # Stage 2: Joint SL training
 # ─────────────────────────────────────────────────────────────
 log "Stage 2: V10 joint SL training ($EPOCHS epochs)"
-$PY train_sl_v10.py --epochs "$EPOCHS"
+$PY train_sl_v10.py --epochs "$EPOCHS" --max-states 500000
 
 # ─────────────────────────────────────────────────────────────
 # Stage 3: Evaluation

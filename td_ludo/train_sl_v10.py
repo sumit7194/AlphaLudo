@@ -91,7 +91,13 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Prefer MPS on Apple Silicon (6x faster than CPU for this model)
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     print(f"[V10 Train] Device: {device}")
 
     chunks = sorted(glob.glob(os.path.join(args.data_dir, 'chunk_*.npz')))
