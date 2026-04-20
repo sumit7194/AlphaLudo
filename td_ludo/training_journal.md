@@ -999,20 +999,58 @@ Two new input channels targeting the "option value" blind spot found during huma
 - **Brier < 0.20** (V6.3-on-frozen-backbone was ~0.23; this is the go/no-go)
 - Moves MAE < 10 own-turns
 
-**Partial results** (run in progress, 2/3 SL epochs complete):
+**SL training results** (3 epochs, 150K states, 1,036,278 params):
 
 | Metric | E1 | E2 | E3 |
 |---|---|---|---|
-| Val policy acc | 60.3% | 60.3% | — |
-| Val win acc | 58.1% | 64.2% | — |
-| Val moves MAE | 10.7 | 10.7 | — |
+| Val policy acc | 60.3% | 60.3% | 60.2% |
+| Val win acc | 58.1% | 64.2% | 64.2% |
+| Val moves MAE | 10.7 | 10.7 | 10.4 |
 
-Val win-prob accuracy climbing nicely epoch-over-epoch (+6.1pp E1→E2), suggesting joint training *is* pushing the backbone toward outcome-predictive features. Moves MAE stuck at 10.7 — the weakest signal so far. Final eval pending.
+Policy acc plateaus at 60% (V6.3 SL reached 94.6% — V10 at 1/5 the epochs is badly undercooked). Win acc climbed E1→E2 (+6.1pp) then stalled. Moves MAE barely moved.
 
-**Decision rule after run completes**:
-- **Brier < 0.20**: build V10 RL trainer next (trainer_v10 + player_v10 + train_v10.py, ~1500 LOC). Use `win_prob` as PPO value signal via `value = 2·p − 1`.
-- **Brier 0.20-0.23**: run 15 full epochs instead of 3, try again.
-- **Brier > 0.23**: architecture still doesn't support joint training. Rethink before RL.
+**Final eval (200 games vs bot mix)**:
+
+| Metric | Value |
+|---|---|
+| Overall policy WR | **27.5%** |
+| vs Expert | 23.3% |
+| vs Heuristic | 18.6% |
+| vs Aggressive | 19.4% |
+| vs Defensive | 32.4% |
+| vs Random | **53.8%** (SE ~10pp — indistinguishable from 50%) |
+| Brier score | **0.1948** (crossed <0.20 threshold) |
+| Moves MAE | 12.94 |
+
+**Calibration buckets** — the interesting result:
+
+| Predicted range | N (of 13,220) | Pred mean | Actual mean |
+|---|---|---|---|
+| [0.0, 0.2) | 1,388 (10.5%) | 0.132 | 0.020 |
+| [0.2, 0.4) | 3,244 (24.5%) | 0.314 | 0.150 |
+| [0.4, 0.6) | 6,656 (50.3%) | 0.500 | 0.349 |
+| [0.6, 0.8) | 1,648 (12.5%) | 0.682 | **0.664** |
+| [0.8, 1.0) | 284 (2.1%) | 0.848 | **0.842** |
+
+**Interpretation** (Brier-pass ≠ win):
+
+The Brier score passed the 0.20 threshold only because 50% of predictions cluster at ~50% — hedging is cheap MSE. The real signal is in the buckets:
+
+- **At high confidence (>0.6, 14.6% of decisions): calibration is excellent.** 0.848 → 0.842 is near-perfect, far better than V6.3's frozen-backbone attempt (stuck at 65.9% ~ equivalent to Brier ~0.23).
+- **At low/mid confidence (<0.6, 85.4% of decisions): systematic over-optimism** by 11-16pp. The model thinks random play wins half the time when it actually loses ⅔ of the time.
+
+Architectural takeaway: **joint training does push the backbone toward outcome-predictive features** (proven by the high-confidence buckets). But with only 3 epochs of 150K samples, the policy is too weak for those features to matter in most positions, so the model hedges and calibration at mid-range suffers.
+
+**Revised verdict**:
+
+Do **not** build V10 RL trainer yet. The Brier-< 0.20 threshold was mechanically met but for the wrong reason (hedging, not skill). The architecture shows real promise at the calibration extremes, but needs:
+
+- **More epochs** (15 instead of 3) — match V6.3's SL budget
+- **Possibly more data** (500K states back on the table)
+
+Plan: retrain with 15 epochs on same 150K data first (cheapest signal). If policy acc climbs from 60% toward 85%+ and bucket calibration spreads (fewer predictions stuck at 50%), re-eval and reconsider RL. If policy stays flat at 60%, regenerate 500K states and retrain.
+
+Secondary finding: **cosine LR schedule hit 0.00000 at end of epoch 3** because the scheduler was configured for 3 epochs total. When retraining with more epochs, the scheduler will properly anneal over the full run.
 
 ---
 
