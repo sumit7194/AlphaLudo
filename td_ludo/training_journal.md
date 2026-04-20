@@ -963,6 +963,59 @@ The real ceiling discovery: **~71% vs strategic bots is the architectural platea
 
 ---
 
+### Experiment 15: V10 — Slim joint-SL architecture (2026-04-21, IN PROGRESS)
+
+**Motivation**: After the 71% plateau confirmed, two failed intermediate experiments re-pointed at the root cause:
+
+1. **V6.3 calibrated heads on frozen backbone** (train_heads_v6_3.py): froze V6.3 after PPO, trained dedicated `win_prob` (BCE) + `moves_remaining` (MSE) heads on a 250K-state SL dataset. Val accuracy stuck at 65.9% from epoch 1 onward — the backbone features, optimized by PPO for action selection, don't encode the outcome-prediction signal the heads need.
+2. **V6.3 1-ply value search** (evaluate_v6_3_value_search.py): used V6.3's existing value head for 1-ply lookahead. Result: 27.5% WR vs 67.5% pure-policy baseline. The value head was trained on normalized returns, not win probabilities — so `V(s)` is not `P(win|s)` and lookahead collapses.
+
+Both failures point to the same underlying issue: **you cannot retrofit calibrated outcome prediction onto a backbone that wasn't trained to produce it**.
+
+V10 inverts the assumption: train the backbone from scratch with a multi-task loss that forces it to learn features useful for policy, win probability, *and* pace-of-game — all at once.
+
+**Architecture** (driven by V6.3 mech interp findings):
+
+| Dimension | V6.3 | V10 | Rationale |
+|---|---|---|---|
+| Residual blocks | 10 | **6** | Last 3 V6.3 layers were near-identical in CKA and contributed ~0 in layer knockout |
+| Channel width | 128 | **96** | Most of 128 were active, modest shrink |
+| Input channels | 27 | **28** | Drop V6.3 ch25 (consecutive_sixes, KL=0.0000 — dead); add 2 strategic |
+| Parameters | ~3M | **1.04M** | 3× smaller, fast enough to train locally |
+| Heads | policy + value | **policy + win_prob + moves_remaining** | Drop `value`; `win_prob` is the value proxy (2·p−1 ∈ [−1,1]) |
+
+Two new input channels targeting the "option value" blind spot found during human play:
+- **ch26 `non_home_tokens_frac`**: (tokens not yet home) / 4, broadcast. Signals "forced mode" (0.25 when 3/4 scored) and endgame proximity.
+- **ch27 `my_leader_progress`**: max(token_progress_01), broadcast. Top token's position divided by 56.
+
+**Pipeline** (local, Mac MPS):
+1. `generate_sl_data_v10.py` — V6.1 teacher self-play (2000 states/s on MPS), emits (state28, teacher_policy, won, own_moves_remaining, legal_mask) per decision. Target 150K states.
+2. `train_sl_v10.py` — joint loss `1.0·KL + 0.5·BCE + 0.02·MSE` from scratch.
+3. `eval_v10_sl.py` — policy WR vs heuristic bots + Brier score + reliability buckets + moves MAE.
+4. `pipeline_dashboard.py` — live HTTP dashboard on :8788 surfacing all three stages.
+
+**Target signal** for declaring V10 worth investing RL into:
+- Policy WR ≥ 60% vs Expert (SL alone, no RL)
+- **Brier < 0.20** (V6.3-on-frozen-backbone was ~0.23; this is the go/no-go)
+- Moves MAE < 10 own-turns
+
+**Partial results** (run in progress, 2/3 SL epochs complete):
+
+| Metric | E1 | E2 | E3 |
+|---|---|---|---|
+| Val policy acc | 60.3% | 60.3% | — |
+| Val win acc | 58.1% | 64.2% | — |
+| Val moves MAE | 10.7 | 10.7 | — |
+
+Val win-prob accuracy climbing nicely epoch-over-epoch (+6.1pp E1→E2), suggesting joint training *is* pushing the backbone toward outcome-predictive features. Moves MAE stuck at 10.7 — the weakest signal so far. Final eval pending.
+
+**Decision rule after run completes**:
+- **Brier < 0.20**: build V10 RL trainer next (trainer_v10 + player_v10 + train_v10.py, ~1500 LOC). Use `win_prob` as PPO value signal via `value = 2·p − 1`.
+- **Brier 0.20-0.23**: run 15 full epochs instead of 3, try again.
+- **Brier > 0.23**: architecture still doesn't support joint training. Rethink before RL.
+
+---
+
 ## Active Experiment Plan (post-V6.1 plateau)
 
 As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.
