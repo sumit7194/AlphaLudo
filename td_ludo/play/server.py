@@ -1,8 +1,12 @@
 """
 AlphaLudo Play — Web Server for Human vs AI Ludo
 
-Flask backend that manages game state via the C++ engine
-and runs AI inference via the AlphaLudoV5 model (V6.1, 24-channel strategic encoding).
+Flask backend that manages game state via the C++ engine and runs AI
+inference. Supports both V6.1 (24-channel) and V6.3 (27-channel) models.
+
+Select via env var:
+    LUDO_MODEL=v6_1  (default, loads model_weights/model.pt)
+    LUDO_MODEL=v6_3  (loads model_weights/model_v6_3.pt)
 """
 
 import os
@@ -19,10 +23,19 @@ sys.path.insert(0, TD_LUDO_DIR)
 
 import td_ludo_cpp as ludo_cpp
 from flask import Flask, jsonify, request, send_from_directory
-from model import AlphaLudoV5
+from model import AlphaLudoV5, AlphaLudoV63
 
 # ── Configuration ──────────────────────────────────────────────
-MODEL_PATH = os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt')
+MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v6_1').lower()
+if MODEL_VERSION not in ('v6_1', 'v6_3'):
+    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1' or 'v6_3'.")
+
+MODEL_FILES = {
+    'v6_1': os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
+    'v6_3': os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
+}
+MODEL_PATH = MODEL_FILES[MODEL_VERSION]
+
 HUMAN_PLAYER = 0   # P0 = Human (top-left on standard board)
 AI_PLAYER = 2       # P2 = AI (bottom-right on standard board)
 MAX_MOVES = 10000
@@ -137,26 +150,81 @@ def generate_board_layout():
 # ── AI Model Loading ───────────────────────────────────────────
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
-    model = AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24)
+
+    if MODEL_VERSION == 'v6_3':
+        model = AlphaLudoV63(num_res_blocks=10, num_channels=128, in_channels=27)
+    else:
+        model = AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24)
 
     checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
     # Handle compiled model state dicts
-    if any(k.startswith('_orig_mod.') for k in checkpoint.keys()):
+    if isinstance(checkpoint, dict) and any(
+        isinstance(k, str) and k.startswith('_orig_mod.') for k in checkpoint.keys()
+    ):
         checkpoint = {k.replace('_orig_mod.', ''): v for k, v in checkpoint.items()}
     # Handle full checkpoint dict vs raw state_dict
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
         model.load_state_dict(checkpoint)
-    
+
     model.eval()
     model.to(device)
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"[Play] Model loaded from {MODEL_PATH} ({param_count:,} params)")
+    print(f"[Play] Loaded {MODEL_VERSION.upper()} model from {MODEL_PATH} "
+          f"({param_count:,} params)")
     return model, device
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+# ── Game Event Logger ─────────────────────────────────────────
+import datetime
+LOGS_DIR = os.path.join(SCRIPT_DIR, 'game_logs')
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+
+class GameLogger:
+    """Writes every game event to a per-game file for post-game review."""
+
+    def __init__(self, logs_dir=LOGS_DIR, model_version=MODEL_VERSION):
+        self.logs_dir = logs_dir
+        self.model_version = model_version
+        self.current_file = None
+        self.game_num = 0
+        self._open_new_game()
+
+    def _open_new_game(self):
+        if self.current_file:
+            self.current_file.close()
+        self.game_num += 1
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        path = os.path.join(self.logs_dir, f'game_{ts}_{self.model_version}.log')
+        self.current_file = open(path, 'w')
+        self.log_path = path
+        self.log(f"=== NEW GAME ({self.model_version.upper()}) — {ts} ===")
+
+    def log(self, msg):
+        if not self.current_file or self.current_file.closed:
+            return
+        t = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        line = f"[{t}] {msg}"
+        self.current_file.write(line + '\n')
+        self.current_file.flush()
+        print(line)
+
+    def new_game(self):
+        self.log(f"--- game ended ---")
+        self._open_new_game()
+
+    def close(self):
+        if self.current_file:
+            self.current_file.close()
+
+
+game_logger = GameLogger()
+
 
 # ── Game State Manager ─────────────────────────────────────────
 class GameManager:
@@ -164,7 +232,7 @@ class GameManager:
         self.model = model
         self.device = device
         self.reset()
-    
+
     def reset(self):
         self.state = ludo_cpp.create_initial_state_2p()
         self.consecutive_sixes = [0, 0, 0, 0]
@@ -172,6 +240,9 @@ class GameManager:
         self.game_log = []
         self.pending_dice = None
         self.last_move_info = None
+        if hasattr(self, '_initialized'):
+            game_logger.new_game()
+        self._initialized = True
         return self._get_state_json()
     
     def _get_token_coords(self):
@@ -193,13 +264,77 @@ class GameManager:
             coords[str(player)] = token_coords
         return coords
     
+    def _compute_win_chance(self):
+        """Run the value head and return AI's win probability in [0, 1].
+
+        The value head is "expected outcome for the current player to move".
+        To get a consistent metric across turn boundaries, we evaluate from
+        AI's perspective ALWAYS — temporarily set current_player=AI and
+        clear the dice (between-turns evaluation). This avoids the wild
+        swings caused by the model's current-player-advantage bias.
+
+        Returns None if the game is over.
+        """
+        if self.state.is_terminal:
+            winner = int(ludo_cpp.get_winner(self.state))
+            return 1.0 if winner == AI_PLAYER else 0.0 if winner != -1 else None
+
+        if not self.state.active_players[AI_PLAYER]:
+            return None
+
+        # Save fields we'll temporarily override
+        saved_cp = int(self.state.current_player)
+        saved_dice = int(self.state.current_dice_roll)
+        try:
+            # Always evaluate from AI's POV with no dice rolled (neutral
+            # between-turns snapshot).
+            self.state.current_player = AI_PLAYER
+            self.state.current_dice_roll = 0
+
+            if MODEL_VERSION == 'v6_3':
+                # Use AI's consecutive sixes count for ch 25
+                state_tensor = ludo_cpp.encode_state_v6_3(
+                    self.state, int(self.consecutive_sixes[AI_PLAYER])
+                )
+            else:
+                state_tensor = ludo_cpp.encode_state_v6(self.state)
+
+            # Permissive mask — value head doesn't actually depend on it,
+            # but the model API expects one.
+            mask = np.ones(4, dtype=np.float32)
+
+            with torch.no_grad():
+                s_t = torch.from_numpy(state_tensor).unsqueeze(0).to(
+                    self.device, dtype=torch.float32
+                )
+                m_t = torch.from_numpy(mask).unsqueeze(0).to(
+                    self.device, dtype=torch.float32
+                )
+                out = self.model(s_t, m_t)
+                # V6.1 returns (policy, value); V6.3 returns (policy, value, aux)
+                v = float(out[1].squeeze().item())
+        except Exception as e:
+            print(f"[Play] win_chance failed: {e}")
+            return None
+        finally:
+            # Restore actual game state
+            self.state.current_player = saved_cp
+            self.state.current_dice_roll = saved_dice
+
+        # Sigmoid squash for display — value head isn't calibrated probabilities.
+        import math
+        ai_win_prob = 1.0 / (1.0 + math.exp(-v))
+        return max(0.001, min(0.999, ai_win_prob))
+
     def _get_state_json(self):
         positions = {}
         scores = {}
         for player in [0, 2]:
             positions[str(player)] = [int(p) for p in self.state.player_positions[player]]
             scores[str(player)] = int(self.state.scores[player])
-        
+
+        win_chance = self._compute_win_chance()
+
         return {
             'positions': positions,
             'scores': scores,
@@ -211,6 +346,7 @@ class GameManager:
             'token_coords': self._get_token_coords(),
             'last_move': self.last_move_info,
             'consecutive_sixes': self.consecutive_sixes.copy(),
+            'ai_win_chance': win_chance,  # 0.0..1.0 or None
         }
     
     def _skip_inactive_players(self):
@@ -238,13 +374,18 @@ class GameManager:
         roll = random.randint(1, 6)
         self.state.current_dice_roll = roll
         cp = int(self.state.current_player)
-        
+        who = 'AI' if cp == AI_PLAYER else 'Human'
+
         # Track consecutive sixes
         if roll == 6:
             self.consecutive_sixes[cp] += 1
         else:
             self.consecutive_sixes[cp] = 0
-        
+
+        game_logger.log(f"{who} (P{cp}) rolled {roll}"
+                        + (f" [consec-sixes={self.consecutive_sixes[cp]}]"
+                           if self.consecutive_sixes[cp] > 0 else ''))
+
         # Triple six penalty
         if self.consecutive_sixes[cp] >= 3:
             self.consecutive_sixes[cp] = 0
@@ -253,17 +394,18 @@ class GameManager:
             while not self.state.active_players[next_p]:
                 next_p = (next_p + 1) % 4
             self.state.current_player = next_p
-            
+
             self.game_log.append(f"P{cp} rolled triple 6! Turn lost.")
+            game_logger.log(f"  -> TRIPLE 6 PENALTY, turn passes to P{next_p}")
             return {
                 **self._get_state_json(),
                 'legal_moves': [],
                 'message': 'Triple 6! Turn lost.',
                 'triple_six': True,
             }
-        
+
         legal = ludo_cpp.get_legal_moves(self.state)
-        
+
         # No legal moves — pass turn
         if len(legal) == 0:
             self.state.current_dice_roll = 0
@@ -271,6 +413,7 @@ class GameManager:
             while not self.state.active_players[next_p]:
                 next_p = (next_p + 1) % 4
             self.state.current_player = next_p
+            game_logger.log(f"  -> no legal moves, turn passes to P{next_p}")
             
             return {
                 **self._get_state_json(),
@@ -324,13 +467,29 @@ class GameManager:
             'captured': captured,
             'dice': int(self.state.current_dice_roll) if self.state.current_dice_roll else 0,
         }
-        
+
+        who = 'AI' if cp == AI_PLAYER else 'Human'
+        to_str = 'HOME' if new_pos == 99 else str(new_pos)
+        msg = f"  {who} (P{cp}) moved token {token_index}: pos {old_pos} -> {to_str}"
+        if captured:
+            msg += " [CAPTURED opponent!]"
+        game_logger.log(msg)
+        scores = f"Score: Human={self.state.scores[0]}/4  AI={self.state.scores[AI_PLAYER]}/4"
+        game_logger.log(f"  [{scores}  move #{self.move_count}]")
+
         result = self._get_state_json()
-        
+
         # Check if same player goes again (bonus turn)
         next_cp = int(self.state.current_player)
         result['bonus_turn'] = (next_cp == cp and not self.state.is_terminal)
-        
+        if result['bonus_turn']:
+            game_logger.log(f"  -> {who} gets a BONUS TURN (rolled 6 or scored)")
+
+        if self.state.is_terminal:
+            winner = ludo_cpp.get_winner(self.state)
+            win_who = 'AI' if winner == AI_PLAYER else 'Human' if winner == 0 else 'Unknown'
+            game_logger.log(f"*** GAME OVER — {win_who} (P{winner}) wins in {self.move_count} moves ***")
+
         return result
     
     def ai_move(self):
@@ -356,32 +515,49 @@ class GameManager:
         
         # If only one legal move, take it
         if len(legal) == 1:
+            game_logger.log(f"  AI has only 1 legal move (token {legal[0]}) — forced")
             return {**self.make_move(legal[0]), 'ai_roll': int(self.state.current_dice_roll) or roll_result['dice_roll']}
-        
-        # Model inference
-        state_tensor = ludo_cpp.encode_state_v6(self.state)
+
+        # Model inference — pick encoder matching the loaded model
+        if MODEL_VERSION == 'v6_3':
+            state_tensor = ludo_cpp.encode_state_v6_3(
+                self.state, int(self.consecutive_sixes[cp])
+            )
+        else:
+            state_tensor = ludo_cpp.encode_state_v6(self.state)
         legal_mask = np.zeros(4, dtype=np.float32)
         for m in legal:
             legal_mask[m] = 1.0
-        
+
         with torch.no_grad():
             s_t = torch.from_numpy(state_tensor).unsqueeze(0).to(self.device, dtype=torch.float32)
             m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(self.device, dtype=torch.float32)
-            policy_logits = self.model.forward_policy_only(s_t, m_t)
-            
-            # Get probabilities for display
-            probs = torch.softmax(policy_logits, dim=1).squeeze(0).cpu().numpy()
-            action = int(policy_logits.argmax(dim=1).item())
-        
+            # Run full model (policy + value) for richer logging
+            full_out = self.model(s_t, m_t)
+            policy = full_out[0].squeeze(0).cpu().numpy()
+            value = float(full_out[1].squeeze().item())
+            probs = policy
+            action = int(policy.argmax())
+
         if action not in legal:
             action = random.choice(legal)
-        
+
+        # Log the AI's full decision — policy dist, value, chosen action
+        prob_str = ', '.join(
+            f"T{i}={probs[i]:.3f}" + ('*' if i == action else '') + ('' if legal_mask[i] > 0 else '(X)')
+            for i in range(4)
+        )
+        game_logger.log(
+            f"  AI decision: legal={legal}, chose token {action} "
+            f"(policy: {prob_str}, value={value:+.3f})"
+        )
+
         dice_val = roll_result['dice_roll']
         result = self.make_move(action)
         result['ai_roll'] = dice_val
         result['ai_probs'] = [round(float(p), 3) for p in probs]
         result['ai_chosen'] = action
-        
+
         return result
 
 
@@ -393,6 +569,27 @@ game = GameManager(model, device)
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
+
+MODEL_INFO = {
+    'v6_1': {
+        'label': 'V6.1 Strategic',
+        'subtitle': 'V6.1 Strategic · 78.8% eval · 3M params',
+    },
+    'v6_3': {
+        'label': 'V6.3 (SL+RL)',
+        'subtitle': 'V6.3 SL+RL · 77.8% eval · 3M params',
+    },
+}
+
+
+@app.route('/api/info')
+def model_info():
+    """Return info about the loaded model for the UI."""
+    info = dict(MODEL_INFO[MODEL_VERSION])
+    info['version'] = MODEL_VERSION
+    info['param_count'] = count_parameters(model)
+    return jsonify(info)
+
 
 @app.route('/api/layout')
 def layout():
@@ -428,7 +625,8 @@ def ai_turn():
 
 if __name__ == '__main__':
     print("\n" + "="*50)
-    print("  AlphaLudo Play — Human vs AI")
+    print(f"  AlphaLudo Play — Human vs AI ({MODEL_VERSION.upper()})")
     print("  Open: http://localhost:5050")
+    print(f"  Switch model: LUDO_MODEL=v6_1|v6_3 python3 server.py")
     print("="*50 + "\n")
     app.run(host='0.0.0.0', port=5050, debug=False)

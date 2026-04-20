@@ -27,7 +27,7 @@
                 <div class="player-card ai">
                     <div class="player-avatar ai-avatar">🤖</div>
                     <h3>AlphaLudo AI</h3>
-                    <p class="player-subtitle">V6.1 Strategic · 78.8% eval · 3M params</p>
+                    <p class="player-subtitle" id="aiSubtitle">Loading...</p>
                     <div class="score-display">
                         <div class="score-tokens">
                             <span class="scored-token ai-color" id="ai-scored-0">●</span>
@@ -42,6 +42,19 @@
                         <span>Thinking...</span>
                     </div>
                     <div class="ai-probs" id="aiProbs"></div>
+
+                    <!-- AI's predicted win chance (from value head) -->
+                    <div class="win-chance" id="winChanceBox">
+                        <div class="win-chance-label">AI's predicted win chance</div>
+                        <div class="win-chance-bar">
+                            <div class="win-chance-fill" id="winChanceFill" style="width: 50%;"></div>
+                        </div>
+                        <div class="win-chance-text">
+                            <span id="winChanceAi">50%</span>
+                            <span class="win-chance-vs">vs</span>
+                            <span id="winChanceHuman">50%</span>
+                        </div>
+                    </div>
                 </div>
             </aside>
 

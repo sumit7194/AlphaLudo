@@ -23,6 +23,16 @@ const cellTypes = {};  // "r,c" -> type string
 
 // ── Initialization ──────────────────────────────────────────
 async function init() {
+    // Fetch model info and update AI subtitle
+    try {
+        const infoRes = await fetch('/api/info');
+        if (infoRes.ok) {
+            const info = await infoRes.json();
+            const subtitle = document.getElementById('aiSubtitle');
+            if (subtitle && info.subtitle) subtitle.textContent = info.subtitle;
+        }
+    } catch (e) { console.warn('Could not fetch model info', e); }
+
     // Fetch board layout
     const res = await fetch('/api/layout');
     boardLayout = await res.json();
@@ -385,6 +395,28 @@ function renderState() {
     // Update scores
     updateScores();
     updateTurnIndicator();
+    updateWinChance();
+}
+
+function updateWinChance() {
+    if (!gameState) return;
+    const fill = document.getElementById('winChanceFill');
+    const aiTxt = document.getElementById('winChanceAi');
+    const humanTxt = document.getElementById('winChanceHuman');
+    if (!fill || !aiTxt || !humanTxt) return;
+
+    const aiWin = gameState.ai_win_chance;
+    if (aiWin === null || aiWin === undefined) {
+        fill.style.width = '50%';
+        aiTxt.textContent = '—';
+        humanTxt.textContent = '—';
+        return;
+    }
+    const aiPct = Math.round(aiWin * 100);
+    const humanPct = 100 - aiPct;
+    fill.style.width = aiPct + '%';
+    aiTxt.textContent = aiPct + '% AI';
+    humanTxt.textContent = humanPct + '% You';
 }
 
 function updateScores() {
