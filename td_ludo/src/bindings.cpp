@@ -211,6 +211,14 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
         },
         py::arg("state"), py::arg("consecutive_sixes") = 0);
 
+  m.def("encode_state_v10", [](const GameState &state) {
+    // Return shape (28, 15, 15) - V10 Strategic Stack
+    py::array_t<float> result({28, BOARD_SIZE, BOARD_SIZE});
+    auto buf = result.mutable_data();
+    write_state_tensor_v10(state, buf);
+    return result;
+  });
+
   m.def("encode_state_v9", [](const GameState &state) {
     // Return shape (14, 15, 15) - V9 14 Channel Stack
     py::array_t<float> result({14, BOARD_SIZE, BOARD_SIZE});

@@ -1010,3 +1010,112 @@ void write_state_tensor_v6_3(const GameState &state, float *buffer,
     }
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+// V10: 28-channel encoding (V6.3 minus dead ch25 + 2 new strategic)
+//
+// Channels 0-23: identical to V6.1 / V6.3 (write_state_tensor_v6)
+// Channel 24:    bonus_turn_flag      (same as V6.3 ch24)
+// Channel 25:    two_roll_capture_map (same as V6.3 ch26 — promoted,
+//                V6.3 ch25 was dropped because mech interp showed it unused)
+// Channel 26 (NEW): non_home_tokens_frac
+//                   broadcast (count_of_my_tokens_not_yet_home / 4)
+//                   values: 0.0, 0.25, 0.5, 0.75, 1.0
+//                   0.25 = "forced mode" (only 1 token left to score)
+// Channel 27 (NEW): my_leader_progress
+//                   broadcast (most_advanced_token_pos / 56), range [0, 1]
+//                   1.0 = at least one token already home
+// ═══════════════════════════════════════════════════════════════
+
+// Progress helper: 0.0 for base, 1.0 for home, pos/56 otherwise
+static inline float token_progress_01(int pos) {
+  if (pos == BASE_POS) return 0.0f;
+  if (pos == HOME_POS) return 1.0f;
+  return (float)pos / 56.0f;
+}
+
+void write_state_tensor_v10(const GameState &state, float *buffer) {
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+
+  // Clear full 28-channel buffer
+  clear_buffer(buffer, 28 * spatial_size);
+
+  // Channels 0-23: reuse V6.1 encoder
+  write_state_tensor_v6(state, buffer);
+
+  int current_p = state.current_player;
+  int dice = state.current_dice_roll;
+  int k = current_p; // rotation key
+
+  // === CHANNEL 24: bonus_turn_flag ===
+  if (dice == 6) {
+    float *ch24 = buffer + 24 * spatial_size;
+    std::fill(ch24, ch24 + spatial_size, 1.0f);
+  }
+
+  // === CHANNEL 25: two_roll_capture_map (spatial) ===
+  // Same logic as V6.3 ch26, now at ch25.
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int my_pos = state.player_positions[current_p][t];
+    int range_start, range_end;
+    if (my_pos == BASE_POS) {
+      range_start = 1;
+      range_end = 6;
+    } else if (my_pos >= 0 && my_pos <= 50) {
+      range_start = my_pos + 7;
+      range_end = my_pos + 12;
+    } else {
+      continue;
+    }
+    for (int target_rel = range_start; target_rel <= range_end; ++target_rel) {
+      if (target_rel > 50) continue;
+      int target_abs = get_absolute_pos(current_p, target_rel);
+      if (target_abs < 0) continue;
+      if (is_safe_pos(target_abs)) continue;
+      for (int op = 0; op < NUM_PLAYERS; ++op) {
+        if (op == current_p || !state.active_players[op]) continue;
+        int opp_count = 0;
+        for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+          int op_pos = state.player_positions[op][ot];
+          if (op_pos >= 0 && op_pos <= 50) {
+            int op_abs = get_absolute_pos(op, op_pos);
+            if (op_abs == target_abs) opp_count++;
+          }
+        }
+        if (opp_count == 1) {
+          int r, c;
+          get_board_coords(current_p, target_rel, r, c);
+          if (r >= 0)
+            write_tensor_val(buffer, 25, r, c, 1.0f, k, false);
+        }
+      }
+    }
+  }
+
+  // === CHANNEL 26 (NEW): non_home_tokens_frac (broadcast) ===
+  // Count tokens NOT yet home (scored). fraction = count / 4.
+  // Encodes "how much work is left" with emphasis on "1 = forced mode" state.
+  int not_home_count = 0;
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    if (state.player_positions[current_p][t] != HOME_POS) not_home_count++;
+  }
+  float not_home_frac = (float)not_home_count / 4.0f;
+  if (not_home_frac > 0.0f) {
+    float *ch26 = buffer + 26 * spatial_size;
+    std::fill(ch26, ch26 + spatial_size, not_home_frac);
+  }
+
+  // === CHANNEL 27 (NEW): my_leader_progress (broadcast) ===
+  // Progress in [0, 1] of my most-advanced token.
+  // 1.0 iff at least one of my tokens has already scored.
+  float max_progress = 0.0f;
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    float p = token_progress_01(state.player_positions[current_p][t]);
+    if (p > max_progress) max_progress = p;
+  }
+  if (max_progress > 0.0f) {
+    float *ch27 = buffer + 27 * spatial_size;
+    std::fill(ch27, ch27 + spatial_size, max_progress);
+  }
+}

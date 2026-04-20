@@ -61,6 +61,16 @@ void write_state_tensor_v9(const GameState &state, float *buffer);
 void write_state_tensor_v6_3(const GameState &state, float *buffer,
                               int consecutive_sixes_count);
 
+// V10 encoder (28 channels):
+// - Channels 0-23: same as V6.1/V6.3 (strategic channels)
+// - Channel 24: bonus_turn_flag (broadcast if dice==6)
+// - Channel 25: two_roll_capture_map (was V6.3 ch26, promoted)
+// - Channel 26: non_home_tokens_frac (broadcast, count_not_yet_home / 4)
+// - Channel 27: my_leader_progress (broadcast, most-advanced token pos / 56)
+// Spatial: (28, 15, 15) -> writes 6300 floats.
+// Note: V6.3's ch25 (consecutive_sixes) was dropped — mech interp showed it unused.
+void write_state_tensor_v10(const GameState &state, float *buffer);
+
 // Helper to reset state
 GameState create_initial_state();    // 4-player
 GameState create_initial_state_2p(); // 2-player (P0 vs P2)
