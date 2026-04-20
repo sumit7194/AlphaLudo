@@ -929,6 +929,40 @@ V6.3 is abandoned. The 78.8% V6.1 ceiling appears to be a fundamental property o
 
 ---
 
+### Experiment 14b: 1000-game robust head-to-head (2026-04-17)
+
+**Motivation**: Human play tests of V6.3 (Phase 5 attempt 2) showed strong tactical play with no obvious mistakes — losses traced to dice variance, not strategic errors. This contradicted the "failed" Phase 5 verdict, prompting a robust statistical comparison.
+
+**Setup**: 1000 games each, CPU device, against the 4 strong heuristic bots (Expert, Heuristic, Aggressive, Defensive) — no SelfPlay, no ghosts, no Random/Inactive padding. Apples-to-apples measurement.
+
+| Opponent | V6.1 best (24ch) | V6.3 latest (27ch SL+RL) | Δ |
+|---|---|---|---|
+| Heuristic | 77.6% (190/245) | **77.9%** (176/226) | +0.3 |
+| Aggressive | **73.1%** (174/238) | 70.1% (169/241) | -3.0 |
+| Defensive | 67.6% (165/244) | **68.1%** (194/285) | +0.5 |
+| Expert | **68.9%** (188/273) | 66.1% (164/248) | -2.8 |
+| **Overall** | **71.7%** (717/1000) | **70.3%** (703/1000) | **-1.4** |
+
+**Statistical analysis**: At n=1000, std error ≈ ±1.45pp. The 1.4pp gap is at exactly 1 SE — **within noise**. V6.3 and V6.1 are statistically equivalent.
+
+**Reconciling with prior numbers**:
+- The 78.8% V6.1 / 77.8% V6.3 "best eval" figures from training were cherry-picked maxima of 500-game evals (high variance) using a broader bot mix that included Inactive/SelfPlay/Random — inflating apparent strength
+- This 1000-game strategic-bots-only measurement is the true skill ceiling: ~71-72% for both architectures
+
+**Revised verdict (replaces "V6.3 failed" framing)**:
+
+V6.3 is **neutral, not failed**. The data shows:
+1. SL distillation pipeline works (94.6% action match → 70.3% vs strong bots, in same band as V6.1)
+2. Channel expansion to 27ch is non-destructive (model reaches V6.1-equivalent strength)
+3. The 3 new channels (`bonus_turn_flag`, `consecutive_sixes`, `two_roll_capture_map`) provide **no measurable lift** but also **no degradation**
+4. Human-play observations (strong tactical play, losses to dice variance only) confirm V6.3 plays at V6.1-equivalent skill
+
+V6.3 shipped as a **viable production alternative** to V6.1, not a failed experiment. Use either model interchangeably; V6.3 is preferred only if a future feature requires the extra channels for analysis/explainability (e.g., the auxiliary capture-prediction head could be revived for value-debugging UIs).
+
+The real ceiling discovery: **~71% vs strategic bots is the architectural plateau** for this CNN family on 2-player Ludo, not the 78.8% number we'd been chasing. Future work should target architecture changes (e.g., wider/deeper, attention, MCTS at inference) to break this true ceiling.
+
+---
+
 ## Active Experiment Plan (post-V6.1 plateau)
 
 As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.

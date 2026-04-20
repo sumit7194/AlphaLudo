@@ -277,6 +277,9 @@ def main():
                         help='Play audio alarm on dashboard when stagnated')
     parser.add_argument('--compile', action='store_true',
                         help='Use torch.compile to fuse operations (Mac MPS experimental)')
+    parser.add_argument('--num-res-blocks', type=int, default=10,
+                        help='Number of residual blocks in backbone (default 10; '
+                             'use 7 for slim post-surgery)')
     args = parser.parse_args()
     
     # Handle fresh start (purge run directory)
@@ -312,9 +315,10 @@ def main():
     print(f"[Train] Mode: {MODE}")
     
     # Initialize model — AlphaLudoV5 "V6 Big Brain" (10 blocks × 128 channels)
-    model_factory = lambda: AlphaLudoV63(num_res_blocks=10, num_channels=128, in_channels=27)
+    model_factory = lambda: AlphaLudoV63(num_res_blocks=args.num_res_blocks,
+                                          num_channels=128, in_channels=27)
     model = model_factory()
-    print(f"[Train] Architecture: AlphaLudoV6.3 (128ch, 10res, 27in, {model.count_parameters():,} params)")
+    print(f"[Train] Architecture: AlphaLudoV6.3 (128ch, {args.num_res_blocks}res, 27in, {model.count_parameters():,} params)")
     model.to(device)
     
     # Initialize trainer

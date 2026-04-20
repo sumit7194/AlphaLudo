@@ -193,8 +193,8 @@ def main():
     device = torch.device(args.device if torch.backends.mps.is_available() else 'cpu')
     print(f"[Evaluator] Device: {device}")
     
-    # Load model — AlphaLudoV5
-    model = AlphaLudoV5(num_res_blocks=10, num_channels=128)
+    # Load model — AlphaLudoV5 (V6.1 = 24-channel strategic encoder)
+    model = AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24)
     model.to(device)
     
     if args.model:
