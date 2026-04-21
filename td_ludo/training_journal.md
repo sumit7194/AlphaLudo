@@ -1081,16 +1081,26 @@ Training curves were still climbing at epoch 3 when the cosine LR hit zero:
 
 By strict decision rule thresholds (GOOD: WR ≥ 55% AND Brier < 0.20 AND train acc ≥ 80%), this is BAD (WR < 35 AND train acc ≤ 65). But the cron's tiebreaker rule — "prefer MIXED over BAD when ambiguous; more SL is cheap, architecture changes aren't" — applies. The quality improvements between iter 1 and iter 2 are too clean to ignore.
 
-**Iteration 3 (in progress)**: 15 epochs on same 500K mixed-teacher data, on MPS.
-- Decision to try MPS for SL training: benchmarked at 344 ms/batch (vs ~2s CPU), cutting 15-epoch wall time from ~8h to ~82 min.
-- Dataset reused (`--skip-data`).
-- Cosine LR schedule will now span 15 × 957 = 14,355 steps, giving the model real training time at non-trivial LR.
-- Expected finish ~05:35 AM.
+**Iteration 3 (FAILED — MPS numerical instability)**: 15 epochs on same 500K mixed-teacher data, attempted on MPS. **Catastrophic NaN divergence on epoch 1.**
 
-If Iter 3 still shows < 50% WR or < 80% train policy acc, next moves in order:
-1. Try larger model (128ch or 10 blocks — pick whichever gets us to ~2M params)
-2. Generate 1M states (double the data)
-3. Longer schedule (30+ epochs with warmup)
+Training output:
+```
+E 1/15 [337s]  tr: pol=nan acc=30.2%  win=-1.17e26  mse=nan  |  val: pol_acc=28.5%  win_acc=48.8%  mae=nan
+E 2/15 [329s]  tr: pol=nan ...     (stays NaN for all 15 epochs)
+```
+
+Eval: WR 28%, Brier `nan`, `[0.8, 1.0)` bucket empty — the saved model produces garbage outputs. All 15 epochs × 329s = 82 min wasted.
+
+**Root cause**: PyTorch MPS has known numerical instability with `torch.log(small_value) + F.kl_div` under the LR=1e-3 + batch-512 regime. Gradient clip (`clip_grad_norm_(..., 1.0)`) can't save values that have already underflowed to NaN in the loss itself. Iter 2 ran the **same code + data + LR on CPU** without any NaN, so this is purely an MPS precision issue.
+
+Action taken: reverted `train_sl_v10.py` to prefer CPU over MPS (`# MPS disabled 2026-04-21 iter 3 ...`). Documented the failure mode inline for any future re-enablement (would need LR 1e-4 + explicit NaN detection + warm start from a CPU checkpoint).
+
+**Iteration 4 (in progress)**: same setup as intended for iter 3 — 15 epochs, 500K mixed-teacher data — but on CPU. Wall time ~8 hours (32 min/epoch × 15). Started 06:49 AM, expected finish ~14:49 PM.
+
+Decision logic if iter 4 completes:
+- If Iter 4 hits target (WR ≥ 55%, Brier < 0.20, train acc ≥ 80%) → build V10 RL infrastructure
+- If still < 50% WR / < 80% train acc after 15 epochs → architectural capacity problem; next move is **restore 128 channels** (keeps 6 blocks; params go 1.04M → ~1.8M). Skip the "more epochs" lever since we've already maxed it out.
+- If fundamentally broken (Brier > 0.22 or stuck at random) → rethink (add attention? go back to V6.3 layout?)
 
 ---
 

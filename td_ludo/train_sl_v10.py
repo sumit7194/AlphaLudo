@@ -91,11 +91,13 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    # Prefer MPS on Apple Silicon (6x faster than CPU for this model)
+    # CUDA > CPU. MPS disabled: 2026-04-21 iter 3 showed NaN divergence at
+    # LR=1e-3 on MPS (loss -> 1e26 on epoch 1) with same code+data that
+    # trained cleanly on CPU. PyTorch MPS has known instability with
+    # torch.log(small) + F.kl_div; not worth the ~6x speedup if it breaks.
+    # If re-enabling: drop LR to 1e-4, add NaN detection, start from CPU checkpoint.
     if torch.cuda.is_available():
         device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
     else:
         device = torch.device('cpu')
     print(f"[V10 Train] Device: {device}")
