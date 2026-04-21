@@ -1187,6 +1187,39 @@ Model is systematically underconfident because it plays well enough that most "u
 
 ---
 
+### Experiment 16: V10 RL (2026-04-22, IN PROGRESS)
+
+**Motivation**: V10 SL finished at V6.1 baseline parity (73.5% WR, 93.6% val pol acc). The SL win_prob head is calibrated (Brier 0.17) but systematically underconfident in the [0.4, 0.6) bucket (predicts 0.51, actually wins 0.72) because the strong policy puts the model in winning positions more often than it predicts. RL should tighten this by aligning value with actual on-policy performance.
+
+**Infrastructure built (2026-04-22 ~01:00, ~1500 LOC adapted from V6.3)**:
+
+| File | Source | V10 changes |
+|---|---|---|
+| `td_ludo/training/trainer_v10.py` | `trainer_v63.py` | win_prob as value via `value = 2p − 1`; drop aux_capture; add moves aux SmoothL1 (weight 0.003) |
+| `td_ludo/game/players/v10.py` | `v6_3.py` | `encode_state_v10()` (28ch, no consec_sixes); softmax the logits from `forward_policy_only` (V10 pattern); drop capture tracking |
+| `train_v10.py` | `train_v6_3.py` | `TD_LUDO_RUN_NAME="ac_v10"`; defaults 6×96×28; loads `model_sl.pt` for RL start |
+| `evaluate_v10.py` | `evaluate_v6_3.py` | V10 model/encoding; same dict output shape (drop-in for periodic eval) |
+
+**Algorithm = standard PPO** (per journal-backed decision):
+- Policy: clipped surrogate objective (unchanged)
+- Value: **win_prob as value head** — `value = 2*win_prob - 1 ∈ [-1, 1]`, SmoothL1 loss on normalized discounted returns. Exactly V6.3's proven pattern. win_prob will drift from calibrated P(win) during RL — accepted trade-off (Exp 9 proved γ=1 BCE is too noisy for Ludo).
+- Auxiliary: **moves_remaining** kept trained with 0.003-weighted SmoothL1 against per-step remaining own-turns (derived from trajectory length). Tiny weight prevents interference with policy; keeps head useful for dashboard/analysis.
+- γ=0.999, v2.2 shaped rewards, return normalization — all unchanged from V6.3 (proven recipe per Exp 11).
+
+**Smoke test** (5-game run): SL checkpoint loaded cleanly, 11 games buffered, 9 PPO updates ran without NaN, Elo updated 1500→1552, `model_latest.pt` saved. All infrastructure verified.
+
+**Training launched** (2026-04-22 01:13): fresh run from `checkpoints/ac_v10/model_sl.pt`, MPS, dashboard on port 8787. First 20 games: **WR 85%, Elo 1500→1644, GPM 66** (Mac MPS; V6.3 on T4 GPU ran ~130 GPM).
+
+Decision criteria:
+- **Success**: eval WR ≥ 75% sustained over multiple evals → breaks V10 SL's 73.5%
+- **Stretch**: eval WR ≥ 78.8% → breaks V6.1's all-time ceiling, justifies the V10 architecture
+- **Plateau**: 73-75% → same as SL + tiny RL lift, matches V6.3's pattern (+3.8pp)
+- **Regression**: < 70% → PPO unstable or loss balance wrong; investigate
+
+Monitoring on http://localhost:8787. First 500-game eval at game 2000 (~30 min on MPS).
+
+---
+
 **Iteration 4 COMPLETE** (2026-04-21 06:49 → 14:51, 8h 2min on CPU):
 
 | Metric | Target | Actual |
