@@ -1104,6 +1104,52 @@ Decision logic if iter 4 completes:
 
 ---
 
+**Iteration 4 COMPLETE** (2026-04-21 06:49 → 14:51, 8h 2min on CPU):
+
+| Metric | Target | Actual |
+|---|---|---|
+| Overall WR | ≥ 55% | **53.0%** (just under) |
+| Brier score | < 0.20 | **0.1905** ✓ |
+| Train policy acc | ≥ 80% | **77.2%** (just under) |
+| Val win acc | — | 67.5% |
+| Moves MAE | — | 10.5 |
+| vs Random | — | **90.6%** |
+
+Training curve across 15 epochs finally broke the 60% ceiling that stopped iter 1 & 2:
+
+| Epoch | Train pol acc | Val pol acc | Val win acc |
+|---|---|---|---|
+| 1-5 | 56.7 → 58.6 | 56.6 → 57.7 | 65.0 → 67.2 |
+| 6 | **63.2** ← breakthrough | **64.4** | 67.6 |
+| 7-10 | 66.8 → 74.7 | 65.1 → 74.2 | 65.2 → 67.4 |
+| 11-15 | 75.7 → 77.2 | 75.2 → 76.0 | 67.1 → 67.5 |
+
+Marginal gains shrank from epoch 10 onwards (train acc 74.7 → 77.2 over 5 epochs), suggesting SL has reached diminishing returns.
+
+**Calibration is the headline**:
+
+| Bucket | Iter 2 (3 epochs) | Iter 4 (15 epochs) |
+|---|---|---|
+| [0.0, 0.2) | 13.5% decisions, 0.10→0.04 | 7.4%, **0.09→0.06** |
+| [0.2, 0.4) | 22.3%, 0.32→0.17 (15pp off) | 13.8%, **0.32→0.27** (5pp off) |
+| [0.4, 0.6) | 48.7%, 0.50→0.40 (10pp off) | **52.7%, 0.51→0.48 (3pp off — near perfect)** |
+| [0.6, 0.8) | 11.8%, 0.67→0.67 | **25.3%, 0.68→0.74 (underconfident, good)** |
+| [0.8, 1.0) | 5.5%, 0.90→0.94 | **13.9%, 0.90→0.92** |
+
+Per-bot WR: Aggressive 50.0%, Defensive 43.6%, Expert 50.0%, Heuristic 33.3% (SE ~10pp, n=21), Racing 47.2%, Random 90.6%.
+
+**Verdict — the SL phase has done its job.** We set out to prove that joint training produces a calibrated win_prob head, unlike V6.3's failed frozen-backbone retrofit (which got stuck at 65.9% val acc and Brier ~0.23). Iter 4 delivers this:
+- 52.7% of decisions now land in the mid-range bucket with near-perfect calibration (0.51 predicted vs 0.48 actual)
+- 39.2% of decisions cross the 0.6 confidence threshold, up from 17.3% in iter 2
+- Both high-confidence buckets are underconfident (model says 0.90, actually wins 0.92) — the good kind of calibration error
+- 90.6% WR vs Random confirms the policy isn't broken; it's just undercooked against strategic bots
+
+53% WR vs strong bots isn't V6.3's 67-71% plateau, but V6.3 has 3× the params AND RL-tuning on top of SL. V10's SL-only 53% with calibrated heads is a *better foundation for RL* than V6.3 was (whose value head was uncalibrated — which is exactly why the 1-ply value search failed at 27.5%).
+
+**Next**: build V10 RL infrastructure and start PPO training from the iter 4 checkpoint.
+
+---
+
 ## Active Experiment Plan (post-V6.1 plateau)
 
 As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.
