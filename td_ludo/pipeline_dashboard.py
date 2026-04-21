@@ -129,6 +129,7 @@ function parseMetrics(log) {
 
 function detectStages(log) {
   const s = { smoke: 'pending', datagen: 'pending', sl: 'pending', eval: 'pending' };
+  // Full-pipeline markers (from run_v10_pipeline.sh)
   if (log.includes('Stage 0:')) s.smoke = 'active';
   if (log.includes('ALL CHANNELS VERIFIED')) s.smoke = 'done';
   if (log.includes('Stage 1:')) { s.smoke = 'done'; s.datagen = 'active'; }
@@ -138,6 +139,12 @@ function detectStages(log) {
   if (log.match(/V10 Train\] Done\./)) s.sl = 'done';
   if (log.includes('Stage 3:')) { s.sl = 'done'; s.eval = 'active'; }
   if (log.includes('V10 Pipeline complete')) s.eval = 'done';
+  // Direct-script markers (when running train_sl_v10.py or generate_sl_data_v10.py alone)
+  if (log.match(/V10 Data\] Teachers:/)) { s.smoke = 'done'; s.datagen = 'active'; }
+  if (log.match(/V10 Train\] Model:/)) {
+    // Model init line implies datagen already finished (data was loaded)
+    s.smoke = 'done'; s.datagen = 'done'; s.sl = 'active';
+  }
   if (log.match(/Traceback|Error:|exit code [1-9]/)) {
     for (const k of Object.keys(s)) if (s[k] === 'active') s[k] = 'failed';
   }
@@ -223,8 +230,20 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == '/status':
             log = self._latest_log()
             running = False
-            if log and os.path.exists(log):
-                # "running" = log has no "Pipeline complete" and was modified in last 10 min
+            # Any active Python training/datagen process is the ground truth —
+            # log mtime is unreliable (Python buffers epoch-level output ~30 min on CPU)
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ['pgrep', '-f', r'train_sl_v10\.py|generate_sl_data_v10\.py'],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    running = True
+            except Exception:
+                pass
+            # Fallback: recent log activity + no "Pipeline complete" marker
+            if not running and log and os.path.exists(log):
                 import time as T
                 try:
                     with open(log) as f:
