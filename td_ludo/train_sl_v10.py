@@ -92,6 +92,8 @@ def main():
                         help='Residual blocks (slim V10 default 6; V6.3-size 10)')
     parser.add_argument('--num-channels', type=int, default=96,
                         help='CNN channel width (slim V10 default 96; V6.3-size 128)')
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume from existing --output checkpoint (loads model+optimizer+scheduler+epoch)')
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
@@ -131,10 +133,27 @@ def main():
     )
 
     best_val = float('inf')
-    n_train = len(train_set)
-    print(f"\n[V10 Train] Starting {args.epochs} epochs (n_train={n_train:,})")
+    start_epoch = 0
+    if args.resume and os.path.exists(args.output):
+        print(f"[V10 Train] Resuming from {args.output}")
+        ckpt = torch.load(args.output, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        if 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        start_epoch = ckpt.get('epoch', 0)
+        best_val = ckpt.get('best_val', float('inf'))
+        print(f"[V10 Train] Resumed at epoch {start_epoch}/{args.epochs} "
+              f"(best_val={best_val:.4f})")
+    elif args.resume:
+        print(f"[V10 Train] --resume set but {args.output} not found; starting fresh")
 
-    for epoch in range(args.epochs):
+    n_train = len(train_set)
+    print(f"\n[V10 Train] Starting epoch {start_epoch+1}/{args.epochs} "
+          f"(n_train={n_train:,})")
+
+    for epoch in range(start_epoch, args.epochs):
         # Train
         model.train()
         tr_pol = tr_win = tr_moves = 0.0
@@ -235,7 +254,10 @@ def main():
 
         save = {
             'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'epoch': epoch + 1,
+            'best_val': best_val,
             'val_pol_acc': v_pol_acc,
             'val_win_acc': v_win_acc,
             'val_moves_mae': v_mae,
