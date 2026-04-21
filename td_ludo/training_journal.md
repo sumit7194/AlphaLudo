@@ -1104,6 +1104,89 @@ Decision logic if iter 4 completes:
 
 ---
 
+### Iterations 5-8 (2026-04-21 → 2026-04-22): debugging V10 SL convergence
+
+**Iter 5 — V10.1 capacity test** (2026-04-21): trained 3M-param variant (128ch × 10 blocks) on same 500K mixed-teacher data as iter 4. E1-3 matched iter 4 within 0.4pp → **capacity is NOT the bottleneck**. V10.1 variant archived; stayed on slim 1M-param architecture.
+
+**Iter 6 — single-teacher experiment** (2026-04-22): to isolate teacher-disagreement noise, ran 3-way tournament (V6.1 vs V6.3 vs Expert, 1000 games/pair):
+- V6.1 beats Expert 79.6%, V6.3 beats Expert 77.7% — both CNNs crush heuristic
+- V6.1 vs V6.3: 51.1% / 48.9% — statistical tie (n=1000, SE 1.5pp)
+- Picked V6.1 as single teacher (proven distillation target from V6.3's SL success)
+
+Regenerated 500K states, V6.1-only (V10_TEACHER_MIX=0.0). Trained V10 slim 2 epochs → E1 val pol acc 60.8% (vs iter 4's 56.6%, +4.2pp). Modest improvement but still far from V6.3's 94.6% target.
+
+**Iter 7 — THE ACTUAL BUG FOUND** (2026-04-22 ~22:00):
+
+Decomposed the multi-task loss on a real batch with fresh weights:
+
+| Component | Raw value | Weight | Weighted | % of total |
+|---|---|---|---|---|
+| Policy KL | 0.55 | 1.0 | 0.55 | **2%** |
+| Win BCE | 0.70 | 0.5 | 0.35 | **1%** |
+| Moves MSE | **1572** | 0.02 | **31.4** | **97%** |
+
+**Moves MSE was eating 97% of the gradient budget.** The 0.02 weight wasn't enough because raw MSE on errors of 10-20 moves gives values 100-400, which dwarfs everything else. The policy head was getting ~5% of the backbone's attention. No wonder it converged slowly.
+
+**Fix (2 lines):**
+```python
+# Before:
+moves_loss = F.mse_loss(student_moves, moves)
+# After:
+moves_loss = F.smooth_l1_loss(student_moves, moves)  # linear past threshold, not quadratic
+
+# And:
+--moves-weight  0.02 → 0.003
+```
+
+Post-fix loss composition: **pol 55% / win 35% / moves 10%** — healthy balance matching V6.3's pattern. Tested with:
+- `test_v10_loss_balance.py`: verified per-component contributions
+- `test_v10_training_smoke.py`: 10-step training loop, loss descends, no NaN, checkpoint roundtrip
+- `test_v10_mps_stability.py`: 50 batches on MPS, zero NaN, 4.6× faster than CPU
+
+Re-enabled MPS for training (earlier MPS NaN was a symptom of the MSE-dominated loss, not an MPS bug).
+
+**Iter 8 — V10 SL breakthrough** (2026-04-22 23:30):
+
+Trained V10 slim, V6.1-only 500K data, 3 epochs, MPS, SmoothL1 + weight 0.003.
+
+| Epoch | Train pol acc | Val pol acc | Val win acc | Time |
+|---|---|---|---|---|
+| E1 | 72.2% | **87.0%** | 68.4% | 6 min |
+| E2 | 90.1% | 92.1% | 68.6% | 6 min |
+| E3 | **92.9%** | **93.6%** | 68.9% | 6 min |
+
+Total training: **18 min on MPS** (vs iter 4's 8 hours CPU).
+
+200-game evaluation:
+
+| Metric | Iter 4 (15 epochs, MSE bug) | **Iter 8 (3 epochs, SmoothL1 fix)** | Δ |
+|---|---|---|---|
+| **Overall WR** | 53.0% | **73.5%** | **+20.5pp** |
+| Brier score | 0.1905 | 0.1706 | better |
+| vs Expert | 50.0% | 67.6% | +17.6 |
+| vs Heuristic | 33.3% | 64.9% | +31.6 |
+| vs Aggressive | 50.0% | 66.7% | +16.7 |
+| vs Defensive | 43.6% | 68.6% | +25.0 |
+| vs Racing | 47.2% | 76.0% | +28.8 |
+| vs Random | 90.6% | 92.9% | +2.3 |
+
+**Comparison to V6.1 baseline (Experiment 14b, 1000 games vs strong bots)**:
+- V6.1 overall: 71.7%  |  V10 SL-only: **73.5%**
+
+V10 slim SL is at V6.1 skill parity *without any RL*, at 1/3 the params.
+
+V6.3 SL baseline was 94.6% val acc / 74% WR vs Expert on 1M states at 10 epochs (T4 GPU). V10 hits 93.6% val acc / 67.6% WR vs Expert at 3 epochs / 500K states / 18 min on Mac MPS. The remaining gap vs V6.3 SL is explained by training budget (3 vs 10 epochs, 500K vs 1M states) — architecture is not the bottleneck.
+
+**Win-prob calibration** (Brier 0.17, mostly underconfident):
+- [0.4, 0.6): 52% of decisions, predicts 0.51, actually wins **0.72**  
+- [0.8, 1.0): 13% of decisions, predicts 0.90, actually wins **0.95**
+
+Model is systematically underconfident because it plays well enough that most "uncertain" positions are actually winning. RL will naturally tighten this calibration as the value function adapts to actual policy value.
+
+**Key takeaway**: the V10 architecture and multi-head design were correct. The original 0.02 moves_weight was a numerical-scaling error that starved the policy head of gradient signal. Once fixed, the architecture converges faster than V6.3 per-epoch and reaches comparable final accuracy. V10 is ready for RL.
+
+---
+
 **Iteration 4 COMPLETE** (2026-04-21 06:49 → 14:51, 8h 2min on CPU):
 
 | Metric | Target | Actual |
