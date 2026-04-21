@@ -88,6 +88,10 @@ def main():
     parser.add_argument('--win-weight', type=float, default=0.5)
     parser.add_argument('--moves-weight', type=float, default=0.02,
                         help='Smaller because mse scale is ~30x bigger')
+    parser.add_argument('--num-res-blocks', type=int, default=6,
+                        help='Residual blocks (slim V10 default 6; V6.3-size 10)')
+    parser.add_argument('--num-channels', type=int, default=96,
+                        help='CNN channel width (slim V10 default 96; V6.3-size 128)')
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
@@ -115,8 +119,11 @@ def main():
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False,
                             num_workers=0, pin_memory=True)
 
-    model = AlphaLudoV10(num_res_blocks=6, num_channels=96, in_channels=28).to(device)
-    print(f"[V10 Train] Model: {model.count_parameters():,} params")
+    model = AlphaLudoV10(num_res_blocks=args.num_res_blocks,
+                          num_channels=args.num_channels,
+                          in_channels=28).to(device)
+    print(f"[V10 Train] Model: {model.count_parameters():,} params "
+          f"({args.num_res_blocks} blocks × {args.num_channels}ch × 28in)")
 
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -232,7 +239,9 @@ def main():
             'val_pol_acc': v_pol_acc,
             'val_win_acc': v_win_acc,
             'val_moves_mae': v_mae,
-            'arch': {'num_res_blocks': 6, 'num_channels': 96, 'in_channels': 28},
+            'arch': {'num_res_blocks': args.num_res_blocks,
+                     'num_channels': args.num_channels,
+                     'in_channels': 28},
         }
         torch.save(save, args.output)
 
