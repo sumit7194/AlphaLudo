@@ -86,8 +86,9 @@ def main():
     parser.add_argument('--max-states', type=int, default=250000)
     parser.add_argument('--policy-weight', type=float, default=1.0)
     parser.add_argument('--win-weight', type=float, default=0.5)
-    parser.add_argument('--moves-weight', type=float, default=0.02,
-                        help='Smaller because mse scale is ~30x bigger')
+    parser.add_argument('--moves-weight', type=float, default=0.003,
+                        help='SmoothL1 moves loss is raw O(10-30). At 0.003, '
+                             'weighted contribution is ~0.1 — comparable to policy KL.')
     parser.add_argument('--num-res-blocks', type=int, default=6,
                         help='Residual blocks (slim V10 default 6; V6.3-size 10)')
     parser.add_argument('--num-channels', type=int, default=96,
@@ -177,8 +178,12 @@ def main():
             # Win: BCE (student_win is already sigmoid)
             win_loss = F.binary_cross_entropy(student_win.clamp(1e-6, 1-1e-6), won)
 
-            # Moves: MSE
-            moves_loss = F.mse_loss(student_moves, moves)
+            # Moves: SmoothL1 (Huber @ beta=1). MSE was gradient-dominating
+            # the multi-task loss because raw errors of 10-20 moves → MSE 100-400
+            # crushed the policy KL at 0.4. SmoothL1 grows linearly past threshold
+            # so an error of 10 contributes ~10 (not 100). Matches the pattern
+            # V6.3 used for its value head.
+            moves_loss = F.smooth_l1_loss(student_moves, moves)
 
             total = (args.policy_weight * pol_loss
                      + args.win_weight * win_loss
@@ -214,7 +219,7 @@ def main():
                 log_student = torch.log(sp + 1e-8)
                 pl = F.kl_div(log_student, policies, reduction='batchmean').item()
                 wl = F.binary_cross_entropy(sw.clamp(1e-6, 1-1e-6), won).item()
-                ml = F.mse_loss(sm, moves).item()
+                ml = F.smooth_l1_loss(sm, moves).item()  # matches training loss
                 batch_n = states.size(0)
                 vp += pl * batch_n
                 vw += wl * batch_n
