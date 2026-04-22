@@ -290,6 +290,10 @@ def main():
     parser.add_argument('--entropy-coeff', type=float, default=-1.0,
                         help='Override entropy_coeff (default: use config value). '
                              'Higher = more exploration. Try 0.01 for plateau break.')
+    parser.add_argument('--reset-lr', action='store_true',
+                        help='Force optimizer LR back to config LEARNING_RATE after '
+                             'checkpoint load. Useful to restart annealing cycle '
+                             'after a prior anneal decayed LR to its minimum.')
     args = parser.parse_args()
     
     # Handle fresh start (purge run directory)
@@ -365,10 +369,11 @@ def main():
     # Fix: always reset lr to config value after any checkpoint load,
     # unless --anneal-lr is set (annealing will set its own starting lr).
     for g in trainer.optimizer.param_groups:
-        if g['lr'] <= 0:
-            print(f"[Train] Checkpoint had lr={g['lr']}. Resetting to config "
-                  f"LEARNING_RATE={LEARNING_RATE}")
+        if g['lr'] <= 0 or args.reset_lr:
+            old_lr = g['lr']
             g['lr'] = LEARNING_RATE
+            reason = "--reset-lr flag" if args.reset_lr else "was <= 0"
+            print(f"[Train] Reset optimizer LR {old_lr:.1e} → {LEARNING_RATE:.1e} ({reason})")
             
     if args.compile:
         print("[Train] Attempting to torch.compile() model for fused MPS execution...")
