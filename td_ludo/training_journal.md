@@ -1220,6 +1220,45 @@ Monitoring on http://localhost:8787. First 500-game eval at game 2000 (~30 min o
 
 ---
 
+### Experiment 16b: LR=0 BUG — entire V10 RL (and likely V6.3 RL) was broken (2026-04-22 20:25)
+
+**Discovery**: the overnight V10 RL run (161K games, 80 evals, "peak" 76.8%) was training at **lr=0 the entire time**. No actual learning happened. All variance was 500-game eval noise on frozen SL weights.
+
+**Root cause chain**:
+1. `train_sl_v10.py` uses `CosineAnnealingLR(T_max=epochs*batches_per_epoch)` which decays LR to exactly 0 at end of final epoch
+2. SL checkpoint (`model_sl.pt`) saves the optimizer state with `lr=0.0`
+3. `train_v10.py --fresh` path calls `trainer.load_checkpoint(sl_path)`
+4. Base trainer's `load_checkpoint()` calls `self.optimizer.load_state_dict(...)` which **overrides** the constructor's `lr=LEARNING_RATE` with the saved `lr=0`
+5. All subsequent PPO `optimizer.step()` calls use `lr=0` → `param -= 0 * grad` → no-op
+
+**How we caught it**: while setting up annealing, noticed log printed "LR annealing: 0.0e+00 → 1.0e-07" instead of "1.0e-05 → 1.0e-07". Traced back to checkpoint optimizer state.
+
+**Confirmation**:
+```
+checkpoints/ac_v10/model_sl.pt:     lr=0.0  (SL cosine anneal end)
+checkpoints/ac_v10/model_latest.pt: lr=0.0  (inherited through RL)
+```
+
+Journal cross-check: V6.3 RL showed "first 10 evals avg 73.9% (matches SL baseline 74.0%), last 10 evals avg 74.6%". Over 156K RL games, +0.7pp mean improvement — **the exact signature of no actual learning** (just eval variance bouncing around SL weights). Strong possibility V6.3's RL was also broken this way. The 77-79% ceiling across 4 architectures may be partly an artifact of this bug rather than a real game ceiling.
+
+**Fix** (commit `855f246`): after any `trainer.load_checkpoint()`, iterate `optimizer.param_groups` and reset any `lr <= 0` to `LEARNING_RATE`. Added inline comment documenting the failure mode.
+
+**Relaunched V10 RL** (2026-04-22 20:28, PID 73198):
+- Resume from `model_latest.pt` (which has same weights as SL — no training happened during the broken RL)
+- LR reset confirmed: `"Checkpoint had lr=0.0. Resetting to config LEARNING_RATE=1e-05"`
+- Plus annealing enabled: cosine decay `1e-5 → 1e-7` over 20K games
+- Plus entropy boost: `0.005 → 0.01` for plateau-breaking exploration
+
+This is the **first real V10 RL training**. Early data will show whether RL on a proper foundation actually breaks V10's 73.5% SL baseline, or if 77-79% really is the game's ceiling.
+
+**Implications**:
+- V10 SL's 73.5% WR is the true current-model baseline
+- V6.3 RL results should be re-examined; the +3.8pp "RL lift" may not be real
+- V6 / V6.1 RL may also be affected (need to check their SL→RL optimizer continuity)
+- This bug pattern is unfortunately common in "SL-warmstart then RL" pipelines with cosine annealing. Worth checking in V7 plans too.
+
+---
+
 **Iteration 4 COMPLETE** (2026-04-21 06:49 → 14:51, 8h 2min on CPU):
 
 | Metric | Target | Actual |
