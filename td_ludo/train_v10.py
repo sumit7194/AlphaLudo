@@ -281,6 +281,15 @@ def main():
                         help='Residual blocks (V10 slim default 6)')
     parser.add_argument('--num-channels', type=int, default=96,
                         help='CNN channel width (V10 slim default 96)')
+    # LR annealing: cosine decay LR from current to --anneal-lr over --anneal-games
+    parser.add_argument('--anneal-lr', type=float, default=0.0,
+                        help='If >0, cosine-anneal learning rate to this value '
+                             '(e.g. 1e-7). Applied from resume checkpoint.')
+    parser.add_argument('--anneal-games', type=int, default=20000,
+                        help='Games over which to anneal LR (default 20K).')
+    parser.add_argument('--entropy-coeff', type=float, default=-1.0,
+                        help='Override entropy_coeff (default: use config value). '
+                             'Higher = more exploration. Try 0.01 for plateau break.')
     args = parser.parse_args()
     
     # Handle fresh start (purge run directory)
@@ -339,7 +348,7 @@ def main():
         sl_path = os.path.join(CHECKPOINT_DIR, 'model_sl.pt')
         if os.path.exists(sl_path):
             trainer.load_checkpoint(sl_path)
-            # trainer.load_checkpoint automatically zeroes the counters if it's a raw state dict, 
+            # trainer.load_checkpoint automatically zeroes the counters if it's a raw state dict,
             # but we explicitly zero them here just to be safe so the training loop restarts correctly.
             trainer.total_games = 0
             trainer.total_updates = 0
@@ -347,6 +356,19 @@ def main():
             print(f"[Train] Picked up SL baseline weights ({sl_path}) for the fresh RL run.")
         else:
             print("[Train] No SL base model found. Starting with completely random weights.")
+
+    # CRITICAL BUG FIX (2026-04-22): SL and past RL checkpoints saved their
+    # optimizer with lr=0 (SL's cosine schedule annealed to 0 at end of
+    # training; RL inherited that and kept it). `optimizer.load_state_dict`
+    # then overrides the constructor's lr=LEARNING_RATE. Result: entire
+    # V10 RL run was at lr=0, no actual learning. Likely affected V6.3 too.
+    # Fix: always reset lr to config value after any checkpoint load,
+    # unless --anneal-lr is set (annealing will set its own starting lr).
+    for g in trainer.optimizer.param_groups:
+        if g['lr'] <= 0:
+            print(f"[Train] Checkpoint had lr={g['lr']}. Resetting to config "
+                  f"LEARNING_RATE={LEARNING_RATE}")
+            g['lr'] = LEARNING_RATE
             
     if args.compile:
         print("[Train] Attempting to torch.compile() model for fused MPS execution...")
@@ -393,6 +415,23 @@ def main():
     eval_drops = 0  # Early stopping: count consecutive eval drops
     games_at_start = trainer.total_games
     trainer.play_alarm = args.alarm
+
+    # LR annealing: cosine decay from current LR to args.anneal_lr over args.anneal_games
+    # Active only if --anneal-lr is set. Baseline LR read at session start.
+    lr_anneal_active = args.anneal_lr > 0
+    if lr_anneal_active:
+        import math
+        lr_start = trainer.optimizer.param_groups[0]['lr']
+        lr_end = args.anneal_lr
+        anneal_games = args.anneal_games
+        print(f"[Train] LR annealing: {lr_start:.1e} → {lr_end:.1e} "
+              f"(cosine over {anneal_games:,} games)")
+
+    # Entropy override (bump exploration to help escape plateau)
+    if args.entropy_coeff >= 0:
+        old_ent = trainer.entropy_coeff
+        trainer.entropy_coeff = args.entropy_coeff
+        print(f"[Train] Entropy coefficient: {old_ent} → {args.entropy_coeff}")
     
     print(f"\n{'='*60}")
     print(f"  TD-Ludo Actor-Critic Training — {MODE} Mode")
@@ -426,6 +465,14 @@ def main():
             if SECOND_CTRL_C:
                 break
             
+            # ---- LR annealing update (recomputed each batch; cheap) ----
+            if lr_anneal_active:
+                progress = min(1.0, session_games / max(1, anneal_games))
+                factor = 0.5 * (1.0 + math.cos(math.pi * progress))  # 1.0 → 0.0
+                current_lr = lr_end + (lr_start - lr_end) * factor
+                for g in trainer.optimizer.param_groups:
+                    g['lr'] = current_lr
+
             # ---- Play one batch step ----
             results = player.play_step(train=True)
             
