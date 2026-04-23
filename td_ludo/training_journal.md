@@ -1220,6 +1220,147 @@ Monitoring on http://localhost:8787. First 500-game eval at game 2000 (~30 min o
 
 ---
 
+### Experiment 17: Multi-step planning investigation — building Order 1 expectimax eval (2026-04-23)
+
+After V10 RL finished at ~77% WR plateau, we planned 3 ordered experiments to attack the reactive-CNN ceiling (see `PLAN_v10_multistep.md`). Implementing Order 1 (2-ply expectimax at inference), we discovered a **major bug in the value head** that changes the story.
+
+**The bug**: while testing the expectimax eval script (`evaluate_v10_expectimax.py`), correctness tests failed on the "obvious winning state" sanity check. Systematic probing across P0 scoring progression revealed:
+
+```
+P0 positions           SL checkpoint    RL latest (297K)    RL best (241K)
+[5,5,5,5], 0 scored    0.468            0.843               0.854
+[99,5,5,5], 1 scored   0.529            0.608               0.625
+[99,99,5,5], 2 scored  0.587            0.401               0.423
+[99,99,99,5], 3 scored 0.828            0.224               0.241
+[99,99,99,99], 4 won   0.973            0.109               0.122
+```
+
+**SL is monotonically calibrated. RL has fully INVERTED it.** Both `model_latest.pt` (game 297K) and `model_best.pt` (game 241K) show the same inversion.
+
+**Verification of training data integrity**: bucketed chunk_0000 samples by ch26 (non_home_frac) value and checked won-label correlation:
+- ch26 ∈ [0.25, 0.5) (few tokens remaining): win_rate 0.887 ✓
+- ch26 ∈ [0.5, 0.75): win_rate 0.812 ✓
+- ch26 ∈ [0.75, 1.0) (many tokens remaining, early game): win_rate 0.495 ✓
+
+Training data labels are correct and correctly correlated with ch26 (the top-KL input per mech interp). **The bug is RL training specifically, not the data pipeline.**
+
+**Root cause — precise explanation**:
+
+Inspected the saved running stats in `model_latest.pt`:
+```
+return_running_mean = 3.05
+return_running_std  = 2.08
+```
+
+These reflect **shaped rewards** accumulating over each game: forward/score/capture/etc. produce raw returns in ~[1, 7] range, not the ±1 terminal-only returns I mentally modeled.
+
+V10's architecture tries to use ONE head for TWO incompatible objectives:
+1. SL trains `win_prob = P(win | s)` via `BCE(win_prob, binary_outcome)` — a probability
+2. RL trains `value = 2*win_prob - 1` via `SmoothL1(value, normalized_discounted_return)` — an expected-return scalar
+
+These are **different functions when rewards are shaped**.
+
+Worked example — P0 state with 3 scored tokens (about to win):
+- P(P0 wins) = ~0.97 (near certainty)
+- Remaining discounted return from this state = ~1.5 (game almost over, few rewards left)
+- Normalized: (1.5 − 3.05) / 2.08 = **−0.75** (below-average remaining return)
+- RL target: value = −0.75 → `win_prob = (−0.75 + 1) / 2 = 0.125`
+- SL target: win_prob = 0.97
+
+RL had 297K games of data vs SL's 140K states. **Over 300K PPO updates, RL pulled win_prob from 0.97 → 0.22 on near-win states.** The SL calibration was overwritten.
+
+**The real mechanism**: shaped rewards make "remaining return" anticorrelated with P(win) in end-game states (few rewards left to collect ≠ likely to win). The `2*win_prob − 1` rescale was designed assuming ±1 terminal-only returns — it fails when returns are scaled and shifted by dense rewards.
+
+**Consequences**:
+1. **V10's "+3pp RL lift" is misleading** — policy head improved slightly but value head was actively corrupted. The apparent +3pp peak was from policy refinement despite the value-head damage, not because of it.
+2. **Order 1 (expectimax) must use SL checkpoint** (`model_sl.pt`) to have any chance. RL checkpoints would guarantee the search picks losing states.
+3. **Every other "SL → RL" pipeline in this codebase may have the same latent bug** — worth checking V6.1, V6.3 (though they used a different value-head design without BCE-SL origin).
+4. **The journal's 77-79% ceiling hypothesis is partially an artifact of broken value heads in the RL'd models.** If the value head had stayed calibrated, RL gains might have been larger (or expectimax at inference might have broken the plateau earlier).
+
+**Proposed fix for future V10 RL runs**:
+
+Option A (minimal): Preserve BCE-on-outcome during RL. Add a small BCE loss term:
+```python
+won_target = (z_raw > 0).float()  # binary win indicator per trajectory
+win_bce_loss = F.binary_cross_entropy(win_prob, won_target)
+total = policy_loss + value_coeff * value_loss + bce_coeff * win_bce_loss + ...
+```
+with `bce_coeff ~ 0.1`. The BCE term anchors calibration while the SmoothL1 term provides on-policy value refinement.
+
+Option B (cleaner): Drop the SmoothL1 value loss entirely. Use only BCE on outcome (win/loss). Value head stays calibrated, but PPO advantage computation is noisier (normalized returns ≠ 2*P(win)-1 exactly).
+
+Option C (architectural): Add a SEPARATE value head that's untethered from win_prob. Train value via SmoothL1 as in V6.3, keep win_prob BCE-only. Two heads, two objectives. Used for different purposes.
+
+**Current experiment continues on SL checkpoint** — expectimax eval + test script ready. If Order 1 shows ≥ +3pp on SL checkpoint, we know the fundamental idea works. Then Order 2 (distillation from expectimax) can retrain a clean V11 with proper value calibration from the start.
+
+Commits: `ec90e22` (eval + tests), `0ef60ea` (plan doc).
+
+---
+
+### Experiment 17b: expectimax smoke test + "value-driven search is fundamentally hard on Ludo" (2026-04-23)
+
+Ran 50-game smoke on `model_sl.pt` (calibrated) across d0/d1/d2:
+
+| Depth | WR (50 games) | Latency | Throughput |
+|---|---|---|---|
+| d0 (greedy) | **76.0%** | ~0.5 ms | 337 gpm |
+| d1 (1-ply + chance) | 64.0% | ~32 ms | 112 gpm |
+| d2 (2-ply expectimax) | 66.0% | ~94 ms | 56 gpm |
+
+**Search HURT by 10-12pp.** Diagnostic probes revealed:
+- State with dice=1 + token at pos 55 (scoring move available): d0 picks scoring move, d1+d2 pick non-scoring because value head rates "bonus-turn after score" LOWER than "pass turn to opp." V10 SL's value head doesn't correctly encode bonus-turn upside.
+- State with dice=4 + capture available: both resulting states return identical raw win_prob (0.482) — value head can't distinguish capture from non-capture move at single-state evaluation.
+
+**This is the 4th failed search attempt across 4 architectures.** Journal cross-reference:
+| Attempt | Architecture | Value head | Search outcome |
+|---|---|---|---|
+| Exp 9 MCTS training | V5 | terminal z | 34.7% vs baseline |
+| Exp 13c inference MCTS | V6.1 | unbounded | 70 → 48% (−22pp) |
+| V6.3 1-ply value search | V6.3 | SmoothL1 norm returns | 27.5% vs 67.5% |
+| **V10 expectimax** | V10 | BCE-trained win_prob | 76 → 64% (−12pp) |
+
+**Structural reason**: Ludo's dice branching factor (6) creates O(6^depth) noise in any state evaluation. Signal between two nearby actions is ~0.05 in P(win); noise from dice randomness in the value estimate is ~0.2. **SNR ~0.25** — search amplifies noise. Mech interp confirms: V10 linear probe on `eventual_win` caps at 71.5% balanced accuracy, so even a perfect-capacity value head can only recover ~71% of who's winning from this CNN's features. Two actions within 0.05 of each other in P(win) are lost in that noise floor.
+
+**Conclusion**: value-driven search is NOT a viable path forward for this model family on Ludo. Order 1 abandoned.
+
+Pivot: **Order 2a (the real "V10.2")** — fix the RL training pipeline so the value head actually learns to be useful, even if not for MCTS. The goal becomes: is V10's architecture genuinely better than V6.3 when we train it cleanly?
+
+---
+
+### Experiment 18: V10.2 — fix the RL training pipeline (2026-04-23)
+
+**Two changes** to address the V10_RL_VALUE_INVERSION bug:
+
+1. **BCE loss instead of SmoothL1 on win_prob during RL** (`trainer_v10.py`)
+   - Keep win_prob as a calibrated probability throughout RL (same objective as SL)
+   - Drop the value-loss feedback from win_prob — only BCE can modify it
+   - Use `win_prob.detach()` for PPO advantage baseline (gradient flows are clean)
+   - Default `win_bce_coeff = 0.5` (matches SL's loss weight)
+
+2. **Sparse rewards instead of v2.2 dense shaping** (`players/v10.py`, `compute_sparse_reward`)
+   - Score events only (+0.40 per token scored) + terminal z (±1)
+   - Per-game return range: [0, +2.6] — tight, close to terminal-only semantics
+   - Removes the dense-reward source of "remaining return" variance that made
+     V10's old value loss anticorrelate with P(win) in end-game
+   - Credit assignment preserved because SL already taught the policy good tactics
+
+**Justification (from the user)**: V6.1 and V6.3 never had a separate BCE-calibrated head before — they were always SmoothL1 on returns. V10 introduced the calibrated head in SL and then corrupted it in RL. Fixing this in-place costs ~15 lines and one smoke test. Architecture remains V10 exactly.
+
+**Not V11**: naming matters — architecture unchanged (6 blocks × 96 channels × 28 input × 3 heads, 1.04M params). This is a training-recipe fix, so V10.2.
+
+**Test infrastructure**:
+- `check_v10_calibration.py`: feeds 5 probe states spanning P0 scoring progression. Calibrated → monotone increasing win_prob. Any non-monotone pattern → fix is broken.
+- Before commit: verified SL monotone ↑ (0.47→0.97), latest inverted ↓ (0.84→0.11).
+
+**Launch plan**:
+- Smoke test: 500 games `--fresh` from `model_sl.pt`, verify calibration still monotone via `check_v10_calibration.py`
+- If smoke passes: full RL without time/games limit. User monitors via dashboard on :8787.
+- Expected: more lift than broken V10 got (+3.5pp) because backbone isn't being pulled by conflicting losses.
+
+Commit: `6844b7c`.
+
+---
+
 ### Experiment 16b: LR=0 BUG — entire V10 RL (and likely V6.3 RL) was broken (2026-04-22 20:25)
 
 **Discovery**: the overnight V10 RL run (161K games, 80 evals, "peak" 76.8%) was training at **lr=0 the entire time**. No actual learning happened. All variance was 500-game eval noise on frozen SL weights.
