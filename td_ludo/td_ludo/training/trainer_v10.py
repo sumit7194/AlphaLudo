@@ -173,7 +173,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         with torch.no_grad():
             # V10 model returns (policy, win_prob, moves_remaining)
             fwd_result = self.model(all_states, all_masks)
-            win_prob = fwd_result[1].squeeze(-1)
+            win_prob = fwd_result[1].view(-1)  # robust to batch_size=1 (.squeeze bug)
             all_values = 2.0 * win_prob - 1.0  # [0,1] → [-1,1]
             all_advantages = all_returns - all_values
             adv_mean = all_advantages.mean()
@@ -199,8 +199,12 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
                 # V10: forward returns (policy, win_prob, moves_remaining)
                 policy, win_prob, moves_pred = self.model(mb_states, mb_masks)
-                win_prob = win_prob.squeeze(-1)
-                moves_pred = moves_pred.squeeze(-1)
+                # Model already squeezes last dim. Use .view(-1) to guarantee
+                # 1D shape even when batch size is 1 (.squeeze(-1) on [1]
+                # collapses to 0-dim scalar, which breaks F.binary_cross_entropy
+                # when target is still shape [1]).
+                win_prob = win_prob.view(-1)
+                moves_pred = moves_pred.view(-1)
                 # V10.2: NO `value = 2*win_prob - 1` here — win_prob is for
                 # BCE calibration only. Advantage was already precomputed from
                 # detached win_prob outside the minibatch loop.
