@@ -23,15 +23,31 @@ from td_ludo.training.trainer import ActorCriticTrainer
 
 
 class ActorCriticTrainerV10(ActorCriticTrainer):
-    """V10 trainer: PPO with win_prob-as-value + moves_remaining aux loss."""
+    """V10.2 trainer: PPO with BCE-trained win_prob head (calibration preserved).
+
+    Changes vs original V10 trainer:
+    - Drop SmoothL1 value loss entirely. The `2*win_prob-1` rescale was
+      pulling win_prob to match normalized returns — which inverted the SL
+      calibration because shaped returns are anticorrelated with P(win) in
+      end-game states.
+    - Add BCE loss on win_prob with binary outcome target (same as SL).
+      This keeps win_prob as a true probability of winning throughout RL.
+    - Use win_prob as value baseline with `.detach()` so gradient only flows
+      through BCE — policy loss sees a stable baseline without interfering
+      with calibration.
+    - Reward shaping is sparse (score events only, +0.40 each) via
+      players/v10.py's compute_sparse_reward. Keeps per-game return in a
+      narrow range so the baseline remains useful.
+    """
 
     def __init__(self, model, device, learning_rate=1e-5,
-                 moves_aux_coeff=0.003, **kwargs):
+                 moves_aux_coeff=0.003, win_bce_coeff=0.5, **kwargs):
         super().__init__(model, device, learning_rate=learning_rate, **kwargs)
         self.moves_aux_coeff = moves_aux_coeff
+        self.win_bce_coeff = win_bce_coeff
 
     def train_on_game(self, trajectories, winner, model_player):
-        """Buffer trajectory steps with own_moves_remaining aux target."""
+        """Buffer trajectory steps with own_moves_remaining + binary won target."""
         if winner == -1:
             return {}
 
@@ -43,8 +59,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         # Outcome from model's perspective
         loss_penalty = -1.0 / max(1, (NUM_ACTIVE_PLAYERS - 1))
         z = 1.0 if model_player == winner else loss_penalty
+        won_target = 1.0 if model_player == winner else 0.0  # for BCE
 
-        # Discounted returns (identical to base trainer / V6.3)
+        # Discounted returns (same as before)
         gamma = 0.999
         discounted_returns = []
         R = 0.0
@@ -58,11 +75,10 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             R = r_t + gamma * R
             discounted_returns.insert(0, R)
 
-        # V10: compute own_moves_remaining for each trajectory step.
-        # Total own moves = len(trajectory). own_moves_remaining[i] = total - (i+1).
+        # Own moves remaining for each step
         total_own_moves = len(trajectory)
 
-        # Buffer each step
+        # Buffer each step — ADDED: won_target (0/1)
         for i, step in enumerate(trajectory):
             own_moves_remaining = float(total_own_moves - (i + 1))
             self._ppo_buffer.append({
@@ -73,6 +89,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 'temperature': step.get('temperature', 1.0),
                 'z': discounted_returns[i],
                 'moves_remaining_target': own_moves_remaining,
+                'won_target': won_target,
             })
         self._ppo_games_buffered += 1
 
@@ -120,6 +137,12 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         # V10: own_moves_remaining targets for auxiliary loss
         all_moves_targets = torch.tensor(
             [s['moves_remaining_target'] for s in self._ppo_buffer],
+            dtype=torch.float32, device=self.device
+        )
+
+        # V10.2: binary won targets for BCE loss on win_prob (calibration)
+        all_won_targets = torch.tensor(
+            [s['won_target'] for s in self._ppo_buffer],
             dtype=torch.float32, device=self.device
         )
 
@@ -172,12 +195,15 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 mb_returns = all_returns[mb_idx]
                 mb_advantages = all_advantages[mb_idx]
                 mb_moves_targets = all_moves_targets[mb_idx]
+                mb_won_targets = all_won_targets[mb_idx]
 
                 # V10: forward returns (policy, win_prob, moves_remaining)
                 policy, win_prob, moves_pred = self.model(mb_states, mb_masks)
                 win_prob = win_prob.squeeze(-1)
                 moves_pred = moves_pred.squeeze(-1)
-                value = 2.0 * win_prob - 1.0  # [-1, 1] for PPO
+                # V10.2: NO `value = 2*win_prob - 1` here — win_prob is for
+                # BCE calibration only. Advantage was already precomputed from
+                # detached win_prob outside the minibatch loop.
 
                 advantage = mb_advantages
 
@@ -199,19 +225,20 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 ) * advantage
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss: SmoothL1 on the transformed win_prob against
-                # normalized returns. Same pattern as V6.3.
-                value_loss = F.smooth_l1_loss(value, mb_returns)
+                # V10.2: BCE loss on win_prob (replaces V10's broken SmoothL1
+                # value loss). Same objective as SL: predict P(player wins).
+                # Prevents shaped-return signal from inverting the head.
+                win_bce_loss = F.binary_cross_entropy(
+                    win_prob.clamp(1e-6, 1 - 1e-6), mb_won_targets
+                )
 
                 entropy = -(policy * torch.log(policy + 1e-8)).sum(dim=1).mean()
 
                 # V10: auxiliary moves-remaining loss with SmoothL1.
-                # Weight 0.003 matches SL-phase balance and keeps the head
-                # trained without interfering with policy learning.
                 moves_loss = F.smooth_l1_loss(moves_pred, mb_moves_targets)
 
                 loss = (policy_loss
-                        + self.value_loss_coeff * value_loss
+                        + self.win_bce_coeff * win_bce_loss
                         + self.moves_aux_coeff * moves_loss
                         - self.entropy_coeff * entropy)
 
@@ -229,7 +256,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 self.total_updates += 1
 
                 total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
+                total_value_loss += win_bce_loss.item()  # now tracks BCE loss
                 total_moves_loss += moves_loss.item()
                 total_entropy += entropy.item()
                 total_advantage += advantage.mean().item()
@@ -262,7 +289,8 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
         return {
             'policy_loss': avg_pl,
-            'value_loss': avg_vl,
+            'win_bce_loss': avg_vl,  # V10.2: replaces old value_loss (SmoothL1)
+            'value_loss': avg_vl,    # kept as alias for dashboard backward-compat
             'moves_loss': avg_ml,
             'entropy': avg_ent,
             'advantage': avg_adv,

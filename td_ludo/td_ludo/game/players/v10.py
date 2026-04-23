@@ -20,13 +20,30 @@ from src.heuristic_bot import (
     HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
     ExpertBot,
 )
-from src.reward_shaping import compute_shaped_reward
 from src.config import (
     GAME_COMPOSITION, MAX_MOVES_PER_GAME,
     TEMPERATURE_START, TEMPERATURE_END, TEMPERATURE_DECAY_GAMES,
     NUM_ACTIVE_PLAYERS, GHOSTS_DIR,
     SELFPLAY_GHOST_FRACTION, SELFPLAY_GHOST_STRATEGY,
 )
+
+
+# V10.2 sparse reward: score events only (+0.40 per new token home).
+# Replaces v2.2's dense shaping (forward, capture, kill, home_stretch,
+# danger_reduction, safety_transition, etc.) which accumulated to ~+3 to +7
+# per game and made discounted returns anticorrelated with P(win) in
+# end-game states — the mechanism that inverted V10's win_prob head.
+# With score-only rewards, per-game total ranges ~0 to +1.6, plus terminal z.
+SCORE_REWARD = 0.40
+
+
+def compute_sparse_reward(old_state, new_state, player):
+    """V10.2: reward scoring events only. No dense shaping."""
+    old_score = int(old_state.scores[player])
+    new_score = int(new_state.scores[player])
+    if new_score > old_score:
+        return SCORE_REWARD * (new_score - old_score)
+    return 0.0
 
 
 BOT_CLASSES = {
@@ -332,7 +349,7 @@ class VectorACGamePlayer:
                 dummy_old = DummyState(pre_step_states[i], pre_step_scores[i], pre_step_active[i])
                 dummy_new = DummyState(next_game.player_positions, list(next_game.scores), list(next_game.active_players))
 
-                step_reward = compute_shaped_reward(dummy_old, dummy_new, cp)
+                step_reward = compute_sparse_reward(dummy_old, dummy_new, cp)
 
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:
