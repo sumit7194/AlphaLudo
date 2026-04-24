@@ -61,8 +61,12 @@ DEFAULT_CONFIGS = {
         "NUM_ACTIVE_PLAYERS": 2,         # 2-Player Mode (P0 vs P2)
 
         # === Evaluation ===
-        "EVAL_INTERVAL": 2000,          # Games between evaluations
-        "EVAL_GAMES": 500,              # Games per evaluation round
+        # Note: 2026-04-24 bumped from 2000/500 to 10000/2000 to cut eval SE
+        # from ~1.9pp → ~1.0pp. Needed to distinguish V10.2's 78.6% peak from
+        # V6.1's 78.8% all-time (the 0.2pp gap was buried in 500-game noise).
+        # Duty cycle also improves 21% → 16% (less eval startup overhead).
+        "EVAL_INTERVAL": 10000,         # Games between evaluations
+        "EVAL_GAMES": 2000,             # Games per evaluation round
         "EARLY_STOP_PATIENCE": 100,     # Stop training if eval WR drops for N consecutive evals
 
         # === Checkpointing ===
