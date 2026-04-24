@@ -1451,3 +1451,100 @@ Per-bot WR: Aggressive 50.0%, Defensive 43.6%, Expert 50.0%, Heuristic 33.3% (SE
 As of 2026-04-11. Steps 1 (MCTS) and 2 (reward shaping) completed and failed. Step 4 (human benchmark) completed — identified multi-turn blindness. V6.3 experiment in progress.
 
 **→ `/Users/sumit/Github/AlphaLudo/discussion/POST_V61_EXPERIMENT_PLAN.md`**
+
+---
+
+### Experiment 18b: V10.2 RL — final results after eval-config bump (2026-04-25)
+
+V10.2 RL continued from G=189,980 after the `.view(-1)` fix + eval-config bump (2000-game evals every 10K games, SE 1.0pp). Stopped training at **G=302,177** (PID 1978, graceful SIGINT) to pivot to the exploiter experiment (see Exp 19 below).
+
+**Full eval trajectory post-config change** (2000-game evals, SE 1.0pp):
+
+| Games | Eval WR | Entropy | Val loss | Pol loss |
+|------:|--------:|--------:|---------:|---------:|
+| 200K  | 70.95%  | 0.216   | 0.550    | 0.0056   |
+| 210K  | 72.85%  | 0.211   | 0.551    | 0.0047   |
+| 220K  | 73.50%  | 0.206   | 0.552    | 0.0042   |
+| 230K  | 74.25%  | 0.203   | 0.554    | 0.0039   |
+| 240K  | **75.15%** | 0.201 | 0.555 | 0.0036   |
+| 250K  | 74.10%  | 0.197   | 0.557    | 0.0031   |
+| 260K  | 74.05%  | 0.194   | 0.560    | 0.0029   |
+| 270K  | 72.20%  | 0.192   | 0.561    | 0.0028   |
+| 280K  | 71.15%  | 0.192   | 0.560    | 0.0028   |
+| 290K  | 70.55%  | 0.194   | 0.559    | 0.0027   |
+
+**Key observations:**
+
+1. **Rise-then-fall pattern.** Phase 2 climbed from 70.95% (200K) to peak 75.15% (240K), then monotonically declined to 70.55% (290K). Drop of 4.6pp over 5 consecutive evals. At SE 1.0pp/eval, combined p-value strongly rejects "pure noise." **Real slow regression, not variance.**
+
+2. **Entropy stable ≈ 0.193 while WR drifts down.** Classic signature of PPO drifting off the good policy manifold. The model isn't exploring more; it's converging to a slightly worse region.
+
+3. **V10.2 loses to its own ghosts.** Opponent breakdown at G=297K (recent 500 games):
+   - SelfPlay: **42.4%** (model losing to its own copies)
+   - ghost_280166: 50.0%
+   - Main Elo 1547.8 vs best ghost 1711.2 → **164 Elo below peak ghost**
+   - Classic intransitive-cycle signature
+
+4. **Peak remained at G=135K (78.6%) throughout.** Never surpassed in 167K subsequent games. Phase 2 (2000-game evals) peaked at 75.15%, comfortably below the V6.1 78.8% ceiling.
+
+5. **Calibration preserved on both frozen targets.**
+   - `model_v102_frozen_g302k.pt`: P(win|scored) = 0.636 → 0.690 → 0.800 → 0.954 → 0.997 (monotone ✓, slightly overconfident at baseline)
+   - `model_v102_frozen_best_g135k.pt`: 0.605 → 0.667 → 0.775 → 0.936 → 0.995 (monotone ✓)
+   - `model_sl.pt`: 0.468 → 0.529 → 0.587 → 0.828 → 0.973 (monotone ✓, well-calibrated humility at baseline)
+
+**Final verdict on V10.2 RL**:
+
+Fix worked (BCE head stayed calibrated through 302K games of RL, vs V10's inverted head after 160K), but the 78% ceiling held. Same pattern as V6.1 and V6.3: large RL budget produces minor lift over SL baseline before drifting.
+
+**Frozen snapshots for Exp 19 exploiter target**:
+- `checkpoints/ac_v10/model_v102_frozen_g302k.pt` — end-of-RL policy (the one we want to exploit)
+- `checkpoints/ac_v10/model_v102_frozen_best_g135k.pt` — peak-eval policy (secondary target)
+
+---
+
+### Experiment 19: Exploiter self-play (PSRO-lite) — plateau-break attempt (2026-04-25, IN PROGRESS)
+
+**Motivation.** Four iterations (V6.1, V6.3, V10, V10.2) all plateau at 73–78% eval WR against a fixed bot mix, with the same signatures every time: entropy stable, WR drifts down after peak, main loses to its own ghosts (~42% WR vs SelfPlay in recent opponent stats). Research synthesis (2026-04-25) + literature review (TD-Gammon, Stochastic MuZero, AlphaStar League, PSRO) identifies this as the **intransitive-cycle signature** — the ghost pool is frozen copies of the same blind-spotted policy, so self-play alone can never expose the blind spots.
+
+**Human-play evidence** (Exp 13e, corroborated by Sumit 2026-04-25): model is strong at snapshot tactics, zero multi-turn planning. Same behavior observed across V6.1 and V10 families. Not a luck ceiling — there is real skill slack to recover.
+
+**What's NOT been tried**: training a dedicated adversary whose only objective is to beat the current main, then folding its winning policy back into the ghost pool. This is the AlphaStar "League" / PSRO pattern, adapted minimally for our infra.
+
+**Plan (4 phases):**
+
+**Phase 1 — Build exploiter.** Copy `train_v10.py` → `train_v10_exploiter.py`. Changes:
+- Starting weights: `model_sl.pt` (V10 SL baseline, 73.5% WR, clean calibration, never RL-drifted — independent of V10.2's idiosyncrasies)
+- `GAME_COMPOSITION`: 100% games vs frozen `model_v102_frozen_g302k.pt` (no bots, no ghost pool, no self-play)
+- Entropy ramp: `ENTROPY_COEFF=0.03` (6× V10.2's), `TEMP_START=1.5 → TEMP_END=1.1` over 30K games
+- Reward: same sparse shaping as V10.2 (+0.40 score + ±1 terminal)
+- Checkpoint dir: `checkpoints/ac_v10_exploiter/`
+- Eval metric: exploiter WR vs frozen V10.2 over 2000-game match, every 5K games
+
+**Phase 2 — Train exploiter.** 50–100K games. Stop early if WR vs V10.2 exceeds 55% sustained over 3 consecutive 2000-game evals (4.5 SE above 50%, unambiguous exploit). Abort at 100K if stuck ≤52%.
+
+**Phase 3 — Diagnosis.**
+- **Success (>55%)**: real behavioral blind spots exist. Fold back.
+- **Failure (≤52% after 100K)**: intra-family plateau is robust. Pivot to V6.1-init exploiter (heterogeneous arch attack) to test architectural independence. If V6.1 exploiter also fails → abandon self-play route, pursue ResTNet-style architecture change.
+
+**Phase 4 — Fold-back (only if Phase 2 succeeded).** Add exploiter's best checkpoint as permanent ghost in V10.2's pool (20% of SelfPlay games). Resume V10.2 RL. Monitor: does entropy re-rise (real adaptation)? Does eval WR exceed 80%?
+
+**Success criterion for the whole experiment**: V10.2 eval WR > 80% sustained over 3 evals after fold-back. Consolation win: eval WR stabilizes (stops drifting down).
+
+**Design choices locked in:**
+- Same-family init (V10 SL) before heterogeneous (V6.1) — simpler infra, cleaner fold-back, more discriminating "intra-family RL drift" test
+- No bot mix during exploiter training — pure exploitation signal, no dilution
+- Main plays at T=0.95 during exploiter training (its real deployment temperature)
+- Ghost injection before distillation — cheapest fold-back, AlphaStar-proven pattern
+
+**Key risks identified:**
+- Exploiter could overfit to frozen main's specific softmax outputs rather than learning robust counter-strategy — mitigated by evaluating at multiple main temperatures post-training
+- Exploit might be narrow (specific board patterns), not generalizable — acceptable for this purpose; fold-back only needs the exploiter to surface the pattern, not generalize
+- Dice variance in Ludo is high — SE 1.1pp at n=2000 games, so "win" threshold is set at 55% (4.5 SE above 50%)
+
+**What we learn either way:**
+- Success → first plateau-break in project history, unlocks iterative league training
+- Failure → ruled out behavioral plateau hypothesis, architecture is the bottleneck, pivot with clean data
+
+Research synthesis driving this: `[see conversation 2026-04-25, deep literature review of TD-Gammon / Stochastic MuZero / ResTNet / PSRO / AWAC]`.
+
+Implementation commit: TBD.
