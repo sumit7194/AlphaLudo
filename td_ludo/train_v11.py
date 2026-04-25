@@ -39,7 +39,8 @@ import functools
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Set V11 run name BEFORE any config imports so CHECKPOINT_DIR resolves correctly.
-os.environ["TD_LUDO_RUN_NAME"] = "ac_v11"
+# Use setdefault so caller can override with `TD_LUDO_RUN_NAME=ac_v11_1 python ...`.
+os.environ.setdefault("TD_LUDO_RUN_NAME", "ac_v11")
 
 from td_ludo.models.v11 import AlphaLudoV11
 from td_ludo.training.trainer_v10 import ActorCriticTrainerV10  # V10 trainer is V11-compatible
