@@ -1803,4 +1803,68 @@ Brier score: V11 0.171 vs V10 0.171 (identical). Calibration buckets all trackin
 
 **Dashboard**: `http://localhost:8789/v11_dashboard.html` — purpose-built for plateau-break tracking with reference lines at V6.1 ceiling (78.8%), V10 peak (78.6%), V10.2 2000-game peak (75.2%), V11 SL baseline (73%), and 80% plateau-break target.
 
-Status: PID 3254, in background. ETA depends on whether plateau-break happens earlier or we run full budget.
+---
+
+#### Phase 2 attempt 1 — V11 RL crashed on MPS OOM at G=530 (2026-04-25)
+
+**Run**: PID 4915 (detached via Python `start_new_session=True` after `nohup` failed to survive Claude Code shutdown). Trained from V11 `model_sl.pt` to G=530 over ~12 min (~28 GPM throughput).
+
+**Crash trace** (during PPO minibatch update):
+```
+RuntimeError: MPS backend out of memory
+  MPS allocated: 7.12 GiB
+  other allocations: 9.40 GiB
+  max allowed: 20.13 GiB    [16 GB unified memory + compressed swap]
+  Tried to allocate 4.45 GiB on private pool
+```
+
+The single attention forward at PPO minibatch=256 needed **4.45 GB** by itself. Memory math: B=256 × heads=4 × 225² tokens² × 4 bytes = 207 MB just for the attention map per layer per direction. With backward pass, 2 layers, FFN intermediates, ghost model loaded, optimizer state, dataset arrays — total demand exceeded MPS ceiling.
+
+**Power-loss safety verified**: graceful save kicked in on the exception, all 3 backup slots populated cleanly (`model_latest.pt`, `model_prev.pt`, `model_prev2.pt`). Zero data loss. Detachment also worked perfectly until OOM.
+
+**Process detachment lesson**: macOS doesn't have `setsid`. `nohup ... &` alone gets killed when Claude Code's parent shell terminates. Use Python's `subprocess.Popen(start_new_session=True)` instead — this calls `os.setsid()` in the child, making it a session leader detached from Claude Code's process group. Verified post-launch via `ps -o ppid` showing PPID=1 (launchd).
+
+---
+
+#### Phase 2 attempt 2 — V11.1 architecture pivot (2026-04-25, IN PROGRESS)
+
+**User push-back on pooling**: Initial fix proposal was to pool CNN output 15×15 → 5×5 before attention (80× attention memory savings). User correctly pushed back — exact positions are strategically critical in Ludo (capture distances, exact safe-square positions, dice-roll-matched movements). Pooling 3×3 cells averages adjacent token positions together and destroys this precision before attention even sees the features.
+
+**V11.1 design**: shrink attention sub-module while keeping ALL 225 tokens at full spatial precision. Justified by V6 mech-interp finding (Experiment 10) that deep layers were redundant across the V6/V10 family in CKA.
+
+**Architecture changes:**
+
+| | V11 (crashed) | **V11.1 (proposed)** | Change rationale |
+|---|---:|---:|---|
+| ResBlocks | 4 × 96ch | 4 × 96ch | unchanged (CNN does tactical) |
+| Attn layers | 2 | **1** | mech interp said redundant |
+| Attn dim | 96 | **64** | proj in/out around transformer |
+| Heads | 4 | **2** | per-head dim 32 vs 24 (richer) |
+| FFN ratio | 4 (→ 384) | 4 (→ 256) | scales with attn_dim |
+| **Tokens** | **225** | **225** | unchanged (precision preserved) |
+| Total params | 949K | 780K | smaller |
+| Residual skip | none | **conv_features + attn(features)** | safety net for attn capacity loss |
+
+The residual `out = conv_features + attn_out` ensures that even if reduced attention learns nothing useful, the CNN's tactical info still flows to heads unimpeded. Attention becomes "additive refinement", not "replacement of features".
+
+**Memory smoke test** (B=256 PPO minibatch + B=512 parallel game inference, full forward+backward+optimizer):
+- B=256: **322 ms/step, no OOM** (V11 OOM'd here)
+- B=512: 543 ms/step, no OOM
+- Estimated PPO update memory: ~340 MB attention forward (V11 was ~4.5 GB) — **~13× memory savings**
+
+**Implementation**: `td_ludo/models/v11.py` extended with optional `attn_dim` parameter. If `attn_dim < num_channels`, Linear projections wrap the transformer (down before, up after), and a residual skip from CNN features bypasses attention. Defaults preserve V11 behavior. Commits: `2b4338b`.
+
+**SL training**:
+- Started PID 1777 (detached, PPID=1)
+- 5 epochs × 490K samples × MPS
+- ETA ~45-50 min for SL completion
+- ETA ~60 min total to parity-gate verdict
+
+**Decision tree from here:**
+
+| V11.1 SL parity result | Next step |
+|---|---|
+| ≥75% WR vs bots (above V11's 73%) | Strong signal smaller attn fine; launch V11.1 RL |
+| 70-75% WR vs bots (parity with V11) | Acceptable; launch V11.1 RL |
+| 65-70% WR vs bots (below V11) | Reduced too aggressively; restore num_heads to 4 (still 1 layer) |
+| <65% WR vs bots | 1 layer + dim 64 too small; either restore 2 layers or pivot to token-entity attn |
