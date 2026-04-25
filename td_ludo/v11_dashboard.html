@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>V11 RL — AlphaLudo (Exp 20)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --panel: #141a2c;
+    --panel-hi: #1b2339;
+    --border: #242c45;
+    --text: #e6e9f2;
+    --muted: #8791a8;
+    --accent: #06b6d4;        /* cyan — distinguishes V11 from exploiter purple */
+    --accent2: #0891b2;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --info: #60a5fa;
+    --gold: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.4;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .header h1 .badge {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    letter-spacing: 0.5px;
+  }
+  .header h1 .subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .header-meta {
+    display: flex;
+    gap: 20px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .header-meta .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--good);
+    margin-right: 6px;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  .header-meta .status-dot.stale { background: var(--muted); animation: none; }
+  .header-meta .status-dot.error { background: var(--bad); animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .row { display: grid; gap: 16px; margin-bottom: 16px; }
+  .row.headline { grid-template-columns: 1.3fr 1fr; }
+  .row.kpi { grid-template-columns: repeat(4, 1fr); }
+  .row.chart-split { grid-template-columns: 1fr 1fr; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .card.highlight { border-color: var(--accent); }
+  .card.celebrate { border-color: var(--gold); background: linear-gradient(135deg, var(--panel) 0%, rgba(245,158,11,0.08) 100%); }
+  .card .label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+  .card .big-number {
+    font-size: 44px;
+    font-weight: 600;
+    line-height: 1;
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .card .big-number.good { color: var(--good); }
+  .card .big-number.warn { color: var(--warn); }
+  .card .big-number.bad { color: var(--bad); }
+  .card .big-number.gold { color: var(--gold); }
+  .card .sub {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .kpi-small .big-number { font-size: 26px; }
+  .kpi-small .sub { font-size: 11px; }
+  .progress-track {
+    background: var(--panel-hi);
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    margin: 8px 0 4px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    transition: width 0.6s ease-out;
+  }
+  .plateau-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .plateau-slot {
+    background: var(--panel-hi);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 8px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .plateau-slot.filled {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: var(--gold);
+    color: var(--gold);
+  }
+  .plateau-slot.warning {
+    background: rgba(52, 211, 153, 0.10);
+    border-color: var(--good);
+    color: var(--good);
+  }
+  .plateau-slot .slot-wr {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .plateau-slot.filled .slot-wr { color: var(--gold); }
+  .plateau-slot.warning .slot-wr { color: var(--good); }
+  .chart-wrap { height: 260px; position: relative; }
+  .chart-wrap.tall { height: 320px; }
+  canvas { max-height: 100%; }
+  .ppo-stats {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 20px;
+  }
+  .ppo-stat { text-align: center; }
+  .ppo-stat .val {
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 2px;
+  }
+  .ppo-stat .sublabel {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+  }
+  .context-note {
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+    padding: 10px 14px;
+    background: rgba(6, 182, 212, 0.08);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    margin-bottom: 16px;
+  }
+  .milestone-line {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 6px;
+    font-style: italic;
+  }
+  .bot-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .bot-card {
+    background: var(--panel-hi);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .bot-card .name {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  .bot-card .wr {
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin: 2px 0;
+  }
+  .bot-card .games {
+    font-size: 10px;
+    color: var(--muted);
+  }
+  code {
+    background: var(--panel-hi);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--accent);
+  }
+  .ref-table {
+    font-size: 11px;
+    color: var(--muted);
+    width: 100%;
+    margin-top: 4px;
+  }
+  .ref-table td { padding: 1px 8px 1px 0; }
+  .ref-table .ref-mark {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 1px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>
+    V11 ResTNet
+    <span class="badge">Exp 20</span>
+    <span class="subtitle">CNN + Transformer hybrid · Plateau break attempt (target &gt;80% sustained)</span>
+  </h1>
+  <div class="header-meta">
+    <span><span id="status-dot" class="status-dot"></span><span id="status-text">connecting…</span></span>
+    <span>Duration: <b id="duration">--:--:--</b></span>
+    <span>GPM: <b id="gpm">--</b></span>
+    <span>PID: <b id="pid">--</b></span>
+  </div>
+</div>
+
+<div class="context-note">
+  V11 init from <code>model_sl.pt</code> (95.5% val_pol_acc, 73.0% WR vs bots — passes V10 SL parity).
+  Architecture: 4 ResBlocks + 2 Transformer encoder layers (96d, 4 heads, pre-norm GELU).
+  Goal: break the 78% ceiling that V6.1, V6.3, V10, V10.2 all hit. Success =
+  3 consecutive 2000-game evals ≥ 80% (=&nbsp;first plateau-break in project history).
+</div>
+
+<!-- HEADLINE -->
+<div class="row headline">
+  <div class="card highlight">
+    <div class="label">Latest Eval WR (vs full bot mix, 2000 games)</div>
+    <div id="latest-eval" class="big-number">--</div>
+    <div class="sub" id="latest-eval-detail">No eval yet — first at G=10K</div>
+    <table class="ref-table">
+      <tr><td><span class="ref-mark" style="background:var(--good)"></span>≥ 80%</td><td>plateau-break target</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--gold)"></span>78.8%</td><td>V6.1 all-time peak (the ceiling)</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--warn)"></span>78.6%</td><td>V10 single-eval peak</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--accent)"></span>75.2%</td><td>V10.2 2000-game peak</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--muted)"></span>73.0%</td><td>V11 SL baseline</td></tr>
+    </table>
+  </div>
+
+  <div class="card celebrate" id="plateau-card">
+    <div class="label">Plateau Break Progress</div>
+    <div class="big-number" id="plateau-count">0 / 3</div>
+    <div class="sub">Evals ≥ 80% required in a row</div>
+    <div class="plateau-grid" id="plateau-grid">
+      <div class="plateau-slot"><div class="slot-wr">--</div>eval N-2</div>
+      <div class="plateau-slot"><div class="slot-wr">--</div>eval N-1</div>
+      <div class="plateau-slot"><div class="slot-wr">--</div>eval N</div>
+    </div>
+    <div class="milestone-line">
+      Best: <b id="best-eval">--</b> · Latest: <b id="latest-bottom">--</b>
+    </div>
+  </div>
+</div>
+
+<!-- KPI ROW -->
+<div class="row kpi">
+  <div class="card kpi-small">
+    <div class="label">Games Trained</div>
+    <div class="big-number" id="games">--</div>
+    <div class="sub" id="games-rate">-- GPM throughput</div>
+  </div>
+
+  <div class="card kpi-small">
+    <div class="label">Policy Entropy</div>
+    <div class="big-number" id="entropy">--</div>
+    <div class="sub" id="entropy-trend">Healthy: 0.15–0.40</div>
+  </div>
+
+  <div class="card kpi-small">
+    <div class="label">Temperature</div>
+    <div class="big-number" id="temp">--</div>
+    <div class="sub">1.1 → 0.95 over 20K games</div>
+  </div>
+
+  <div class="card kpi-small">
+    <div class="label">Main Elo</div>
+    <div class="big-number" id="elo">--</div>
+    <div class="sub" id="elo-rank">Rank: --</div>
+  </div>
+</div>
+
+<!-- MAIN CHART -->
+<div class="card">
+  <div class="label">Eval WR over training (2000-game evals every 10K games)</div>
+  <div class="chart-wrap tall"><canvas id="eval-chart"></canvas></div>
+</div>
+
+<div style="height:16px"></div>
+
+<!-- SPLIT CHART ROW -->
+<div class="row chart-split">
+  <div class="card">
+    <div class="label">Training WR rolling 100-game window</div>
+    <div class="chart-wrap"><canvas id="wr-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="label">Policy Entropy over training</div>
+    <div class="chart-wrap"><canvas id="entropy-chart"></canvas></div>
+  </div>
+</div>
+
+<div style="height:16px"></div>
+
+<!-- PPO DYNAMICS -->
+<div class="card">
+  <div class="label">PPO Dynamics (moving avg over last updates)</div>
+  <div class="ppo-stats">
+    <div class="ppo-stat">
+      <div class="val" id="pol-loss">--</div>
+      <div class="sublabel">Policy loss</div>
+    </div>
+    <div class="ppo-stat">
+      <div class="val" id="val-loss">--</div>
+      <div class="sublabel">Value (BCE) loss</div>
+    </div>
+    <div class="ppo-stat">
+      <div class="val" id="kl">--</div>
+      <div class="sublabel">Approx KL</div>
+    </div>
+    <div class="ppo-stat">
+      <div class="val" id="clip">--</div>
+      <div class="sublabel">Clip fraction</div>
+    </div>
+    <div class="ppo-stat">
+      <div class="val" id="adv">--</div>
+      <div class="sublabel">Advantage (avg)</div>
+    </div>
+  </div>
+</div>
+
+<div style="height:16px"></div>
+
+<!-- BOT BREAKDOWN -->
+<div class="card">
+  <div class="label">Recent WR by opponent (last ~500 games)</div>
+  <div class="bot-grid" id="bot-grid">
+    <div class="bot-card"><div class="name">--</div><div class="wr">--</div><div class="games">--</div></div>
+  </div>
+</div>
+
+<script>
+const PLATEAU_TARGET = 0.80;
+const V61_PEAK = 0.788;
+const V10_PEAK = 0.786;
+const V102_PEAK = 0.7515;
+const V11_SL = 0.730;
+
+let startTime = null;
+let lastStatsFetch = null;
+
+const palette = {
+  accent: "#06b6d4",
+  accent2: "#0891b2",
+  good: "#34d399",
+  warn: "#fbbf24",
+  bad: "#f87171",
+  info: "#60a5fa",
+  gold: "#f59e0b",
+  muted: "#4a5268",
+  grid: "#1f2638",
+  text: "#e6e9f2",
+};
+
+Chart.defaults.color = palette.muted;
+Chart.defaults.borderColor = palette.grid;
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+
+// ---- Main eval chart with reference lines ----
+const evalCtx = document.getElementById("eval-chart").getContext("2d");
+const evalChart = new Chart(evalCtx, {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [{
+      label: "Eval WR",
+      data: [],
+      borderColor: palette.accent,
+      backgroundColor: "rgba(6, 182, 212, 0.15)",
+      fill: true,
+      tension: 0.2,
+      pointRadius: 4,
+      pointHoverRadius: 7,
+      pointBackgroundColor: (ctx) => {
+        const v = ctx.raw;
+        if (v == null) return palette.muted;
+        if (v >= 0.80) return palette.gold;
+        if (v >= V61_PEAK) return palette.warn;
+        return palette.accent;
+      },
+      borderWidth: 2,
+    }],
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        min: 0.5,
+        max: 0.9,
+        ticks: { callback: (v) => (v * 100).toFixed(0) + "%", stepSize: 0.05 },
+        grid: { color: palette.grid },
+      },
+      x: {
+        title: { display: true, text: "games trained" },
+        grid: { display: false },
+      },
+    },
+    plugins: { legend: { display: false } },
+  },
+  plugins: [{
+    id: "refLines",
+    afterDraw: (chart) => {
+      const { ctx, chartArea: { left, right }, scales: { y } } = chart;
+      const drawLine = (val, color, label, dashed = true) => {
+        const yPos = y.getPixelForValue(val);
+        if (yPos < y.top || yPos > y.bottom) return;
+        ctx.save();
+        if (dashed) ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(left, yPos);
+        ctx.lineTo(right, yPos);
+        ctx.stroke();
+        ctx.fillStyle = color;
+        ctx.font = "10px -apple-system, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(label, right - 8, yPos - 4);
+        ctx.restore();
+      };
+      drawLine(PLATEAU_TARGET, palette.gold, "80% PLATEAU BREAK", false);
+      drawLine(V61_PEAK, palette.warn, "78.8% V6.1 ceiling");
+      drawLine(V10_PEAK, palette.warn, "78.6% V10 peak");
+      drawLine(V102_PEAK, palette.accent, "75.2% V10.2 peak");
+      drawLine(V11_SL, palette.muted, "73% V11 SL");
+    },
+  }],
+});
+
+// ---- Training WR chart (rolling 100) ----
+const wrCtx = document.getElementById("wr-chart").getContext("2d");
+const wrChart = new Chart(wrCtx, {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [{
+      label: "WR (rolling 100)",
+      data: [],
+      borderColor: palette.info,
+      backgroundColor: "rgba(96, 165, 250, 0.10)",
+      fill: true,
+      tension: 0.25,
+      pointRadius: 0,
+      borderWidth: 2,
+    }],
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: { min: 0, max: 1, ticks: { callback: (v) => (v * 100).toFixed(0) + "%", stepSize: 0.1 }, grid: { color: palette.grid } },
+      x: { grid: { display: false } },
+    },
+    plugins: { legend: { display: false } },
+  },
+});
+
+// ---- Entropy chart ----
+const entCtx = document.getElementById("entropy-chart").getContext("2d");
+const entChart = new Chart(entCtx, {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [{
+      label: "Entropy",
+      data: [],
+      borderColor: palette.gold,
+      backgroundColor: "rgba(245, 158, 11, 0.10)",
+      fill: true,
+      tension: 0.25,
+      pointRadius: 0,
+      borderWidth: 2,
+    }],
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: { min: 0, max: 1.5, ticks: { stepSize: 0.2 }, grid: { color: palette.grid } },
+      x: { grid: { display: false } },
+    },
+    plugins: { legend: { display: false } },
+  },
+});
+
+const liveWRHistory = [];
+const liveEntHistory = [];
+const MAX_LIVE_POINTS = 600;
+
+function fmtDuration(secs) {
+  if (!isFinite(secs) || secs < 0) return "--:--:--";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function fmtNum(v, digits = 3) {
+  if (v == null || isNaN(v)) return "--";
+  return Number(v).toFixed(digits);
+}
+
+function fmtPct(v, digits = 1) {
+  if (v == null || isNaN(v)) return "--";
+  return (Number(v) * 100).toFixed(digits) + "%";
+}
+
+async function fetchStats() {
+  try {
+    const r = await fetch("/api/stats", { cache: "no-store" });
+    if (!r.ok) throw new Error("api/stats " + r.status);
+    const s = await r.json();
+    updateFromStats(s);
+    lastStatsFetch = Date.now();
+    setStatus("ok");
+  } catch (e) {
+    setStatus("error", e.message);
+  }
+}
+
+async function fetchMetrics() {
+  try {
+    const r = await fetch("/api/metrics", { cache: "no-store" });
+    if (!r.ok) return;
+    const m = await r.json();
+    updateFromMetrics(m);
+  } catch (e) {}
+}
+
+async function fetchSystem() {
+  try {
+    const r = await fetch("/api/system", { cache: "no-store" });
+    if (!r.ok) return;
+    const s = await r.json();
+    document.getElementById("pid").textContent = s.pid || "--";
+  } catch (e) {}
+}
+
+function setStatus(state) {
+  const dot = document.getElementById("status-dot");
+  const text = document.getElementById("status-text");
+  if (state === "ok") { dot.className = "status-dot"; text.textContent = "Running"; }
+  else if (state === "stale") { dot.className = "status-dot stale"; text.textContent = "Stale"; }
+  else { dot.className = "status-dot error"; text.textContent = "Disconnected"; }
+}
+
+function updateFromStats(s) {
+  if (startTime === null && s.timestamp) {
+    startTime = s.timestamp - ((s.total_games || 0) / Math.max(1, s.games_per_minute) * 60);
+  }
+  document.getElementById("gpm").textContent = s.games_per_minute ? s.games_per_minute.toFixed(0) : "--";
+
+  const games = s.total_games || 0;
+  document.getElementById("games").textContent = games.toLocaleString();
+  document.getElementById("games-rate").textContent = (s.games_per_minute || 0).toFixed(0) + " GPM throughput";
+
+  document.getElementById("entropy").textContent = fmtNum(s.policy_entropy, 3);
+  const ent = s.policy_entropy || 0;
+  const entSub = document.getElementById("entropy-trend");
+  if (ent > 0.5) entSub.textContent = "High — exploratory";
+  else if (ent > 0.20) entSub.textContent = "Healthy";
+  else if (ent > 0.10) entSub.textContent = "Converging";
+  else entSub.textContent = "Tight (locked in)";
+
+  document.getElementById("temp").textContent = fmtNum(s.temperature, 2);
+
+  const myElo = s.main_elo;
+  document.getElementById("elo").textContent = myElo != null ? Math.round(myElo) : "--";
+  if (s.elo_rankings) {
+    let rank = 1;
+    for (const r of s.elo_rankings) {
+      if (r.name === "Model") {
+        document.getElementById("elo-rank").textContent = `Rank: ${rank} / ${s.elo_rankings.length}`;
+        break;
+      }
+      rank++;
+    }
+  }
+
+  if (startTime) {
+    document.getElementById("duration").textContent = fmtDuration((Date.now() / 1000) - startTime);
+  }
+
+  document.getElementById("pol-loss").textContent = fmtNum(s.avg_policy_loss, 4);
+  document.getElementById("val-loss").textContent = fmtNum(s.avg_value_loss, 3);
+  document.getElementById("kl").textContent = fmtNum(s.approx_kl, 4);
+  document.getElementById("clip").textContent = fmtNum(s.clip_fraction, 3);
+  document.getElementById("adv").textContent = fmtNum(s.avg_advantage, 4);
+
+  // Live WR + entropy chart points
+  const last = liveWRHistory[liveWRHistory.length - 1];
+  const wr = (s.win_rate_100 || 0) / 100;
+  if (!last || last.games !== games) {
+    liveWRHistory.push({ games, wr });
+    liveEntHistory.push({ games, ent });
+    if (liveWRHistory.length > MAX_LIVE_POINTS) liveWRHistory.shift();
+    if (liveEntHistory.length > MAX_LIVE_POINTS) liveEntHistory.shift();
+
+    wrChart.data.labels = liveWRHistory.map(p => p.games.toLocaleString());
+    wrChart.data.datasets[0].data = liveWRHistory.map(p => p.wr);
+    wrChart.update("none");
+
+    entChart.data.labels = liveEntHistory.map(p => p.games.toLocaleString());
+    entChart.data.datasets[0].data = liveEntHistory.map(p => p.ent);
+    entChart.update("none");
+  }
+
+  // Bot breakdown
+  if (s.recent_opponent_stats) {
+    const grid = document.getElementById("bot-grid");
+    grid.innerHTML = "";
+    const entries = Object.entries(s.recent_opponent_stats)
+      .filter(([_, v]) => v.games > 5)
+      .sort((a, b) => b[1].win_rate - a[1].win_rate);
+    for (const [name, stat] of entries) {
+      const card = document.createElement("div");
+      card.className = "bot-card";
+      const wrColor = stat.win_rate >= 80 ? "var(--good)" :
+                      stat.win_rate >= 65 ? "var(--accent)" :
+                      stat.win_rate >= 50 ? "var(--warn)" : "var(--bad)";
+      card.innerHTML = `
+        <div class="name">${name}</div>
+        <div class="wr" style="color: ${wrColor}">${stat.win_rate.toFixed(1)}%</div>
+        <div class="games">${stat.wins}/${stat.games} games</div>
+      `;
+      grid.appendChild(card);
+    }
+  }
+}
+
+function updateFromMetrics(m) {
+  if (!Array.isArray(m)) return;
+  const evals = m.filter(e => e.eval_win_rate != null);
+
+  evalChart.data.labels = evals.map(e => (e.games / 1000).toFixed(0) + "K");
+  evalChart.data.datasets[0].data = evals.map(e => e.eval_win_rate);
+  evalChart.update("none");
+
+  // Plateau-break progress (last 3 evals)
+  let consec = 0;
+  for (let i = evals.length - 1; i >= 0; i--) {
+    if (evals[i].eval_win_rate >= PLATEAU_TARGET) consec++;
+    else break;
+  }
+  consec = Math.min(3, consec);
+  document.getElementById("plateau-count").textContent = `${consec} / 3`;
+
+  const last3 = evals.slice(-3);
+  const slotDivs = document.querySelectorAll(".plateau-slot");
+  slotDivs.forEach((div, i) => {
+    const e = last3[i];
+    if (!e) {
+      div.className = "plateau-slot";
+      div.innerHTML = `<div class="slot-wr">--</div>eval ${i+1}`;
+    } else {
+      const hit80 = e.eval_win_rate >= PLATEAU_TARGET;
+      const hit78 = e.eval_win_rate >= V61_PEAK;
+      div.className = "plateau-slot " + (hit80 ? "filled" : hit78 ? "warning" : "");
+      div.innerHTML = `<div class="slot-wr">${(e.eval_win_rate*100).toFixed(1)}%</div>G=${(e.games/1000).toFixed(0)}K`;
+    }
+  });
+
+  if (evals.length > 0) {
+    const best = Math.max(...evals.map(e => e.eval_win_rate));
+    const latest = evals[evals.length - 1].eval_win_rate;
+    document.getElementById("best-eval").textContent = (best*100).toFixed(1) + "%";
+    document.getElementById("latest-bottom").textContent = (latest*100).toFixed(1) + "%";
+
+    // Update top-left big number
+    const latestEl = document.getElementById("latest-eval");
+    latestEl.textContent = (latest*100).toFixed(1) + "%";
+    latestEl.className = "big-number";
+    if (latest >= PLATEAU_TARGET) latestEl.classList.add("gold");
+    else if (latest >= V61_PEAK) latestEl.classList.add("warn");
+    else if (latest >= V102_PEAK) latestEl.classList.add("good");
+    else if (latest < 0.65) latestEl.classList.add("bad");
+    document.getElementById("latest-eval-detail").textContent =
+      `at G=${(evals[evals.length-1].games/1000).toFixed(1)}K · best ${(best*100).toFixed(1)}% · ${evals.length} evals so far`;
+  }
+}
+
+setInterval(() => {
+  if (lastStatsFetch && Date.now() - lastStatsFetch > 10000) setStatus("stale");
+}, 2000);
+
+fetchStats(); fetchMetrics(); fetchSystem();
+setInterval(fetchStats, 2000);
+setInterval(fetchMetrics, 10000);
+setInterval(fetchSystem, 30000);
+</script>
+
+</body>
+</html>

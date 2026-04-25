@@ -122,6 +122,65 @@ atexit.register(release_lock)
 
 
 # =============================================================================
+# Power-loss-safe checkpoint saving
+# =============================================================================
+# Strategy:
+#   1. Trainer's save_checkpoint() already does atomic save (write tmp, os.replace).
+#   2. We add ROTATING BACKUPS — before each save, copy model_latest.pt to
+#      model_prev.pt, and model_prev.pt to model_prev2.pt. So we always have
+#      at least 2 fallback checkpoints if the latest somehow becomes corrupt.
+#   3. We save more frequently than V10 (every 90s vs 5min) to minimize
+#      worst-case work loss.
+#   4. We save BEFORE every eval (in case eval crashes mid-run) and AFTER
+#      every eval (to capture the eval result + best_win_rate update).
+import shutil
+
+SAFE_BACKUP_NAMES = ['model_latest.pt', 'model_prev.pt', 'model_prev2.pt']
+
+
+def safe_save_with_rotation(trainer, ckpt_dir, is_best=False):
+    """Atomic save + rotating backups. Survives mid-write power loss."""
+    latest = os.path.join(ckpt_dir, SAFE_BACKUP_NAMES[0])
+    prev = os.path.join(ckpt_dir, SAFE_BACKUP_NAMES[1])
+    prev2 = os.path.join(ckpt_dir, SAFE_BACKUP_NAMES[2])
+
+    # Rotate backups: prev → prev2, latest → prev (only if files exist).
+    # Use copy (not move) so the rotation itself is recoverable if it crashes.
+    try:
+        if os.path.exists(prev):
+            shutil.copy2(prev, prev2)
+        if os.path.exists(latest):
+            shutil.copy2(latest, prev)
+    except Exception as e:
+        print(f"[Safe-save] WARNING: backup rotation failed: {e}")
+        # Continue anyway — we still want to attempt the new save
+
+    # Trainer's save_checkpoint already does atomic write (.tmp + os.replace).
+    trainer.save_checkpoint(is_best=is_best)
+
+
+def load_with_fallback(trainer, ckpt_dir):
+    """Try model_latest, fall back to model_prev / model_prev2 on corruption."""
+    for name in SAFE_BACKUP_NAMES:
+        path = os.path.join(ckpt_dir, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            loaded = trainer.load_checkpoint(path)
+            if loaded:
+                if name != SAFE_BACKUP_NAMES[0]:
+                    print(f"[Safe-load] WARNING: fell back to {name} "
+                          f"(latest was corrupt or missing)")
+                else:
+                    print(f"[Safe-load] Loaded {name}")
+                return True
+        except Exception as e:
+            print(f"[Safe-load] {name} failed to load ({e}), trying next backup")
+    print("[Safe-load] No usable checkpoint found in any backup slot")
+    return False
+
+
+# =============================================================================
 # Dashboard globals
 # =============================================================================
 _elo_tracker = None
@@ -282,6 +341,10 @@ def main():
     parser.add_argument('--anneal-games', type=int, default=20000)
     parser.add_argument('--entropy-coeff', type=float, default=-1.0)
     parser.add_argument('--reset-lr', action='store_true')
+    parser.add_argument('--save-interval', type=float, default=90.0,
+                        help='Seconds between auto-saves with backup rotation. '
+                             'Shorter = less work lost on power cut. '
+                             'Default 90s (config default 300s for V10).')
 
     # V11-specific: LR warmup at start of RL
     parser.add_argument('--rl-warmup-games', type=int, default=5000,
@@ -337,14 +400,14 @@ def main():
     # Trainer (V10 trainer works unchanged — same forward signature)
     trainer = ActorCriticTrainerV10(model, device, learning_rate=LEARNING_RATE)
 
-    # Load weights
+    # Load weights with multi-backup fallback
     if args.resume:
-        loaded = trainer.load_checkpoint()
+        loaded = load_with_fallback(trainer, CHECKPOINT_DIR)
         if loaded:
             print(f"[V11 Train] Resumed: {trainer.total_games} games, "
                   f"{trainer.total_updates} updates")
         else:
-            print("[V11 Train] No model_latest.pt found. Starting from SL.")
+            print("[V11 Train] No usable checkpoint backup. Falling back to SL.")
             sl_path = os.path.join(CHECKPOINT_DIR, 'model_sl.pt')
             if os.path.exists(sl_path):
                 trainer.load_checkpoint(sl_path)
@@ -436,6 +499,11 @@ def main():
     print(f"  Ghost saves: every {GHOST_SAVE_INTERVAL} games")
     print(f"  Batch Size: {BATCH_SIZE}")
     print(f"  Success: eval WR > 80% sustained over 3 evals")
+    print(f"  Power-loss safety:")
+    print(f"    - Auto-save every {args.save_interval}s with rotating backups")
+    print(f"    - Save before each eval (capture pre-eval state)")
+    print(f"    - 3 backup slots: model_latest, model_prev, model_prev2")
+    print(f"    - Resume tries each backup in order if latest is corrupt")
     if args.hours > 0:
         print(f"  Time limit: {args.hours} hours")
     if args.games > 0:
@@ -517,13 +585,18 @@ def main():
                         elo_tracker=elo_tracker, game_db=game_db,
                     )
 
-            if time.time() - last_save_time > SAVE_INTERVAL:
-                trainer.save_checkpoint()
+            if time.time() - last_save_time > args.save_interval:
+                safe_save_with_rotation(trainer, CHECKPOINT_DIR)
                 elo_tracker.save()
                 last_save_time = time.time()
-                print(f"[Auto-save] Checkpoint saved (game {trainer.total_games})")
+                print(f"[Auto-save] Checkpoint + backups rotated (game {trainer.total_games})")
 
             if games_since_eval >= EVAL_INTERVAL:
+                # Save BEFORE eval (eval is long; power loss mid-eval would
+                # otherwise rewind further than necessary).
+                safe_save_with_rotation(trainer, CHECKPOINT_DIR)
+                print(f"[Pre-eval-save] Checkpoint saved before eval starts")
+
                 print(f"\n--- Evaluation ({EVAL_GAMES} games) ---")
                 from evaluate_v10 import evaluate_model
 
@@ -549,7 +622,7 @@ def main():
                 trainer.log_metrics(win_rate_100, trainer.total_games, eval_win_rate=eval_wr)
                 trainer.last_eval_wr = eval_wr
 
-                trainer.save_checkpoint(is_best=is_best)
+                safe_save_with_rotation(trainer, CHECKPOINT_DIR, is_best=is_best)
                 elo_tracker.save()
                 games_since_eval = 0
                 last_save_time = time.time()
@@ -566,9 +639,9 @@ def main():
         import traceback
         traceback.print_exc()
 
-    print("[V11 Train] Final save...")
+    print("[V11 Train] Final save (with backup rotation)...")
     trainer.flush_buffer()
-    trainer.save_checkpoint()
+    safe_save_with_rotation(trainer, CHECKPOINT_DIR)
     elo_tracker.save()
 
     elapsed = time.time() - start_time
