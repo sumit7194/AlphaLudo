@@ -1547,4 +1547,179 @@ Fix worked (BCE head stayed calibrated through 302K games of RL, vs V10's invert
 
 Research synthesis driving this: `[see conversation 2026-04-25, deep literature review of TD-Gammon / Stochastic MuZero / ResTNet / PSRO / AWAC]`.
 
-Implementation commit: TBD.
+Implementation commit: `f33d7a1` (`v10-exploiter: Experiment 19 plateau-break attempt (PSRO-lite)`).
+
+---
+
+#### Phase 1 results — V10 SL init exploiter (2026-04-25, COMPLETED)
+
+**Run**: `checkpoints/ac_v10_exploiter/`. Started fresh from `model_sl.pt` at 04:20 (PID 22433). PC shutdown ungracefully at G=84,660 (out of 100K budget). 16 complete evals (2000 games each, every 5K training games).
+
+**Full eval trajectory:**
+
+| Games | Eval WR | Games | Eval WR |
+|------:|--------:|------:|--------:|
+| 5K  | 38.7% | 45K | 45.9% |
+| 10K | 42.1% | 50K | 45.1% |
+| 15K | 41.8% | 55K | 44.3% |
+| 20K | 41.2% | 60K | 46.8% |
+| 25K | 45.2% | 65K | **47.2%** |
+| 30K | 43.8% | 70K | 45.9% |
+| 35K | 44.9% | 75K | 45.7% |
+| 40K | 44.1% | 80K | **47.9%** ← peak |
+
+**Trajectory shape — textbook saturation:**
+
+| Phase | Games | Eval WR | Δ |
+|---|---|---|---|
+| Start (V10 SL baseline) | 0 | ~30% | — |
+| Early gains | 0 → 30K | 30% → 44% | **+14pp** |
+| Slow climb | 30K → 60K | 44% → 47% | **+3pp** |
+| Plateau | 60K → 84K | 47% → 48% | **+1pp** |
+
+**Net: +17.9pp gained from SL baseline. Distance to 55% threshold: still −7pp. Never crossed 50% (tied) line, let alone 55% (exploit).**
+
+**Other diagnostics (all healthy):**
+- Entropy: 0.41 → 0.36 (gradual tightening, not collapsed — exploiter still exploring)
+- Value (BCE) loss: stable at 0.567–0.573 (no drift, calibration preserved)
+- Policy loss: 0.00036 → 0.00136 (climbing, normal as advantage grows)
+- Approx KL: 0.0075 (well within healthy 0.005–0.02 range)
+- Clip fraction: 6–7% (PPO trust region appropriately active)
+- Elo gap closed from −148 to −51 (+97 Elo points of recovery)
+
+**Verdict: PARTIAL EXPLOIT.**
+
+The same-family exploiter recovered ~18pp of skill slack from SL baseline against frozen V10.2 but plateaued cleanly in the 45–48% range over the last 35K games. V10.2 has *some* exploitable surface (otherwise we'd have been stuck at 30%) but **no major blind spots** that a same-architecture, same-encoding attacker can find.
+
+**Implication: V10.2 is a robust local optimum within the V10 architectural family.**
+
+---
+
+#### Phase 1.5 reconsideration — heterogeneous attack abandoned (2026-04-25)
+
+Original plan: if Phase 1 plateaus, run a V6.1-init exploiter as a heterogeneous-architecture test.
+
+**Why we skipped Phase 1.5:**
+
+User correctly pushed back: V6.1 vs V10 is NOT meaningfully a different architectural family.
+
+| | V6.1 (AlphaLudoV5) | V10 |
+|---|---|---|
+| Type | 2D CNN over 15×15 board | 2D CNN over 15×15 board |
+| Depth | 10 ResBlocks | 6 ResBlocks |
+| Width | 128 channels | 96 channels |
+| Input | 24 channels | 28 channels |
+| Best eval WR | 78.8% | 78.6% |
+| H2H @ 1000 games | 51.1% / 48.9% (statistical tie) |
+
+V10's design rationale was literally "drop V6.1's last 5–6 layers because mech interp showed near-zero CKA contribution." V10 = leaner-equivalent of V6.1, same architectural family, same inductive bias. Cosmetic differences only.
+
+Additionally: V10's `model_sl.pt` was distilled from V6.1 self-play, so the Phase 1 exploiter ALREADY had V6.1-style policy knowledge baked in — just rendered through V10's architecture.
+
+A V6.1 exploiter run would:
+- Cost 3–4 hours of code (heterogeneous-arch player) + 7+ hours of training
+- Yield essentially the same answer as Phase 1 ("CNN-family attacker can't break V10.2")
+- Be methodological theater, not a real different-family test
+
+**Conclusion: Phase 1's plateau already tells us V10.2 is robust to the entire V6/V10 CNN family. To break the 78% ceiling we need a genuinely different model class, not more self-play variants.**
+
+#### Final verdict on Experiment 19
+
+PARTIAL SUCCESS:
+- Confirmed the intransitive-cycle hypothesis was incomplete — V10.2 has *some* exploitable surface (+18pp from SL) but no major blind spots
+- Definitively ruled out same-family self-play as a plateau-breaker
+- Provided a clean experimental basis for pivoting to architecture change (Exp 20: V11 ResTNet)
+
+Frozen artifacts preserved:
+- `checkpoints/ac_v10_exploiter/model_best.pt` (47.9% peak at G=80K) — could be useful as exploiter ghost in any future V11 ghost pool to maintain adversarial diversity
+- `checkpoints/ac_v10_exploiter/model_latest.pt` (G=84,660 last save)
+- `checkpoints/ac_v10_exploiter/training_metrics.json` (16 eval entries)
+
+---
+
+### Experiment 20: V11 — ResTNet (CNN + Transformer hybrid) (2026-04-25, PLANNED)
+
+**Motivation.** Four CNN iterations (V5/V6.1/V6.3/V10/V10.2) + one PSRO-lite attack (Exp 19) all plateau at 73–78% eval WR. Mech interp on V6 (Experiments 10–12) showed the model is a "sophisticated reactive lookup table" with no temporal/global reasoning — eventual_winner decodable at 0.787 from GAP features but the policy can't use it for planning.
+
+Research synthesis (2026-04-25) identified ResTNet (Wu et al, IJCAI 2025, arXiv 2410.05347) as the only architecture-class change with **direct ablation evidence** of plateau-breaking on board games:
+- 9×9 Go: +6.2% WR vs ResNet
+- 19×19 Go: +7.3% WR
+- 19×19 Hex: +7.6% WR
+- Long-range ladder reading (Go): 59% → 80% (the kind of reasoning V6 mech interp said our CNN can't do)
+
+The mechanism — interleaved residual + transformer blocks add global self-attention that pure CNN lacks. Each ResBlock grows receptive field by 2; reasoning about distant cells (capture chains, multi-token threats, bonus-turn 2-step plans) requires many CNN layers and dilutes signal. Self-attention reasons across all 225 board cells in one pass.
+
+**Why this fits Ludo:**
+- Multi-token threat awareness (opponent at distant cell affects my decision)
+- Multi-step planning (bonus-turn lookahead = global reasoning, not local)
+- Capture chains (A→B→C requires long-range awareness)
+- All exactly what mech interp said V6/V10 lacks
+
+**V11 architecture spec:**
+
+| Stage | Detail | Notes |
+|---|---|---|
+| Input | (B, 28, 15, 15) | Same encoding as V10 — zero C++ changes |
+| Stem | Conv3×3 → BN → ReLU → 96ch | Identical to V10 |
+| Backbone | 4× ResBlock(96 ch) | V10 uses 6; freed 2 ResBlocks for attention |
+| Reshape | (B, 96, 15, 15) → (B, 225, 96) | Flatten spatial to token sequence |
+| Pos-encoding | Learned 2D positional embedding (225 × 96) | One per board cell |
+| Attention | 2× TransformerEncoderLayer (96d, 4 heads, FFN 384, pre-norm) | Global reasoning |
+| Reshape | (B, 225, 96) → (B, 96, 15, 15) | Back to spatial |
+| Pool | GAP → (B, 96) | Same as V10 |
+| Heads | policy + win_prob (BCE) + moves_remaining (SmoothL1) | Same as V10.2, calibrated value preserved |
+| **Total params** | **~1.35M** | V10 = 1.04M, +30% for attention |
+
+**Why this specific design (vs alternatives):**
+- "Backbone-then-attention" pattern — CNN does spatial feature extraction, attention does global reasoning. Conservative, fewest moving parts.
+- Pure interleaved (Conv→Attn→Conv→Attn) considered but rejected: more bug surface, harder to ablate.
+- All-transformer rejected: loses CNN spatial inductive bias, would need 5–10× more SL data than we have.
+- Same input encoding (28ch) means we can re-use the existing C++ encoder + V10 SL data (500K mixed-teacher) without regeneration.
+- Same heads means we can re-use `trainer_v10.py` unchanged (BCE win_prob + sparse rewards proven from V10.2 fix).
+
+**Phased plan:**
+
+**Phase 1 — Build & SL parity** (~2–3 days)
+1. New file: `td_ludo/models/v11.py` — `AlphaLudoV11(num_res_blocks=4, num_channels=96, num_attn_layers=2, in_channels=28)`
+2. Smoke tests: forward shape, gradient flow, MPS attention compatibility (PyTorch's MPS attention historically flaky — must verify early; fallback to CPU SL or `F.scaled_dot_product_attention` if needed)
+3. SL training script: `train_sl_v11.py` — re-use V10's 500K mixed-teacher dataset (`checkpoints/sl_data_v10/`), same loss as V10 (KL + BCE + 0.003·SmoothL1 with smooth_l1_loss for moves)
+4. Target: ≥73% WR vs bot mix (match V10 SL) within 3 epochs
+5. **Gate**: SL match V10 → architecture works. SL beats V10 by ≥2pp → attention is helping at SL stage. SL worse than V10 → bug, must fix before RL.
+
+**Phase 2 — RL training** (~5–7 days)
+1. New file: `train_v11.py` — copy of `train_v10.py` with V11 model
+2. Trainer: `trainer_v10.py` unchanged (BCE win_prob + sparse rewards is the proven recipe)
+3. Init from V11 SL checkpoint
+4. Same PPO config as V10.2: lr=1e-5, entropy=0.005, T=1.1→0.95 over 20K games
+5. Special: 5K-game LR warmup at start of RL (transformers benefit from warmup; PPO doesn't have it natively)
+6. ~150K games target, 2000-game evals every 10K games
+7. **Gate**: aim for sustained eval WR >80% over 3 consecutive evals. Anything ≥81% is the first plateau-break in project history.
+
+**Phase 3 — Diagnose** (~1 day)
+- **>80% sustained**: ship V11, document the win, productionize
+- **78–80% (V10.2-tied)**: attention isn't helping; plateau is deeper than CNN limitations. Next pivot: Stochastic MuZero or accept V10.2 ceiling
+- **<75%**: implementation bug or attention hurting. Ablate (disable attention, compare to V10) to isolate
+
+**Risks & mitigations:**
+
+| Risk | Mitigation |
+|---|---|
+| MPS attention performance/stability | Smoke-test in Phase 1 day 1; if broken, fall back to CPU for SL (3× slower but works) |
+| PPO instability with attention | 5K-game LR warmup at start of RL |
+| Position embedding overfit (225×96 = 21K params alone) | Weight decay 1e-4, same as V10.2 |
+| Attention head collapse (heads becoming identical) | Monitor head diversity in Phase 1; standard fix is dropout 0.1 in attention |
+| V10 SL data may be biased toward CNN-friendly states | Phase 1 gate detects this — if SL WR caps at 70%, regenerate data with V10.2 as additional teacher |
+
+**Why this is the right pivot now:**
+
+After Exp 19, we have clean evidence the plateau is **architectural**, not behavioral or value-head-related. Three architecture options were evaluated:
+
+1. **ResTNet (CNN + attention hybrid)** — direct ablation evidence (+6–7pp on Go/Hex), incremental cost (~1.35M params, 1 week of work)
+2. **Pure transformer over move history** (V7 plan) — no isolated-ablation evidence on board games, requires regenerating SL pipeline, 2+ weeks of work
+3. **Stochastic MuZero** — academically-correct, ~6 weeks of careful engineering, proven on backgammon
+
+ResTNet wins on evidence-per-effort. If it works, we have our plateau break. If it doesn't, we have a clean negative result to motivate (3) as a moonshot or to declare V10.2 the ceiling and ship.
+
+**Naming**: V11 because architecture is genuinely different (CNN-only → CNN+Transformer hybrid). Not V10.3.
+
+Implementation: pending. Phase 1 starts on user greenlight.
