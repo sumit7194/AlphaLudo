@@ -332,6 +332,10 @@ def main():
     parser.add_argument('--num-attn-layers', type=int, default=2)
     parser.add_argument('--num-heads', type=int, default=4)
     parser.add_argument('--ffn-ratio', type=int, default=4)
+    parser.add_argument('--attn-dim', type=int, default=None,
+                        help='Inner attention dim. None = matches num_channels '
+                             '(V11). Smaller value (e.g. 64) adds Linear '
+                             'projection in/out for memory savings (V11.1).')
     parser.add_argument('--dropout', type=float, default=0.0,
                         help='RL dropout MUST be 0.0 (PPO importance ratios '
                              'break with stochastic forward). SL used 0.1.')
@@ -389,6 +393,7 @@ def main():
         ffn_ratio=args.ffn_ratio,
         dropout=args.dropout,  # 0.0 for RL
         in_channels=28,
+        attn_dim=args.attn_dim,
     )
     model = model_factory()
     print(f"[V11 Train] Model: AlphaLudoV11 ({model.count_parameters():,} params)")

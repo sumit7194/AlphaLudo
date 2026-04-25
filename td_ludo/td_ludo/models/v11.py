@@ -77,7 +77,18 @@ class AlphaLudoV11(nn.Module):
         dropout: float = 0.0,
         in_channels: int = 28,
         board_size: int = 15,
+        attn_dim: int | None = None,
     ):
+        """
+        Args:
+            attn_dim: Inner dimension of the transformer (Q/K/V/FFN width).
+                If None (default), uses num_channels — V11 original behavior.
+                If set smaller (e.g. 64 with num_channels=96), adds Linear
+                projection in/out around the transformer stack.
+                This lets us shrink attention memory + compute (V11.1) while
+                keeping CNN at full width and all 225 tokens at exact
+                spatial precision.
+        """
         super().__init__()
         self.num_channels = num_channels
         self.num_res_blocks = num_res_blocks
@@ -85,23 +96,33 @@ class AlphaLudoV11(nn.Module):
         self.in_channels = in_channels
         self.board_size = board_size
         self.num_tokens = board_size * board_size  # 225 for 15×15
+        self.attn_dim = attn_dim if attn_dim is not None else num_channels
 
-        # ---- Stem: 28ch input → 96ch features ----
+        # ---- Stem: 28ch input → num_channels features ----
         self.conv_input = nn.Conv2d(
             in_channels, num_channels, kernel_size=3, padding=1, bias=False
         )
         self.bn_input = nn.BatchNorm2d(num_channels)
 
-        # ---- CNN backbone: 4 ResBlocks ----
+        # ---- CNN backbone ----
         self.res_blocks = nn.ModuleList(
             [ResidualBlock(num_channels) for _ in range(num_res_blocks)]
         )
 
+        # ---- Optional attention dim projection (V11.1: 96 → 64 → 96) ----
+        # If attn_dim != num_channels, project into smaller dim before
+        # attention and back after. nn.Identity for V11 default (no-op).
+        if self.attn_dim != num_channels:
+            self.attn_in_proj = nn.Linear(num_channels, self.attn_dim, bias=False)
+            self.attn_out_proj = nn.Linear(self.attn_dim, num_channels, bias=False)
+        else:
+            self.attn_in_proj = nn.Identity()
+            self.attn_out_proj = nn.Identity()
+
         # ---- Learned 2D positional embedding (one per board cell) ----
-        # Shape (1, num_tokens, num_channels) — broadcasts across batch.
-        # Initialized small so attention starts close to identity at init.
+        # Shape matches attention dim: (1, num_tokens, attn_dim).
         self.pos_embedding = nn.Parameter(
-            torch.zeros(1, self.num_tokens, num_channels)
+            torch.zeros(1, self.num_tokens, self.attn_dim)
         )
         nn.init.trunc_normal_(self.pos_embedding, std=0.02)
 
@@ -110,9 +131,9 @@ class AlphaLudoV11(nn.Module):
         # batch_first=True: easier shape management.
         # Activation gelu: modern transformer default.
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=num_channels,
+            d_model=self.attn_dim,
             nhead=num_heads,
-            dim_feedforward=num_channels * ffn_ratio,
+            dim_feedforward=self.attn_dim * ffn_ratio,
             dropout=dropout,
             activation="gelu",
             batch_first=True,
@@ -122,7 +143,7 @@ class AlphaLudoV11(nn.Module):
             encoder_layer, num_layers=num_attn_layers
         )
         # Final layer-norm after the transformer stack — common pre-norm pattern.
-        self.attn_out_norm = nn.LayerNorm(num_channels)
+        self.attn_out_norm = nn.LayerNorm(self.attn_dim)
 
         feat = num_channels
 
@@ -147,19 +168,33 @@ class AlphaLudoV11(nn.Module):
         # CNN backbone
         for block in self.res_blocks:
             out = block(out)
-        # out: (B, C, H, W)
+        # out: (B, num_channels, H, W) — full spatial resolution preserved
+        conv_features = out  # save for residual skip
 
         # Spatial → tokens for attention. (B, C, H, W) → (B, H*W, C)
         B, C, H, W = out.shape
-        tokens = out.flatten(2).transpose(1, 2)  # (B, H*W, C)
+        tokens = out.flatten(2).transpose(1, 2)  # (B, H*W, num_channels)
+
+        # Project down to attention dim if needed (V11.1: 96 → 64)
+        tokens = self.attn_in_proj(tokens)  # (B, H*W, attn_dim)
+
+        # Add positional embedding (matches attn_dim)
         tokens = tokens + self.pos_embedding
 
         # Transformer (pre-norm internally; layers carry residual)
         tokens = self.transformer(tokens)
         tokens = self.attn_out_norm(tokens)
 
+        # Project back up to num_channels for skip connection (V11.1: 64 → 96)
+        tokens = self.attn_out_proj(tokens)  # (B, H*W, num_channels)
+
         # Tokens → spatial. (B, H*W, C) → (B, C, H, W)
         out = tokens.transpose(1, 2).view(B, C, H, W)
+
+        # Residual: combine attention output with CNN features so attention
+        # is "additive refinement" not "replacement". Helps init stability
+        # and ensures CNN tactical info isn't lost if attention learns badly.
+        out = conv_features + out
 
         # Global average pool → (B, C)
         out = F.adaptive_avg_pool2d(out, 1)
@@ -271,13 +306,28 @@ class AlphaLudoV11(nn.Module):
 
 
 if __name__ == "__main__":
+    print("=== V11 (default — for comparison) ===")
     model = AlphaLudoV11()
     print(f"V11 params: {model.count_parameters():,}")
     print(f"  num_res_blocks: {model.num_res_blocks}")
     print(f"  num_attn_layers: {model.num_attn_layers}")
     print(f"  num_channels: {model.num_channels}")
+    print(f"  attn_dim: {model.attn_dim}")
     print(f"  in_channels: {model.in_channels}")
     print(f"  num_tokens (attention): {model.num_tokens}")
+
+    print()
+    print("=== V11.1 (reduced attention) ===")
+    model_v11_1 = AlphaLudoV11(
+        num_res_blocks=4, num_channels=96,
+        num_attn_layers=1, num_heads=2,
+        ffn_ratio=4, attn_dim=64,
+    )
+    print(f"V11.1 params: {model_v11_1.count_parameters():,}")
+    print(f"  num_attn_layers: {model_v11_1.num_attn_layers}")
+    print(f"  num_channels: {model_v11_1.num_channels}")
+    print(f"  attn_dim: {model_v11_1.attn_dim}")
+    model = model_v11_1  # smoke test the reduced variant
 
     # Smoke test forward
     x = torch.randn(2, 28, 15, 15)

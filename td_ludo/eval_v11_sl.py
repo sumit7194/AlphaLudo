@@ -38,10 +38,12 @@ def main():
     arch = ckpt.get('arch', {
         'num_res_blocks': 4, 'num_channels': 96,
         'num_attn_layers': 2, 'num_heads': 4, 'ffn_ratio': 4,
-        'dropout': 0.1, 'in_channels': 28,
+        'dropout': 0.1, 'in_channels': 28, 'attn_dim': None,
     })
-    # Set dropout to 0 for eval (deterministic)
+    # Set dropout to 0 for eval (deterministic). Default attn_dim if missing
+    # (legacy V11 checkpoints don't have this key).
     eval_arch = {**arch, 'dropout': 0.0}
+    eval_arch.setdefault('attn_dim', None)
     model = AlphaLudoV11(**eval_arch).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     print(f"[V11 Eval] Model: {model.count_parameters():,} params")
