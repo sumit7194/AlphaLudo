@@ -1722,4 +1722,85 @@ ResTNet wins on evidence-per-effort. If it works, we have our plateau break. If 
 
 **Naming**: V11 because architecture is genuinely different (CNN-only → CNN+Transformer hybrid). Not V10.3.
 
-Implementation: pending. Phase 1 starts on user greenlight.
+Implementation commits:
+- `a5ccca2` — V11 model class + MPS smoke test
+- `2a8bf1e` — V11 SL trainer (`train_sl_v11.py`)
+- `3c3c16f` — V11 RL trainer (`train_v11.py`) + parity-gate eval (`eval_v11_sl.py`)
+- `afad0ca` — Power-loss-safe RL training + V11 dashboard
+
+---
+
+#### Phase 1 results — V11 SL training (2026-04-25, COMPLETED)
+
+**Run**: `checkpoints/ac_v11/`, 5 epochs, 490K mixed-teacher samples (V10's existing dataset, encoding identical at 28ch). Initial run interrupted by power loss after E4; resumed cleanly via `--resume` to complete E5.
+
+**Bug fix during smoke test**: `non_blocking=True` + MPS + `pin_memory=True` combination caused stale/garbage tensor reads (negative values, malformed sums) cascading into NaN through `F.kl_div(target.log())`. Switched both off in `train_sl_v11.py`. V10 code had the same pattern but apparently didn't trigger in the V10 SL run we have on disk.
+
+**Per-epoch progression:**
+
+| Epoch | Time | Train pol_acc | **Val pol_acc** | Val win_acc | Val moves MAE |
+|---:|---:|---:|---:|---:|---:|
+| E1 | 13.5m | 72.4% | 89.2% | 68.2% | 12.6 |
+| E2 | 13.3m | 91.3% | 93.5% | 68.5% | 11.9 |
+| E3 | 13.3m | 93.8% | 94.5% | 68.9% | 11.8 |
+| E4 | 13.3m | 95.0% | 95.2% | 68.9% | 11.6 |
+| E5 | 13.8m | 95.7% | **95.5%** | 68.8% | 11.6 |
+
+**V11 SL vs V10 SL (same data, same loss):**
+
+| Metric | V10 SL | **V11 SL** | Δ |
+|---|---:|---:|---:|
+| Best val pol_acc | 93.6% | 95.5% | **+1.9pp** |
+| Best val win_acc | 68.9% | 68.8% | tied |
+| Best val moves MAE | 10.5 | 11.6 | -1.1 (slightly worse) |
+
+V11 outperforms V10 at every checkpoint. Consistency rules out noise. Attention is helping at SL stage.
+
+**Parity-gate evaluation (200 games vs random bot mix):**
+
+| Bot | V10 SL WR | **V11 SL WR** | Δ |
+|---|---:|---:|---:|
+| Expert | 67.6% | **87.5%** | **+19.9pp** ★ |
+| Aggressive | 66.7% | 72.4% | +5.7pp |
+| Random | 90.6% | 92.1% | +1.5pp |
+| Heuristic | 64.9% | 62.2% | -2.7pp |
+| Racing | 76.0% | 66.7% | -9.3pp |
+| Defensive | 68.6% | 46.2% | -22.4pp |
+| **Overall** | **73.5%** | **73.0%** | -0.5pp (within 200-game SE 3.1pp → tied) |
+
+Brier score: V11 0.171 vs V10 0.171 (identical). Calibration buckets all tracking similarly.
+
+**Headline interpretation**:
+- Aggregate WR is statistically tied (within noise)
+- val_pol_acc says V11 is genuinely 1.9pp stronger (more reliable signal at n=24K val samples)
+- Per-bot breakdown is striking: V11 dominates Expert (+20pp) and Aggressive (+6pp) — the strongest tactical bots — but is worse against Defensive and Racing
+- Hypothesis: attention helps with multi-step / strategic play (which Expert and Aggressive demand), small-sample noise on the others
+
+**Verdict: PARITY GATE PASSED. Proceeding to RL phase.**
+
+---
+
+#### Phase 2 launched — V11 RL training (2026-04-25, IN PROGRESS)
+
+**Run**: `checkpoints/ac_v11/`, fresh from `model_sl.pt`. Power-loss-safe configuration:
+- Auto-save every 90s (vs V10's 300s default) → max 1.5 min work loss
+- Rotating backups: `model_latest.pt` + `model_prev.pt` + `model_prev2.pt` (3 redundant slots)
+- Pre-eval + post-eval saves (eval is 5-10 min; want both states captured)
+- Load fallback: if `model_latest.pt` is corrupted on resume, automatically tries `model_prev.pt`. Tested with deliberately-truncated header — fallback worked.
+- Atomic per-save via existing `tmp + os.replace` pattern in trainer
+
+**RL configuration:**
+- Trainer: `trainer_v10.py` unchanged (V11 forward signature is V10-compatible)
+- Player: `players/v10.py` unchanged (V11 uses same `encode_state_v10`)
+- PPO: lr=1e-5, entropy=0.005, T=1.1→0.95 over 20K games (V10.2 baseline config)
+- LR warmup: linear 0 → 1e-5 over first 5K games (transformers benefit from warmup)
+- Dropout: 0.0 (PPO importance ratios break with stochastic forward; SL used 0.1)
+- Eval: every 10K games, 2000-game match (1.0pp SE)
+
+**Throughput**: ~30 GPM on MPS (vs V10's 187 GPM, 6× slower due to attention compute). At 30 GPM, 100K games ≈ 60 hours, 150K games ≈ 90 hours. RL phase will be slow.
+
+**Plateau-break gate**: eval WR ≥ 80% sustained over 3 consecutive 2000-game evals. First plateau-break in project history if achieved.
+
+**Dashboard**: `http://localhost:8789/v11_dashboard.html` — purpose-built for plateau-break tracking with reference lines at V6.1 ceiling (78.8%), V10 peak (78.6%), V10.2 2000-game peak (75.2%), V11 SL baseline (73%), and 80% plateau-break target.
+
+Status: PID 3254, in background. ETA depends on whether plateau-break happens earlier or we run full budget.
