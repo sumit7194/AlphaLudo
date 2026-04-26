@@ -350,6 +350,10 @@ def main():
                         help='Seconds between auto-saves with backup rotation. '
                              'Shorter = less work lost on power cut. '
                              'Default 90s (config default 300s for V10).')
+    parser.add_argument('--ppo-minibatch-size', type=int, default=0,
+                        help='Override PPO minibatch size (config default 256). '
+                             'Smaller = less attention memory per step, lets us '
+                             'avoid macOS jetsam OOM on 16GB Macs. 0 = use config.')
 
     # V11-specific: LR warmup at start of RL
     parser.add_argument('--rl-warmup-games', type=int, default=5000,
@@ -448,6 +452,13 @@ def main():
         trainer.entropy_coeff = args.entropy_coeff
         print(f"[V11 Train] Entropy: {old_ent} → {args.entropy_coeff}")
 
+    # PPO minibatch override (memory-safety on tight RAM systems)
+    if args.ppo_minibatch_size > 0:
+        old_mb = trainer.ppo_minibatch_size
+        trainer.ppo_minibatch_size = args.ppo_minibatch_size
+        print(f"[V11 Train] PPO minibatch: {old_mb} → {args.ppo_minibatch_size} "
+              f"(reduces attention memory peak)")
+
     elo_tracker = EloTracker(save_path=ELO_PATH)
     _elo_tracker = elo_tracker
     print(f"[V11 Train] Elo: Model={elo_tracker.get_rating('Model'):.0f}")
@@ -475,10 +486,19 @@ def main():
     rolling_win_rate = deque(maxlen=500)
     start_time = time.time()
     last_save_time = time.time()
-    games_since_eval = 0
     eval_drops = 0
     games_at_start = trainer.total_games
     trainer.play_alarm = args.alarm
+
+    # Bucket-based eval scheduler — survives restarts cleanly.
+    # The naive approach (session-local counter) loses progress on every
+    # power-loss restart and shifts eval boundaries off "round" game counts.
+    # Bucket approach: eval whenever total_games crosses an EVAL_INTERVAL
+    # boundary (10K, 20K, ...) regardless of how many sessions split the run.
+    last_eval_bucket = trainer.total_games // EVAL_INTERVAL
+    if trainer.total_games > 0:
+        print(f"[V11 Train] Eval scheduler: last_bucket={last_eval_bucket} "
+              f"(next eval at G={(last_eval_bucket + 1) * EVAL_INTERVAL:,})")
 
     # LR annealing (same as V10)
     lr_anneal_active = args.anneal_lr > 0
@@ -549,7 +569,6 @@ def main():
             results = player.play_step(train=True)
 
             for result in results:
-                games_since_eval += 1
                 rolling_win_rate.append(1 if result['model_won'] else 0)
 
                 elo_tracker.update_from_game(
@@ -597,7 +616,8 @@ def main():
                 last_save_time = time.time()
                 print(f"[Auto-save] Checkpoint + backups rotated (game {trainer.total_games})")
 
-            if games_since_eval >= EVAL_INTERVAL:
+            current_bucket = trainer.total_games // EVAL_INTERVAL
+            if current_bucket > last_eval_bucket:
                 # Save BEFORE eval (eval is long; power loss mid-eval would
                 # otherwise rewind further than necessary).
                 safe_save_with_rotation(trainer, CHECKPOINT_DIR)
@@ -630,7 +650,7 @@ def main():
 
                 safe_save_with_rotation(trainer, CHECKPOINT_DIR, is_best=is_best)
                 elo_tracker.save()
-                games_since_eval = 0
+                last_eval_bucket = current_bucket  # advance bucket
                 last_save_time = time.time()
 
                 trainer.is_stagnated = (eval_drops >= EARLY_STOP_PATIENCE)
