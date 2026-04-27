@@ -5,11 +5,26 @@ V6.1 (AlphaLudoV5):  ResNet-10, 128ch, 24-channel strategic input.
 V6.3 (AlphaLudoV63): Same backbone with 27 input channels (+ bonus_turn,
                      consecutive_sixes, two_roll_capture_map) and an aux head.
                      Aux head is loaded but unused at inference.
+V11.1 (AlphaLudoV11): ResNet-4 + 1 Transformer attention layer, 96ch backbone,
+                     attn_dim=64, 28-channel input. 3-head: policy + win_prob + moves_remaining.
+                     Imported from the main package to keep one source of truth.
 """
 
+import os
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Make td_ludo.models importable (the main package containing V11)
+_PLAY_DIR = os.path.dirname(os.path.abspath(__file__))
+_TD_LUDO_DIR = os.path.dirname(_PLAY_DIR)
+if _TD_LUDO_DIR not in sys.path:
+    sys.path.insert(0, _TD_LUDO_DIR)
+
+# Re-export V11 from the canonical implementation in the main package.
+# Using import (not redefinition) avoids drift if the main model file changes.
+from td_ludo.models.v11 import AlphaLudoV11  # noqa: F401  (re-exported)
 
 
 class ResidualBlock(nn.Module):

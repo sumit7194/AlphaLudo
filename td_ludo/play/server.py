@@ -2,11 +2,12 @@
 AlphaLudo Play — Web Server for Human vs AI Ludo
 
 Flask backend that manages game state via the C++ engine and runs AI
-inference. Supports both V6.1 (24-channel) and V6.3 (27-channel) models.
+inference. Supports V6.1 (24ch), V6.3 (27ch), and V11.1 (28ch CNN+attention).
 
 Select via env var:
-    LUDO_MODEL=v6_1  (default, loads model_weights/model.pt)
-    LUDO_MODEL=v6_3  (loads model_weights/model_v6_3.pt)
+    LUDO_MODEL=v6_1                  (loads model_weights/model.pt)
+    LUDO_MODEL=v6_3                  (loads model_weights/model_v6_3.pt)
+    LUDO_MODEL=v11   (default)       (loads model_weights/model_v11.pt)
 """
 
 import os
@@ -23,16 +24,17 @@ sys.path.insert(0, TD_LUDO_DIR)
 
 import td_ludo_cpp as ludo_cpp
 from flask import Flask, jsonify, request, send_from_directory
-from model import AlphaLudoV5, AlphaLudoV63
+from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11
 
 # ── Configuration ──────────────────────────────────────────────
-MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v6_1').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3'):
-    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1' or 'v6_3'.")
+MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v11').lower()
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11'):
+    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', or 'v11'.")
 
 MODEL_FILES = {
     'v6_1': os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
     'v6_3': os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
+    'v11':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
 
@@ -151,7 +153,16 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v6_3':
+    if MODEL_VERSION == 'v11':
+        # V11.1 architecture: 4 ResBlocks + 1 attn layer × 2 heads × dim 64,
+        # 96ch CNN backbone, 28-channel input, dropout=0 for deterministic play.
+        model = AlphaLudoV11(
+            num_res_blocks=4, num_channels=96,
+            num_attn_layers=1, num_heads=2,
+            ffn_ratio=4, attn_dim=64,
+            dropout=0.0, in_channels=28,
+        )
+    elif MODEL_VERSION == 'v6_3':
         model = AlphaLudoV63(num_res_blocks=10, num_channels=128, in_channels=27)
     else:
         model = AlphaLudoV5(num_res_blocks=10, num_channels=128, in_channels=24)
@@ -291,7 +302,10 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION == 'v6_3':
+            if MODEL_VERSION == 'v11':
+                # V11 uses the V10 encoder (28 channels) — same as encode_state_v10.
+                state_tensor = ludo_cpp.encode_state_v10(self.state)
+            elif MODEL_VERSION == 'v6_3':
                 # Use AI's consecutive sixes count for ch 25
                 state_tensor = ludo_cpp.encode_state_v6_3(
                     self.state, int(self.consecutive_sixes[AI_PLAYER])
@@ -304,14 +318,16 @@ class GameManager:
             mask = np.ones(4, dtype=np.float32)
 
             with torch.no_grad():
-                s_t = torch.from_numpy(state_tensor).unsqueeze(0).to(
+                s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
                     self.device, dtype=torch.float32
                 )
                 m_t = torch.from_numpy(mask).unsqueeze(0).to(
                     self.device, dtype=torch.float32
                 )
                 out = self.model(s_t, m_t)
-                # V6.1 returns (policy, value); V6.3 returns (policy, value, aux)
+                # V6.1: (policy, value)
+                # V6.3: (policy, value, aux)
+                # V11:  (policy, win_prob, moves_remaining)
                 v = float(out[1].squeeze().item())
         except Exception as e:
             print(f"[Play] win_chance failed: {e}")
@@ -321,9 +337,14 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        # Sigmoid squash for display — value head isn't calibrated probabilities.
-        import math
-        ai_win_prob = 1.0 / (1.0 + math.exp(-v))
+        if MODEL_VERSION == 'v11':
+            # V11's win_prob head is sigmoid-output, BCE-trained on actual
+            # outcomes — already a calibrated probability in [0, 1].
+            ai_win_prob = v
+        else:
+            # V6.x value head is unbounded; squash for display.
+            import math
+            ai_win_prob = 1.0 / (1.0 + math.exp(-v))
         return max(0.001, min(0.999, ai_win_prob))
 
     def _get_state_json(self):
@@ -519,7 +540,9 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': int(self.state.current_dice_roll) or roll_result['dice_roll']}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION == 'v6_3':
+        if MODEL_VERSION == 'v11':
+            state_tensor = ludo_cpp.encode_state_v10(self.state)
+        elif MODEL_VERSION == 'v6_3':
             state_tensor = ludo_cpp.encode_state_v6_3(
                 self.state, int(self.consecutive_sixes[cp])
             )
@@ -530,12 +553,13 @@ class GameManager:
             legal_mask[m] = 1.0
 
         with torch.no_grad():
-            s_t = torch.from_numpy(state_tensor).unsqueeze(0).to(self.device, dtype=torch.float32)
+            s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(self.device, dtype=torch.float32)
             m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(self.device, dtype=torch.float32)
-            # Run full model (policy + value) for richer logging
+            # Run full model for richer logging.
+            # V6.1: (policy, value); V6.3: (policy, value, aux); V11: (policy, win_prob, moves_remaining)
             full_out = self.model(s_t, m_t)
             policy = full_out[0].squeeze(0).cpu().numpy()
-            value = float(full_out[1].squeeze().item())
+            value = float(full_out[1].squeeze().item())  # win_prob for v11, value for v6.x
             probs = policy
             action = int(policy.argmax())
 
@@ -578,6 +602,10 @@ MODEL_INFO = {
     'v6_3': {
         'label': 'V6.3 (SL+RL)',
         'subtitle': 'V6.3 SL+RL · 77.8% eval · 3M params',
+    },
+    'v11': {
+        'label': 'V11.1 ResTNet',
+        'subtitle': 'V11.1 CNN+Attention · 79.05% eval (best) · 780K params',
     },
 }
 
