@@ -1868,3 +1868,100 @@ The residual `out = conv_features + attn_out` ensures that even if reduced atten
 | 70-75% WR vs bots (parity with V11) | Acceptable; launch V11.1 RL |
 | 65-70% WR vs bots (below V11) | Reduced too aggressively; restore num_heads to 4 (still 1 layer) |
 | <65% WR vs bots | 1 layer + dim 64 too small; either restore 2 layers or pivot to token-entity attn |
+
+#### V11.1 final results (2026-04-28)
+
+**SL parity**: 74.0% WR vs bots (V10 ref 73.5%, +0.5pp). 95.2% val pol_acc.
+
+**RL trajectory** (71 evals across 770K games, on local Mac MPS then GCP L4):
+- G=10K → 73.85% (start)
+- G=80K → 75.70% (first peak, exceeds V10.2's 75.15% all-time)
+- G=400K → 78.60% (climbing)
+- **G=650K → 79.05% (best ever)** ★ project-wide best on 2000-game eval
+- G=730K → 77.30% (latest)
+- Mean of last 10 evals: **77.43%** (V10.2 mean was ~72.5%, **+5pp** band shift)
+
+**Comparison to project history:**
+- V6.1 best: 78.8% (single 500-game eval, SE 1.9pp — true value 76-81%)
+- V10 best: 78.6% (single 500-game eval)
+- V10.2 best: 75.15% (2000-game eval, SE 1.0pp)
+- **V11.1 best: 79.05% (2000-game eval, SE 1.0pp)** — strongest result with most rigorous methodology
+
+**Plateau-break gate**: ≥80% sustained over 3 consecutive 2000-game evals — **NOT met**. Best single eval was 79.05%, never crossed 80%. Asymptote appears to be in 78-79% range.
+
+**Human gameplay analysis (2026-04-28)**: V11.1 played User in 1 game, won 4-3 in 189 moves. User reported "boring, predictable AI". Quantitative analysis of game log + comparative play:
+
+1. **Leader-greedy stacking**: 34.2% of V11.1's decisions had max prob >0.95 (V6.3: 7-10%); 28.8% had prob >0.99 (V6.3: 1-4%). Hyper-confident on the most-advanced token.
+2. **Token sat idle**: T1 stayed at pos 0 for 17 consecutive AI turns while T0 raced ahead. Standard pattern across multiple games.
+3. **Capture-blind**: In observed gameplay V11.1 had a clear capture opportunity (Human's T2 in dice range of own T2/T3) but assigned 0.0% probability to those tokens, picked T1 home-column push instead. Confirms V11.1 only captures "by coincidence" when leader's natural path crosses an opponent.
+4. **Value head overconfident**: Reports 0.85-0.89 win prob in 0-0 mid-game. Drops paradoxically when AI scores its first token (0.55) — suggests value head reads "I have fewer tokens on the field" as bad. Adjusts late.
+
+**Root cause hypothesis (matches V6 mech-interp finding)**: V11.1's attention operates over 225 board CELLS, not over the 8 actual game pieces. The model can't directly compute "this opp piece is in my dice range → capture EV". Cell attention fails for entity-relational reasoning.
+
+**Verdict**: V11.1 is the strongest CNN+attention model the project has produced, but the gameplay-revealed weaknesses are architectural — not RL-fixable without either:
+1. Dense capture/danger reward shaping (tried in V6.3 era, mixed results)
+2. **Token-entity attention** that operates directly over the 8 game pieces (V12 hypothesis)
+
+V11.1 RL stopped at G=770K, ckpts archived to `_archive/ac_v11_1_premac_*` and play-server checkpoint at `play/model_weights/model_v11.pt`.
+
+---
+
+### Experiment 21: V12 — Token-entity attention (2026-04-28, IN PROGRESS)
+
+**Motivation**: V11.1 gameplay analysis (above) identified the failure mode as cell-vs-entity attention. The model needed to attend over the 8 actual game pieces, not over board cells. V12 makes this surgical change.
+
+**Architecture** (`td_ludo/models/v12.py`):
+
+| Component | V11.1 | V12 |
+|---|---|---|
+| Input | (B, 28, 15, 15) | same — no encoder change |
+| CNN backbone | 4 ResBlocks × 96ch | same (proven) |
+| Attention input | 225 board cells × 96 dim | **8 game-piece tokens × 96 dim** |
+| Attention map size | 225×225 = 50,625 per head | **8×8 = 64 per head (~700× cheaper)** |
+| Attention layers | 1 layer × 2 heads | **2 layers × 4 heads** (we have memory budget) |
+| Position information | Learned 2D positional emb (225 × 96) | **Owner emb + token-idx emb** (8 entities) |
+| Heads | policy + win_prob + moves | same |
+| Total params | 780K | 951K |
+
+**Key trick**: per-token features extracted via `einsum("btij,bcij->btc", own_mask, cnn_features)` using input channels 0-3 (own tokens, one-hot per token) and 17-20 (opp tokens, one-hot per token) as gather masks. The one-hot at token_i's cell × CNN feature at that cell = feature vector for token_i. No model input changes needed.
+
+**SL training results (5 epochs, 490K mixed-teacher samples on L4)**:
+
+| Metric | V10 SL | V11 SL | V11.1 SL | **V12 SL** |
+|---|---:|---:|---:|---:|
+| Wall clock | ~30 min CPU | ~70 min MPS | ~30 min MPS | **7 min L4** ★ |
+| Val pol_acc | 93.6% | 95.5% | 95.2% | **95.9%** ★ project best |
+| Val win_acc | 68.9% | 68.8% | 68.9% | **69.0%** |
+| Val moves MAE | ~10.5 | 11.6 | 11.6 | **9.49** ★ project best |
+| Bot WR (200 games) | 73.5% | 73.0% | 74.0% | **73.5%** (parity passed) |
+
+V12 reached 92.6% val_pol_acc on epoch 1 alone (V11.1 needed 4 epochs to match). The smaller attention is faster per epoch AND learns the policy distribution more efficiently — exactly what you'd expect if "8 token entities" is a more natural inductive bias than "225 board cells".
+
+**Per-bot SL profile — strikingly different from V11.1**:
+
+| Bot | V11.1 SL | **V12 SL** | Δ |
+|---|---:|---:|---:|
+| Aggressive | 61.1% | **79.4%** | **+18.3pp** |
+| Random | 88.9% | 97.2% | +8.3pp |
+| Defensive | 62.9% | 66.7% | +3.8pp |
+| Racing | 77.4% | 74.2% | -3.2pp |
+| Expert | **75.6%** | 57.1% | **-18.5pp** |
+| Heuristic | **83.3%** | 62.1% | **-21.2pp** |
+
+V12 has flipped strengths: dominates aggressive opponents (which engage frequently — token attention can react to threats) but struggles vs Expert/Heuristic (the more positional bots — V11.1's cell attention may have learned terrain-specific patterns V12 lacks).
+
+This is exactly the **different inductive bias** we hoped for. The hope is that RL — playing against V12-itself in self-play + bot mix — recovers the missing positional skill while keeping the new entity-relational strength.
+
+**RL launched (PID 16469 on L4, port 8790, dashboard at http://34.143.250.98:8790/)**.
+
+Early RL evals (3 evals, 30K games):
+
+| G | Eval WR |
+|---|---|
+| 10K | 77.5% |
+| 20K | 76.4% |
+| 30K | 77.0% |
+
+Comparison to V11.1's first 3 evals: 73.85 / 71.80 / 71.50. **V12 is starting ~5pp higher** — consistent with V12's stronger SL baseline and possibly with the architecture being a better fit. Same plateau-break gate (≥80% sustained × 3 evals).
+
+Status: **early — too soon to call**. Need 10-15 more evals (G=130K-180K) before claiming V12 has broken through V11.1's 79.05% peak. 24-hour run gives us approximately 600K games at L4's ~500 GPM.

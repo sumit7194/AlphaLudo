@@ -289,3 +289,130 @@ Whenever Sumit is free. Does not block any other step. Feed results back here.
 | Date | Change | By |
 |---|---|---|
 | 2026-04-10 | Plan created after V6.1 plateau discussion | Claude + Sumit |
+| 2026-04-28 | Plan extended with §10–§13: post-V11.1 status, RLHF idea for future | Claude + Sumit |
+
+---
+---
+
+## 10. Status as of 2026-04-28 (post-V11.1, mid-V12)
+
+The original plan (Steps 1–6 from §3) was executed through 2026-04. Outcomes summarized here so this document doubles as "where we are now" without needing to grep the journal.
+
+| Step | What | Result |
+|---|---|---|
+| 1: MCTS@inference sweep | V6.1 + 25/50/100/200 sims vs Expert | **FAILED** — every sim count *worse* than raw policy. Dice branching dilutes UCB, value head not calibrated. Confirmed in journal Exp 13c. |
+| 2: Reward shaping 50% reduction | V6.1 RL with halved dense rewards | **NEUTRAL-NEGATIVE** — drifted -2pp, never exceeded 78.8%. Journal Exp 13d. |
+| 3: Reward shaping baseline restoration | Reverted to v2.2 dense rewards | OK, used as baseline for V6.3+ work |
+| 4: Human benchmark | 3 games vs V6.1 best | **Decisive finding** — V6.1 plays strong tactics, zero multi-turn planning. Motivated V6.3 capture-prediction head. Journal Exp 13e. |
+| 5: V6.3 capture-prediction head | 3 new channels + aux capture head | Neutral by 1000-game H2H (50/50 vs V6.1). Journal Exp 14, 14b. |
+| 6: V10 slim multi-task | 6×96 CNN, 28ch input, 3 calibrated heads | 1/3 the params, matched V6.1's eval ceiling. Journal Exp 15, 16, 18. |
+
+After V6 family was exhausted, we ran:
+- **Exp 19** — exploiter self-play (PSRO-lite). Same-family exploiter from V10 SL plateaued at 47.9% vs frozen V10.2 in 84K games. **Confirmed plateau is robust to behavioral exploitation within the V10 family.** Did not pursue V6.1-init heterogeneous exploiter (user push: V6.1 ≈ V10 architecturally).
+- **Exp 20** — V11 ResTNet (CNN + 2 attn over 225 cells). OOM on 16GB Mac. V11.1 (1 attn × 2 heads × dim 64) trained successfully. Best 79.05% on 2000-game eval (project record), mean 77.4% across last 10 evals (+5pp band shift over V10.2). **Did not break the 80% gate.** Gameplay analysis revealed leader-greedy + capture-blind failure modes traceable to "attention over cells, not entities".
+- **Exp 21** — V12 token-entity attention (IN PROGRESS). 8-token attention over the actual game pieces. SL parity passed (95.9% val acc, 73.5% bot WR). Per-bot profile flipped from V11.1 — strong vs Aggressive/Random, weak vs Expert/Heuristic. RL launched on L4, early evals 76.4–77.5% at G=10–30K. Verdict pending ~24h training.
+
+**The 78–79% asymptote is stable across 4 architecture families.** V11.1 showed it's marginally above V6.1 (with much better methodology) but the strict 80% gate hasn't fallen. V12's qualitative gameplay difference is more interesting than its raw eval number.
+
+---
+
+## 11. What's left in the plateau-break toolkit
+
+After V12 finishes (success or plateau), the remaining unexplored angles, ranked by EV:
+
+### 11.1 Reward shaping rerun on V12
+
+V11.1's failure mode (capture-blind, leader-greedy) was clearly **reward-induced**, not architecture-induced — the model learned exactly what `+0.40 per scored token + ±1 terminal` rewards. With V12's token-entity attention now in place, a *reread* of explicit capture/danger rewards may behave differently:
+
+- V6.3-era dense capture reward (+0.20 capture, -0.20 got-killed) was abandoned because it distorted V6.1's policy. But V12's architecture is fundamentally different.
+- Proposal: V12.1 = V12 + add `+0.10 per capture, -0.10 per got-captured` to existing sparse rewards. Smaller magnitude than v1 dense rewards (which V6.1 used at +0.20).
+- Risk: similar to V6.1's failure mode — reward distorts the learned behavior. But token-entity attention may absorb the signal more cleanly.
+
+### 11.2 RLHF — Reinforcement Learning from Human Feedback (idea for future)
+
+User-flagged for future: **make AlphaLudo human-aligned, not just bot-eval-optimized**. The 78-79% bot eval ceiling may be the actual limit of "playing well against this bot mix", but **subjectively good play** (rich strategy, satisfying gameplay for human opponents) may not correlate with bot-WR at all.
+
+**Why this matters for our project specifically**:
+- User's gameplay reports describe V11.1 as "boring, predictable, leader-greedy". The eval WR (best 79.05%) doesn't capture this.
+- A model that plays at 76% WR but exhibits **diverse strategy choice, dynamic capture, multi-turn planning** would be strictly better as an opponent than one at 79% WR with mechanical leader-pushing.
+- The bot-mix evaluation framework (Random + Heuristic + Aggressive + Defensive + Racing + Expert) doesn't penalize predictability or boredom.
+
+**Possible RLHF flavors for AlphaLudo** (to discuss when V12 settles):
+
+A. **Human preference ranking on game pairs**:
+   - Generate 2 game trajectories from V12 (different temperatures or different ghost opponents)
+   - Show user the games (or summary of moves), get binary preference
+   - Train a reward model on preferences, RL the policy against that reward
+   - Reference: Christiano et al. 2017 "Deep RL from Human Preferences"
+   - Cost: ~100-1000 user-labeled comparisons, then standard PPO with new reward
+   - Pros: directly optimizes for "fun to play against"
+   - Cons: requires hours of user feedback collection
+
+B. **Behavior cloning from human play**:
+   - User plays N=100+ games (against bots, not against V12)
+   - Train a model that imitates user's move distribution
+   - Use this as an additional opponent in V12's training mix
+   - Effect: V12 learns to handle "human-like" strategies, not just bot patterns
+   - Pros: zero subjective rating burden — just play normally
+   - Cons: needs significant gameplay logging infra
+
+C. **Reward shaping based on observed gameplay critiques**:
+   - User flags specific moves as "bad" in past gameplay (we're already doing this with the log analysis)
+   - Convert critiques to programmatic reward components: e.g., "missed capture" → -0.05, "kept token idle 10+ turns" → -0.03
+   - Cheaper than full RLHF; uses your structured analysis from gameplay.
+   - Pros: builds on existing analysis pipeline (game log parser)
+   - Cons: relies on us inferring what critiques generalize
+
+D. **Best-of-N sampling at inference**:
+   - Train a separate "fun" reward head via small-scale RLHF (≤500 labels)
+   - At play time, sample N=10 candidate moves from policy, pick the one with highest "fun" reward
+   - No RL retraining needed; just inference-time selection
+   - Pros: cheapest, easiest to add to play server
+   - Cons: bounded by policy's existing diversity (can't introduce moves the policy gives ≈0 prob to)
+
+**Recommendation for when we revisit**:
+- Start with **(C) — programmatic reward shaping from observed critiques**. We have the gameplay analysis infrastructure already (`/tmp/analyze_games.py`). We have specific failure modes documented. Translate them to reward components and re-run V12 RL with the augmented reward. Cheapest experiment with the most direct connection to "what we observed was wrong".
+- If (C) doesn't move the needle on subjective gameplay quality, escalate to **(A) — true RLHF**. Costs more user time but is the principled approach.
+- (B) behavior cloning is interesting but probably needs >100 logged games of user play to be useful, and currently we have ~5.
+
+**Not recommended**: (D) inference-time best-of-N. The policy is already very narrow (V11 puts 99% on one move, 0% on others); sampling N=10 from a near-deterministic policy gives you 1 unique move 99% of the time.
+
+### 11.3 Token-entity attention with explicit relational features (V12.1 / V13)
+
+If V12 underperforms the 78-79% asymptote, the next architectural variant would add explicit **relational features** between token pairs:
+- For each pair of tokens (own, opp): include scalar features like "distance_modulo_52" or "in_capture_range_with_dice_X"
+- Pass relational features as bias to attention scores
+- Reference: graph attention networks (GAT), pair-wise relational reasoning
+
+This makes capture-detection a built-in inductive bias rather than something the model must learn from scratch. Risk: brittle to game variants, more code complexity. Defer until V12 verdict.
+
+### 11.4 Stochastic MuZero (the moonshot)
+
+Still on the table per research synthesis, but ~6 weeks of careful engineering. Defer until everything cheaper is exhausted and we still want to push past 80%.
+
+---
+
+## 12. Updated artifact ledger (2026-04-28)
+
+| Path | Location | Description | Games | Best eval |
+|---|---|---|---|---|
+| `td_ludo/checkpoints/ac_v6_1_strategic/model_best.pt` | Local | V6.1 strategic | ~157K | 78.8% (500-game) |
+| `td_ludo/checkpoints/ac_v6_3_capture/model_best.pt` | Local | V6.3 SL+RL | ~156K | 77.8% (500-game) |
+| `td_ludo/checkpoints/ac_v10/model_v102_frozen_g302k.pt` | Local | V10.2 final | 302K | 75.15% (2000-game) |
+| `td_ludo/checkpoints/_archive/ac_v11_1_premac_*` | Local | V11.1 final, multiple snapshots | up to 770K | **79.05% (2000-game)** ★ project best |
+| `td_ludo/play/model_weights/model_v11.pt` | Local play server | V11.1 best ckpt for human-vs-AI | (G=650K, 79.05%) | for play |
+| `~/AlphaLudo/td_ludo/checkpoints/ac_v12/` | GCP L4 | V12 (in training) | growing | TBD |
+| `gs://[no bucket yet]` | GCS | (none — direct VM-to-VM transfers) | — | — |
+
+**Rule**: V11.1 final ckpts archived. Do not delete `_archive/ac_v11_1_premac_*` directories. They represent the strongest CNN+attention model the project produced and are needed for any A/B comparison vs V12 outcomes.
+
+---
+
+## 13. Open decision queue
+
+These are pending discussions, listed so we don't lose them:
+
+1. **If V12 RL plateaus near 78-79%**: pursue 11.1 (capture reward shaping) before declaring done. ETA: 1-2 days of V12.1 RL.
+2. **If V12 RL breaks 80%**: stop, document, ship V12 as final. Update play server.
+3. **RLHF roll-out** (§11.2): pause until V12 settles. Then revisit with the recommendation in §11.2.
+4. **Architecture moonshot**: Stochastic MuZero on the table but not justified until 11.1 + 11.3 also fail.
