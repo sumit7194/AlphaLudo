@@ -2069,3 +2069,108 @@ Implementation: commit `017a3bb` (DecisionLogger class, review modal, real-time 
 **Deferred to V12.2**: aux head for per-token home-turn prediction (forcing function for per-token reasoning). Speculative; not directly demanded by eval-lens evidence. Will revisit after measuring V12.1's gains.
 
 **Status (2026-04-28 22:55)**: code complete on `main` (`017a3bb` … `b97ea97`), pushed to origin, synced + rebuilt on `alphaludo-l4`. Trainer stopped (PID 16469 SIGTERM, clean). V12-final checkpoints (model_latest.pt + model_best.pt) saved to `play/model_weights/v12_final/`. VM left running (idle ~$0.70/hr) for the next SL warm-up + RL launch when ready.
+
+---
+
+### Experiment 22b (continued): V12.1 launch + crash diagnosis (2026-04-29)
+
+V12.1 chain launched on L4 in two attempts.
+
+**First attempt (17:51)**: shell `set -e` didn't catch a Python crash because
+`python ... | tee` pipeline reports tee's success code instead of python's.
+SL crashed on `model.load_state_dict(...)` with strict=True — surgery output
+intentionally drops shape-changed `policy_fc1/policy_fc2` and removed
+`token_idx_emb`. Chain blindly advanced to RL stage on the un-warmed surgery
+ckpt, generating 510 garbage-RL games before being killed.
+
+Fix (commit `94d4386`): `train_sl_v12.py` now loads with `strict=False`,
+filters shape-mismatched entries, logs missing/unexpected keys, and starts
+optimizer+scheduler+epoch fresh on a surgery resume.
+
+**Second attempt (17:57)**: SL warm-up ran cleanly (5 epochs, val_pol_acc
+89.6%, val_win_acc 67.9%, val_moves_mae 11.5). Surgery resume transferred
+89/94 V12 tensors; 4 reshaped policy-head tensors reinit'd. RL stage
+launched at G=0, ran 10K games at GPM 699 with healthy stats:
+`policy_entropy = 0.379` (vs V12's collapsed 0.144 — entropy bump confirmed
+to keep exploration alive), `win_rate_100 = 61.2%`, `total_updates = 13569`.
+
+**Crash at G=10K (first eval)**:
+```
+RuntimeError: Given groups=1, weight of size [96, 33, 3, 3],
+              expected input[1, 28, 15, 15] to have 33 channels, but got 28
+```
+Self-play training was matched (uses `td_ludo.game.players.v11.VectorACGamePlayer`
+with `encode_state_v11` → 33ch). Eval pipeline `evaluate_v10.evaluate_model`
+hardcoded `encode_state_v10` (28ch) — never updated for V12.1.
+
+Decision: don't fix-and-resume V12.1. The eval-lens evidence and mech-interp
+findings (CKA > 0.95 across all 4 ResBlocks) point at architecture
+redundancy beyond what V12.1's slot-bias fixes can address. Pivot to V12.2
+(fresh init, wider/shallower) instead.
+
+---
+
+### Experiment 23: V12.2 — fresh wider+shallower (2026-04-29, IN PROGRESS)
+
+**Architecture decisions** (locked in with user):
+
+| | V12 | V12.1 (cancelled at G=10K) | **V12.2** |
+|---|---|---|---|
+| ResBlocks × Channels | 4 × 96 | 4 × 96 | **3 × 128** |
+| Attention dim | 96 | 96 | **128** (matches CNN) |
+| `token_idx_emb` | yes | dropped | dropped |
+| Policy head | pooled→4 | per-token | per-token |
+| Input encoder | V10 (28ch) | V11 (33ch) | V11 (33ch) |
+| Init | random | surgery from V12 | **random (fresh)** |
+| SL data source | `sl_data_v10/` (mixed bots) | same | **NEW `sl_data_v122/` (V12-latest as teacher)** |
+| RL game composition | 40/25/15/10/10 | same | **75/15/5/3/2** (more self-play) |
+| Total params | 951K | 945K | **1.36M** |
+
+**Pipeline (`chain_v122.sh`)**:
+1. Stage 0: `generate_sl_data_v122.py` runs V12-latest playing 75% self-play +
+   25% bot-mix, captures 500K decision states encoded with V11 (33ch).
+2. Stage 1: `train_sl_v12.py` 10 epochs, fresh init, token-permutation aug ON.
+3. Stage 2: `train_v12.py --resume --num-res-blocks 3 --num-channels 128
+   --game-composition v122 --entropy-coeff 0.01`.
+
+`set -euo pipefail` (catches `python | tee` failures), writes `chain_status.json`
+on every transition, dashboard reflects current stage.
+
+**Files added** (`4759450`):
+- `scripts/generate_sl_data_v122.py` — V12-latest teacher, mixed game comp
+- `td_ludo/models/v12_legacy.py` — original V12 architecture (loadable
+  with the trained 81%-peak checkpoint, used for SL data generation only)
+- `evaluate_v11.py` — fixes V12.1's eval crash (33-channel encoder)
+- `v12_dashboard.html` — chain-aware: 3 stage cards, SL tile grid, RL
+  tile grid, plateau-break gate dots, ELO leaderboard + history chart
+- `chain_v122.sh` — robust pipeline driver
+
+**Files modified**:
+- `train_v12.py`: `--game-composition v122` flag (monkey-patches the
+  module-level `GAME_COMPOSITION` binding in `src.config` and `players.v11`),
+  eval imports `evaluate_v11`, dashboard prefers v12 then v11 then index,
+  new API routes `/api/sl_stats` and `/api/chain`.
+- `train_sl_v12.py`: dataset auto-detects 28ch (pad to 33) vs 33ch (direct),
+  per-epoch `sl_stats.json` write.
+
+**Smoke test (Mac MPS, 500-state scale)**: data → SL → RL init → eval all
+green. Param count verified: 1,362,947. Eval pipeline confirmed no longer
+hits the 28/33 channel mismatch.
+
+**Status (2026-04-29 00:30)**: code on `main` at `4759450`, pushed and synced
+to L4. VM verified: encode_state_v11 available, V12.2 model instantiates,
+evaluate_v11 importable. Chain not yet launched — awaiting user trigger.
+
+**Launch command** (from VM):
+```
+cd ~/AlphaLudo/td_ludo
+nohup setsid bash chain_v122.sh > /tmp/v122_chain.out 2>&1 < /dev/null &
+disown
+```
+
+**Success criteria** (re-run mech-interp + eval-lens at G≥100K):
+- T2 channel ablation KL: 0.27 → ≥1.0
+- T2 disagreement rate vs human: 45% → ≤25%
+- `leading_token_in_danger` linear probe: 89.5% → ≥95%
+- Policy entropy stable in [0.3, 0.5]
+- Best eval WR ≥ V12's 81.0%; ideally 3 consecutive ≥80% (plateau-break gate met)
