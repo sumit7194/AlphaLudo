@@ -18,6 +18,22 @@ let legalMoves = [];
 let awaitingMove = false;
 let isProcessing = false;
 
+// Eval-Lens — track current game_id so we can fetch its review
+// after the game ends (server returns a fresh id from /api/new_game).
+let currentGameId = null;
+let reviewedGameId = null;
+
+// Eval-Lens — V12's recommended token for the current human roll.
+// Set from the /api/roll_dice response, cleared on each new roll/move.
+let modelPick = null;     // int 0..3, or null
+let modelPolicy = null;   // [p0, p1, p2, p3], or null
+
+function syncGameId(data) {
+    if (data && typeof data.game_id === 'string' && data.game_id) {
+        currentGameId = data.game_id;
+    }
+}
+
 // Cell type lookup (built from layout data)
 const cellTypes = {};  // "r,c" -> type string
 
@@ -117,12 +133,17 @@ function buildBoard() {
 async function newGame() {
     const res = await fetch('/api/new_game', { method: 'POST' });
     gameState = await res.json();
+    syncGameId(gameState);
+    reviewedGameId = null;
     legalMoves = [];
     awaitingMove = false;
     isProcessing = false;
-    
+    modelPick = null;
+    modelPolicy = null;
+
     // Clear UI
     document.getElementById('winModal').classList.remove('show');
+    document.getElementById('reviewModal').classList.remove('show');
     document.getElementById('diceValue').textContent = '?';
     document.getElementById('diceHint').textContent = 'Click to roll';
     document.getElementById('dice').classList.remove('disabled');
@@ -164,14 +185,23 @@ async function rollDice() {
     const res = await fetch('/api/roll_dice', { method: 'POST' });
     const data = await res.json();
     gameState = data;
+    syncGameId(data);
+
+    // V12's prediction for this roll — used to highlight the recommended
+    // token. Cleared whenever the human commits a move.
+    modelPick = (typeof data.model_pick === 'number') ? data.model_pick : null;
+    modelPolicy = Array.isArray(data.model_policy) ? data.model_policy : null;
     
     // Wait for animation
     await sleep(500);
     clearInterval(cycleInterval);
     dice.classList.remove('rolling');
     
-    document.getElementById('diceValue').textContent = data.dice_roll || '?';
-    
+    // `rolled` is the actual roll value (preserved even when server cleared dice_roll
+    // because turn passed). `dice_roll` reflects current state (0 after pass).
+    const humanRoll = data.rolled || data.dice_roll || '?';
+    document.getElementById('diceValue').textContent = humanRoll;
+
     if (data.triple_six) {
         showMessage('Triple 6! Turn lost! 💀');
         addLog('human', `Rolled 6 (3rd consecutive) — turn lost!`);
@@ -181,29 +211,29 @@ async function rollDice() {
         await doAITurn();
         return;
     }
-    
+
     if (data.no_moves) {
-        showMessage(`Rolled ${data.dice_roll} — no legal moves`);
-        addLog('human', `Rolled ${data.dice_roll} — no moves available.`);
+        showMessage(`Rolled ${humanRoll} — no legal moves`);
+        addLog('human', `Rolled ${humanRoll} — no moves available.`);
         isProcessing = false;
         renderState();
-        await sleep(800);
+        await sleep(1500);  // longer pause so user sees the dice value
         await doAITurn();
         return;
     }
-    
+
     legalMoves = data.legal_moves || [];
-    addLog('human', `Rolled ${data.dice_roll}`);
+    addLog('human', `Rolled ${humanRoll}`);
     
     if (legalMoves.length === 1) {
         // Auto-play single legal move
-        showMessage(`Rolled ${data.dice_roll} — auto-moving token ${legalMoves[0]}`);
+        showMessage(`Rolled ${humanRoll} — auto-moving token ${legalMoves[0]}`);
         isProcessing = false;
         await selectToken(legalMoves[0]);
         return;
     }
-    
-    showMessage(`Rolled ${data.dice_roll} — click a highlighted token`);
+
+    showMessage(`Rolled ${humanRoll} — click a highlighted token`);
     document.getElementById('diceHint').textContent = 'Select a token';
     dice.classList.add('disabled');
     
@@ -219,7 +249,13 @@ async function selectToken(tokenIndex) {
     isProcessing = true;
     awaitingMove = false;
     legalMoves = [];
-    
+
+    // Capture which token was V12's pick before we clear the prediction,
+    // so we can show "you agreed/disagreed" feedback in the log.
+    const v12Pick = modelPick;
+    modelPick = null;
+    modelPolicy = null;
+
     const res = await fetch('/api/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -227,16 +263,24 @@ async function selectToken(tokenIndex) {
     });
     const data = await res.json();
     gameState = data;
+    syncGameId(data);
     
     const lastMove = data.last_move;
     if (lastMove) {
         let msg = `Moved token ${lastMove.token}: ${lastMove.from_pos}→${lastMove.to_pos}`;
         if (lastMove.captured) msg += ' ⚔️ CAPTURE!';
+        if (v12Pick !== null && v12Pick !== undefined) {
+            if (v12Pick === lastMove.token) {
+                msg += ' · agreed with AI ✓';
+            } else {
+                msg += ` · AI wanted T${v12Pick} ✗`;
+            }
+        }
         addLog('human', msg);
     }
-    
+
     renderState();
-    
+
     // Check game over
     if (data.is_terminal) {
         isProcessing = false;
@@ -284,16 +328,16 @@ async function doAITurn() {
     const res = await fetch('/api/ai_turn', { method: 'POST' });
     const data = await res.json();
     gameState = data;
+    syncGameId(data);
     
     document.getElementById('aiThinking').classList.remove('show');
     
     // Show AI's dice roll — pause so user can see it
-    const aiRoll = data.ai_roll || data.dice_roll;
-    if (aiRoll) {
-        document.getElementById('diceValue').textContent = aiRoll;
-        showMessage(`AI rolled ${aiRoll}`);
-    }
-    await sleep(1200);  // Pause to show dice result
+    // Server always sets ai_roll now (even on no_moves / triple_six paths)
+    const aiRoll = data.ai_roll || data.rolled || data.dice_roll || '?';
+    document.getElementById('diceValue').textContent = aiRoll;
+    showMessage(`AI rolled ${aiRoll}`);
+    await sleep(1500);  // Pause longer so user can see dice result before AI moves
     
     // Show AI probabilities — visual prob bars per token
     if (data.ai_probs) {
@@ -400,7 +444,13 @@ function renderState() {
                 token.classList.add('legal-move');
                 token.onclick = () => selectToken(idx);
             }
-            
+
+            // V12's predicted token — shown only while the human is choosing
+            if (player === HUMAN && awaitingMove && idx === modelPick) {
+                token.classList.add('model-pick');
+                token.title = 'AI recommends this token';
+            }
+
             board.appendChild(token);
         });
     }
@@ -522,6 +572,10 @@ function addLog(type, message) {
 }
 
 function showGameOver(winner) {
+    // Pin the just-finished game id for the Review button. `currentGameId`
+    // will get overwritten the moment newGame() fires.
+    reviewedGameId = currentGameId;
+
     const modal = document.getElementById('winModal');
     const icon = document.getElementById('modalIcon');
     const title = document.getElementById('modalTitle');
@@ -539,6 +593,168 @@ function showGameOver(winner) {
     
     modal.classList.add('show');
     addLog('system', winner === HUMAN ? '🏆 YOU WIN!' : '🤖 AI WINS!');
+}
+
+// ── Eval Lens — Level 2: Review modal ──────────────────────
+async function openReviewFromWin() {
+    // Server may have already started the next game's id by the time the
+    // user clicks; reviewedGameId pins the game we're reviewing. If we
+    // didn't capture one before reset, fall back to /latest.
+    const gameId = reviewedGameId || currentGameId;
+    document.getElementById('winModal').classList.remove('show');
+    await fetchAndRenderReview(gameId);
+}
+
+async function fetchAndRenderReview(gameId) {
+    const list = document.getElementById('reviewList');
+    list.innerHTML = '<p class="review-loading">Loading…</p>';
+    document.getElementById('reviewModal').classList.add('show');
+
+    let url;
+    if (gameId) {
+        url = `/api/review_decisions/${encodeURIComponent(gameId)}?n=5`;
+    } else {
+        url = '/api/review_decisions/latest?n=5';
+    }
+    let payload;
+    try {
+        const res = await fetch(url);
+        payload = await res.json();
+    } catch (e) {
+        list.innerHTML = '<p class="review-error">Could not load decisions.</p>';
+        return;
+    }
+
+    const decisions = payload.decisions || [];
+    if (decisions.length === 0) {
+        list.innerHTML = '<p class="review-empty">No decisions logged for this game.</p>';
+        return;
+    }
+
+    // Pin the game_id we're labeling against
+    const labelGameId = payload.game_id;
+    list.innerHTML = '';
+    decisions.forEach(d => {
+        list.appendChild(renderReviewCard(labelGameId, d));
+    });
+}
+
+function renderReviewCard(gameId, d) {
+    const card = document.createElement('div');
+    card.className = 'review-card';
+    card.dataset.decisionId = d.decision_id;
+
+    const policy = d.v12_policy || [];
+    const argmax = d.v12_argmax;
+    const human = d.human_token;
+    const winPct = d.v12_win_prob != null ? Math.round(d.v12_win_prob * 100) : null;
+
+    const tokenLine = (player, label) => {
+        const positions = (d.positions && d.positions[String(player)]) || [];
+        const pretty = positions.map(p => {
+            if (p === -1) return 'base';
+            if (p === 99) return 'HOME';
+            if (p > 50) return `H${p - 50}`;
+            return String(p);
+        }).join(', ');
+        return `<div class="review-tokens"><span class="review-tokens-label">${label}</span><code>[${pretty}]</code></div>`;
+    };
+
+    const probRow = (i) => {
+        const pct = ((policy[i] || 0) * 100).toFixed(1);
+        const isAi = i === argmax;
+        const isHuman = i === human;
+        const isLegal = (d.legal_tokens || []).includes(i);
+        const cls = [
+            isAi ? 'ai-pick' : '',
+            isHuman ? 'human-pick' : '',
+            !isLegal ? 'illegal' : '',
+        ].filter(Boolean).join(' ');
+        const tag = [
+            isAi ? '<span class="tag ai">AI</span>' : '',
+            isHuman ? '<span class="tag you">You</span>' : '',
+        ].join('');
+        return `<div class="review-prob ${cls}">
+            <span class="review-prob-label">T${i}</span>
+            <span class="review-prob-bar"><span class="review-prob-fill" style="width:${pct}%"></span></span>
+            <span class="review-prob-pct">${pct}%</span>
+            <span class="review-prob-tags">${tag}</span>
+        </div>`;
+    };
+
+    const probsHtml = [0, 1, 2, 3].map(probRow).join('');
+
+    card.innerHTML = `
+        <div class="review-header">
+            <span class="review-move">Move #${d.move_count ?? '—'}</span>
+            <span class="review-dice">🎲 ${d.dice}</span>
+            ${winPct != null ? `<span class="review-win">AI win: ${winPct}%</span>` : ''}
+            <span class="review-agree ${d.agree ? 'agree' : 'disagree'}">${d.agree ? 'agreed' : 'disagreed'}</span>
+        </div>
+        ${tokenLine(0, 'You')}
+        ${tokenLine(2, 'AI')}
+        <div class="review-probs">${probsHtml}</div>
+        <div class="review-actions">
+            <button class="rate-btn" data-label="v12_right">AI was right</button>
+            <button class="rate-btn" data-label="human_right">I was right</button>
+            <button class="rate-btn" data-label="either">Either is fine</button>
+            <button class="rate-btn" data-label="both_bad">Both bad</button>
+        </div>
+        <div class="review-rated-tag" hidden>✓ Rated</div>
+    `;
+
+    card.querySelectorAll('.rate-btn').forEach(btn => {
+        btn.addEventListener('click', () => submitRating(gameId, d.decision_id, btn.dataset.label, card));
+    });
+
+    return card;
+}
+
+async function submitRating(gameId, decisionId, label, cardEl) {
+    if (!gameId) return;
+    cardEl.querySelectorAll('.rate-btn').forEach(b => b.disabled = true);
+    try {
+        const res = await fetch('/api/submit_rating', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ game_id: gameId, decision_id: decisionId, label }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+            cardEl.classList.add('review-card-labeled');
+            cardEl.dataset.label = label;
+            const tag = cardEl.querySelector('.review-rated-tag');
+            if (tag) {
+                tag.hidden = false;
+                tag.textContent = `✓ Rated: ${labelText(label)}`;
+            }
+        } else {
+            // Re-enable on failure
+            cardEl.querySelectorAll('.rate-btn').forEach(b => b.disabled = false);
+            console.warn('Rating failed:', data.error);
+        }
+    } catch (e) {
+        cardEl.querySelectorAll('.rate-btn').forEach(b => b.disabled = false);
+        console.warn('Rating error:', e);
+    }
+}
+
+function labelText(label) {
+    return ({
+        v12_right: 'AI was right',
+        human_right: 'I was right',
+        either: 'Either is fine',
+        both_bad: 'Both bad',
+    })[label] || label;
+}
+
+function closeReview() {
+    document.getElementById('reviewModal').classList.remove('show');
+}
+
+function finishReview() {
+    document.getElementById('reviewModal').classList.remove('show');
+    newGame();
 }
 
 // ── Utilities ───────────────────────────────────────────────

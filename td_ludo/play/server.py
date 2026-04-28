@@ -11,9 +11,11 @@ Select via env var:
     LUDO_MODEL=v12   (default)       (loads model_weights/model_v12.pt)
 """
 
+import math
 import os
 import sys
 import json
+import secrets
 import random
 import numpy as np
 import torch
@@ -246,6 +248,119 @@ class GameLogger:
 game_logger = GameLogger()
 
 
+# ── Decision Logger (Eval Lens — Level 1) ──────────────────────
+DECISION_LOGS_DIR = os.path.join(SCRIPT_DIR, 'decision_logs')
+
+DECISION_SCHEMA_VERSION = 1
+RATING_LABELS = {"v12_right", "human_right", "either", "both_bad"}
+
+
+class DecisionLogger:
+    """Append-only JSONL logger for human decisions (vs model recommendation).
+
+    Three files in `decision_logs/`:
+      - decisions_<game_id>.jsonl  : one record per human decision (per game)
+      - outcomes.jsonl             : one record per finished game (global)
+      - ratings.jsonl              : one record per Level-2 user label (global)
+
+    Open-write-close per record so a crash can never corrupt history. The
+    write volume is tiny (50 decisions/game).
+    """
+
+    def __init__(self, logs_dir=DECISION_LOGS_DIR, model_version=MODEL_VERSION):
+        self.logs_dir = logs_dir
+        self.model_version = model_version
+        os.makedirs(self.logs_dir, exist_ok=True)
+        self.outcomes_path = os.path.join(self.logs_dir, 'outcomes.jsonl')
+        self.ratings_path = os.path.join(self.logs_dir, 'ratings.jsonl')
+
+    @staticmethod
+    def _now_iso():
+        return datetime.datetime.now().isoformat(timespec='milliseconds')
+
+    def start_game(self):
+        ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"g_{ts}_{secrets.token_hex(3)}"
+
+    def decisions_path(self, game_id):
+        return os.path.join(self.logs_dir, f'decisions_{game_id}.jsonl')
+
+    def log_decision(self, record):
+        try:
+            path = self.decisions_path(record['game_id'])
+            with open(path, 'a') as f:
+                f.write(json.dumps(record, separators=(',', ':')) + '\n')
+        except Exception as e:
+            # Never let logging break a move.
+            print(f"[DecisionLogger] log_decision failed: {e}")
+
+    def log_outcome(self, game_id, winner, num_decisions, total_moves,
+                    abandoned=False):
+        try:
+            record = {
+                'schema_version': DECISION_SCHEMA_VERSION,
+                'game_id': game_id,
+                'ended_ts': self._now_iso(),
+                'winner': int(winner),
+                'human_won': bool(winner == HUMAN_PLAYER),
+                'total_moves': int(total_moves),
+                'num_human_decisions': int(num_decisions),
+                'model_version': self.model_version,
+                'abandoned': bool(abandoned),
+            }
+            with open(self.outcomes_path, 'a') as f:
+                f.write(json.dumps(record, separators=(',', ':')) + '\n')
+        except Exception as e:
+            print(f"[DecisionLogger] log_outcome failed: {e}")
+
+    def log_rating(self, game_id, decision_id, label):
+        record = {
+            'schema_version': DECISION_SCHEMA_VERSION,
+            'game_id': game_id,
+            'decision_id': int(decision_id),
+            'label': label,
+            'ts': self._now_iso(),
+        }
+        with open(self.ratings_path, 'a') as f:
+            f.write(json.dumps(record, separators=(',', ':')) + '\n')
+
+    def read_decisions(self, game_id):
+        path = self.decisions_path(game_id)
+        if not os.path.exists(path):
+            return []
+        out = []
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+        return out
+
+    def latest_game_id(self):
+        """Most recently modified decisions_*.jsonl in logs_dir, or None."""
+        try:
+            entries = []
+            for name in os.listdir(self.logs_dir):
+                if name.startswith('decisions_') and name.endswith('.jsonl'):
+                    full = os.path.join(self.logs_dir, name)
+                    entries.append((os.path.getmtime(full), name))
+            if not entries:
+                return None
+            entries.sort(reverse=True)
+            name = entries[0][1]
+            # decisions_<game_id>.jsonl
+            return name[len('decisions_'):-len('.jsonl')]
+        except Exception:
+            return None
+
+
+decision_logger = DecisionLogger()
+
+
 # ── Game State Manager ─────────────────────────────────────────
 class GameManager:
     def __init__(self, model, device):
@@ -254,12 +369,35 @@ class GameManager:
         self.reset()
 
     def reset(self):
+        # If we have an in-progress, non-terminal game, mark it abandoned
+        # before starting fresh so eval data isn't silently dropped.
+        if (
+            getattr(self, '_initialized', False)
+            and getattr(self, 'state', None) is not None
+            and not self.state.is_terminal
+            and getattr(self, '_human_decision_count', 0) > 0
+        ):
+            try:
+                decision_logger.log_outcome(
+                    self.game_id,
+                    winner=-1,
+                    num_decisions=self._human_decision_count,
+                    total_moves=self.move_count,
+                    abandoned=True,
+                )
+            except Exception as e:
+                print(f"[DecisionLogger] abandoned-flush failed: {e}")
+
         self.state = ludo_cpp.create_initial_state_2p()
         self.consecutive_sixes = [0, 0, 0, 0]
         self.move_count = 0
         self.game_log = []
         self.pending_dice = None
         self.last_move_info = None
+        self.game_id = decision_logger.start_game()
+        self._human_decision_count = 0
+        self._outcome_logged = False
+        self._cached_prediction = None
         if hasattr(self, '_initialized'):
             game_logger.new_game()
         self._initialized = True
@@ -377,6 +515,8 @@ class GameManager:
             'last_move': self.last_move_info,
             'consecutive_sixes': self.consecutive_sixes.copy(),
             'ai_win_chance': win_chance,  # 0.0..1.0 or None
+            'game_id': getattr(self, 'game_id', None),
+            'model_version': MODEL_VERSION,
         }
     
     def _skip_inactive_players(self):
@@ -432,6 +572,7 @@ class GameManager:
                 'legal_moves': [],
                 'message': 'Triple 6! Turn lost.',
                 'triple_six': True,
+                'rolled': roll,  # preserve rolled value even after dice reset
             }
 
         legal = ludo_cpp.get_legal_moves(self.state)
@@ -444,19 +585,88 @@ class GameManager:
                 next_p = (next_p + 1) % 4
             self.state.current_player = next_p
             game_logger.log(f"  -> no legal moves, turn passes to P{next_p}")
-            
+
             return {
                 **self._get_state_json(),
                 'legal_moves': [],
                 'message': f'P{cp} has no legal moves. Turn passed.',
                 'no_moves': True,
+                'rolled': roll,  # preserve rolled value even after dice reset
             }
-        
-        return {
+
+        # Eval Lens — when it's the human about to choose, run V12 on the
+        # *pre-move* state and ship the prediction with the roll response so
+        # the frontend can highlight V12's recommended token in real time.
+        # Cache the result so make_move's _log_human_decision doesn't have
+        # to run a second forward pass on the same state.
+        prediction = None
+        if cp == HUMAN_PLAYER and len(legal) > 1:
+            prediction = self._predict_human_policy(list(legal))
+        elif cp == HUMAN_PLAYER and len(legal) == 1:
+            # Single legal move — auto-played by the client. No real
+            # decision to log, but the FE may still want to render the
+            # forced pick consistently. Cheap to compute.
+            prediction = self._predict_human_policy(list(legal))
+        if prediction is not None:
+            # Pin to (move_count, dice) so a stale cache can't be reused
+            # across turns. _log_human_decision verifies the key matches.
+            self._cached_prediction = {
+                'move_count': self.move_count,
+                'dice': roll,
+                'data': prediction,
+            }
+
+        response = {
             **self._get_state_json(),
             'legal_moves': [int(m) for m in legal],
+            'rolled': roll,  # actual rolled value, also in dice_roll on success
         }
-    
+        if prediction is not None:
+            response['model_pick'] = prediction['argmax']
+            response['model_policy'] = prediction['policy']
+            response['model_win_prob'] = prediction['win_prob']
+        return response
+
+    def _predict_human_policy(self, legal):
+        """Run the loaded V11/V12 model on the current state and return a
+        dict with policy / argmax / win_prob / moves_remaining. Returns
+        None for older models (different encoder, not supported)."""
+        if MODEL_VERSION not in ('v11', 'v12'):
+            return None
+
+        legal_mask = np.zeros(4, dtype=np.float32)
+        for m in legal:
+            legal_mask[int(m)] = 1.0
+
+        try:
+            state_tensor = ludo_cpp.encode_state_v10(self.state)
+            with torch.no_grad():
+                s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
+                    self.device, dtype=torch.float32
+                )
+                m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(
+                    self.device, dtype=torch.float32
+                )
+                out = self.model(s_t, m_t)
+                policy = out[0].squeeze(0).cpu().numpy()
+                win_prob = float(out[1].squeeze().item())
+                try:
+                    moves_remaining = float(out[2].squeeze().item())
+                except (IndexError, AttributeError):
+                    moves_remaining = None
+        except Exception as e:
+            print(f"[Play] _predict_human_policy failed: {e}")
+            return None
+
+        return {
+            'policy': [round(float(p), 6) for p in policy],
+            'argmax': int(np.argmax(policy)),
+            'win_prob': round(win_prob, 6),
+            'moves_remaining': (
+                round(moves_remaining, 4) if moves_remaining is not None else None
+            ),
+        }
+
     def make_move(self, token_index):
         """Apply a move (for human player)."""
         if self.state.is_terminal:
@@ -468,7 +678,17 @@ class GameManager:
         
         cp = int(self.state.current_player)
         old_pos = int(self.state.player_positions[cp][token_index])
-        
+
+        # Eval Lens — Level 1: log V12's would-have-chosen vs the human's
+        # actual choice. Only when it's the human's turn (AI moves are
+        # already logged via game_logger and aren't useful as eval signal).
+        if cp == HUMAN_PLAYER:
+            try:
+                self._log_human_decision(token_index, list(legal))
+            except Exception as e:
+                # Never let logging break a move.
+                print(f"[DecisionLogger] _log_human_decision failed: {e}")
+
         # Check for captures (compare pre/post state)
         old_opp_positions = {}
         for opp in [0, 2]:
@@ -519,9 +739,97 @@ class GameManager:
             winner = ludo_cpp.get_winner(self.state)
             win_who = 'AI' if winner == AI_PLAYER else 'Human' if winner == 0 else 'Unknown'
             game_logger.log(f"*** GAME OVER — {win_who} (P{winner}) wins in {self.move_count} moves ***")
+            if not getattr(self, '_outcome_logged', False):
+                decision_logger.log_outcome(
+                    self.game_id,
+                    winner=int(winner),
+                    num_decisions=self._human_decision_count,
+                    total_moves=self.move_count,
+                )
+                self._outcome_logged = True
 
         return result
-    
+
+    def _log_human_decision(self, token_index, legal):
+        """Run the loaded model on the *pre-move* state and append a
+        decision record to decisions_<game_id>.jsonl.
+
+        Captures: dice, positions, scores, V12's full policy + win_prob,
+        and the human's actual chosen token. Disagreement metrics
+        (interest_score, kl, agree) are precomputed at log time so the
+        review endpoint can sort without re-deriving them.
+        """
+        # Only V11/V12 share the 28-channel encoder we rely on. Older
+        # models use a different encoder + value-head semantics; just
+        # skip Level 1 for them.
+        if MODEL_VERSION not in ('v11', 'v12'):
+            return
+
+        cp = int(self.state.current_player)
+        dice = int(self.state.current_dice_roll)
+
+        # Reuse the prediction computed in roll_dice() if it matches the
+        # current (move_count, dice). Saves ~15ms by avoiding a redundant
+        # forward pass on the exact same state.
+        cache = getattr(self, '_cached_prediction', None)
+        if (cache is not None
+                and cache.get('move_count') == self.move_count
+                and cache.get('dice') == dice):
+            data = cache['data']
+            policy = np.asarray(data['policy'], dtype=np.float32)
+            win_prob = float(data['win_prob'])
+            moves_remaining = data.get('moves_remaining')
+        else:
+            pred = self._predict_human_policy(legal)
+            if pred is None:
+                return
+            policy = np.asarray(pred['policy'], dtype=np.float32)
+            win_prob = float(pred['win_prob'])
+            moves_remaining = pred.get('moves_remaining')
+
+        v12_argmax = int(np.argmax(policy))
+        v12_prob_of_human = float(policy[int(token_index)])
+        # KL(human_one_hot || policy) = -log(policy[human_token])
+        kl = -math.log(max(v12_prob_of_human, 1e-9))
+        interest = float(np.max(policy)) * kl
+
+        positions = {}
+        scores = {}
+        for player in [0, 2]:
+            positions[str(player)] = [int(p) for p in self.state.player_positions[player]]
+            scores[str(player)] = int(self.state.scores[player])
+
+        record = {
+            'schema_version': DECISION_SCHEMA_VERSION,
+            'game_id': self.game_id,
+            'decision_id': self._human_decision_count,
+            'ts': DecisionLogger._now_iso(),
+            'model_version': MODEL_VERSION,
+
+            'current_player': cp,
+            'dice': dice,
+            'consecutive_sixes': int(self.consecutive_sixes[cp]),
+            'positions': positions,
+            'scores': scores,
+            'move_count': self.move_count,
+            'legal_tokens': [int(m) for m in legal],
+
+            'v12_policy': [round(float(p), 6) for p in policy],
+            'v12_argmax': v12_argmax,
+            'v12_win_prob': round(win_prob, 6),
+            'v12_moves_remaining': (
+                round(moves_remaining, 4) if moves_remaining is not None else None
+            ),
+
+            'human_token': int(token_index),
+            'agree': bool(v12_argmax == int(token_index)),
+            'v12_prob_of_human': round(v12_prob_of_human, 6),
+            'kl_v12_to_human': round(kl, 6),
+            'interest_score': round(interest, 6),
+        }
+        decision_logger.log_decision(record)
+        self._human_decision_count += 1
+
     def ai_move(self):
         """AI evaluates the board and makes a move."""
         if self.state.is_terminal:
@@ -535,18 +843,23 @@ class GameManager:
         
         # Roll dice first
         roll_result = self.roll_dice()
-        
+
+        # Always carry forward the rolled value as ai_roll for the client
+        rolled_for_ai = roll_result.get('rolled') or roll_result.get('dice_roll', 0)
+
         if roll_result.get('triple_six') or roll_result.get('no_moves'):
+            roll_result['ai_roll'] = rolled_for_ai
             return roll_result
-        
+
         legal = roll_result.get('legal_moves', [])
         if not legal:
+            roll_result['ai_roll'] = rolled_for_ai
             return roll_result
-        
+
         # If only one legal move, take it
         if len(legal) == 1:
             game_logger.log(f"  AI has only 1 legal move (token {legal[0]}) — forced")
-            return {**self.make_move(legal[0]), 'ai_roll': int(self.state.current_dice_roll) or roll_result['dice_roll']}
+            return {**self.make_move(legal[0]), 'ai_roll': rolled_for_ai}
 
         # Model inference — pick encoder matching the loaded model
         if MODEL_VERSION in ('v11', 'v12'):
@@ -662,6 +975,111 @@ def make_move():
 def ai_turn():
     result = game.ai_move()
     return jsonify(result)
+
+
+# ── Eval Lens — Level 2: Review endpoints ─────────────────────
+def _decorate_review_decision(d):
+    """Add precomputed token_coords so the frontend can render the
+    decision's mini-board without rerunning the C++ engine."""
+    out = {
+        'decision_id': d.get('decision_id'),
+        'dice': d.get('dice'),
+        'positions': d.get('positions', {}),
+        'scores': d.get('scores', {}),
+        'legal_tokens': d.get('legal_tokens', []),
+        'v12_policy': d.get('v12_policy'),
+        'v12_argmax': d.get('v12_argmax'),
+        'v12_win_prob': d.get('v12_win_prob'),
+        'v12_prob_of_human': d.get('v12_prob_of_human'),
+        'human_token': d.get('human_token'),
+        'agree': d.get('agree'),
+        'interest_score': d.get('interest_score'),
+        'move_count': d.get('move_count'),
+    }
+
+    # Pre-compute token_coords like _get_token_coords() but from the
+    # serialized positions dict so review cards can render directly.
+    coords = {}
+    for player_str, pos_list in (d.get('positions') or {}).items():
+        try:
+            player = int(player_str)
+        except (TypeError, ValueError):
+            continue
+        token_coords = []
+        for t, p in enumerate(pos_list):
+            r, c = get_board_coord(player, int(p), t)
+            token_coords.append({
+                'row': r, 'col': c,
+                'pos': int(p),
+                'in_base': int(p) == -1,
+                'scored': int(p) == 99,
+                'on_home_run': 50 < int(p) < 99,
+            })
+        coords[player_str] = token_coords
+    out['token_coords'] = coords
+    return out
+
+
+@app.route('/api/review_decisions/<game_id>')
+def review_decisions(game_id):
+    """Return top-N most-interesting decisions from a finished game.
+
+    Query: n (default 5). Sorted by `interest_score` desc — V12
+    confidence × KL(human || V12). Highest = V12 was confident and
+    disagreed with the human.
+    """
+    try:
+        n = int(request.args.get('n', 5))
+    except ValueError:
+        n = 5
+    n = max(1, min(50, n))
+
+    decisions = decision_logger.read_decisions(game_id)
+    decisions.sort(key=lambda d: d.get('interest_score', 0.0), reverse=True)
+    top = decisions[:n]
+    return jsonify({
+        'game_id': game_id,
+        'total_decisions': len(decisions),
+        'returned': len(top),
+        'decisions': [_decorate_review_decision(d) for d in top],
+    })
+
+
+@app.route('/api/review_decisions/latest')
+def review_decisions_latest():
+    """Convenience: returns top-N for the most recent game."""
+    game_id = decision_logger.latest_game_id()
+    if game_id is None:
+        return jsonify({'game_id': None, 'decisions': [], 'total_decisions': 0,
+                        'returned': 0})
+    return review_decisions(game_id)
+
+
+@app.route('/api/submit_rating', methods=['POST'])
+def submit_rating():
+    data = request.get_json() or {}
+    game_id = data.get('game_id')
+    decision_id = data.get('decision_id')
+    label = data.get('label')
+
+    if not isinstance(game_id, str) or not game_id:
+        return jsonify({'ok': False, 'error': 'missing game_id'}), 400
+    if not isinstance(decision_id, int):
+        try:
+            decision_id = int(decision_id)
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'bad decision_id'}), 400
+    if label not in RATING_LABELS:
+        return jsonify({
+            'ok': False,
+            'error': f'label must be one of {sorted(RATING_LABELS)}',
+        }), 400
+
+    try:
+        decision_logger.log_rating(game_id, decision_id, label)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':

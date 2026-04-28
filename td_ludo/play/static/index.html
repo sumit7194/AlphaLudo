@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <div class="bg-aurora"></div>
     <div class="app">
         <!-- Header -->
         <header class="header">
@@ -26,8 +27,9 @@
         </header>
 
         <main class="game-container">
-            <!-- LEFT: Human (You) — placed on the side that matches your tokens (top-left of board, P0) -->
-            <aside class="player-panel human-panel">
+            <!-- LEFT COLUMN: Human panel + Controls + Game Log -->
+            <aside class="left-column">
+                <!-- Human player card -->
                 <div class="player-card human">
                     <div class="player-header">
                         <div class="player-avatar human-avatar">🎮</div>
@@ -56,6 +58,25 @@
                     </div>
                 </div>
 
+                <!-- Controls: turn indicator + dice + restart -->
+                <div class="control-panel">
+                    <div class="turn-indicator" id="turnIndicator">
+                        <span id="turnText">Your Turn</span>
+                    </div>
+
+                    <div class="dice-area">
+                        <div class="dice" id="dice" onclick="rollDice()">
+                            <span id="diceValue">?</span>
+                        </div>
+                        <p class="dice-hint" id="diceHint">Click to roll</p>
+                    </div>
+
+                    <button class="btn btn-ghost btn-restart" onclick="newGame()" title="Start a fresh game">
+                        <span class="btn-icon">⟳</span>
+                        <span>Restart Game</span>
+                    </button>
+                </div>
+
                 <!-- Game Log -->
                 <div class="game-log">
                     <h4>Game Log</h4>
@@ -63,36 +84,14 @@
                 </div>
             </aside>
 
-            <!-- CENTER: Board -->
+            <!-- CENTER: Board only — clean, no clutter -->
             <div class="board-wrapper">
-                <!-- Turn Indicator -->
-                <div class="turn-indicator" id="turnIndicator">
-                    <span id="turnText">Your Turn</span>
-                </div>
-
-                <!-- Dice Area -->
-                <div class="dice-area">
-                    <div class="dice" id="dice" onclick="rollDice()">
-                        <span id="diceValue">?</span>
-                    </div>
-                    <p class="dice-hint" id="diceHint">Click to roll</p>
-                    <button class="btn btn-ghost btn-restart" onclick="newGame()" title="Start a fresh game">
-                        <span class="btn-icon">⟳</span>
-                        <span>Restart</span>
-                    </button>
-                </div>
-
-                <!-- Board Grid -->
-                <div class="board" id="board">
-                    <!-- 15x15 grid cells injected by JS -->
-                </div>
-
-                <!-- Message Area -->
+                <div class="board" id="board"></div>
                 <div class="message-area" id="messageArea"></div>
             </div>
 
-            <!-- RIGHT: AI Panel — placed on the side matching AI tokens (bottom-right of board, P2) -->
-            <aside class="player-panel ai-panel">
+            <!-- RIGHT COLUMN: AI panel -->
+            <aside class="right-column">
                 <div class="player-card ai">
                     <div class="player-header">
                         <div class="player-avatar ai-avatar">🤖</div>
@@ -152,7 +151,23 @@
                 <div class="modal-icon" id="modalIcon">🏆</div>
                 <h2 id="modalTitle">You Win!</h2>
                 <p id="modalSubtext">Congratulations!</p>
-                <button class="btn btn-primary" onclick="newGame()">Play Again</button>
+                <div class="modal-actions">
+                    <button class="btn btn-ghost" onclick="openReviewFromWin()">Review key decisions</button>
+                    <button class="btn btn-primary" onclick="newGame()">Play Again</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Review Modal (Eval Lens — Level 2) -->
+        <div class="modal-overlay" id="reviewModal">
+            <div class="modal review-modal">
+                <h2>Review your top decisions</h2>
+                <p>The AI disagreed with you most on these moves. Who was right?</p>
+                <div id="reviewList" class="review-list"></div>
+                <div class="review-footer">
+                    <button class="btn btn-ghost" onclick="closeReview()">Skip</button>
+                    <button class="btn btn-primary" onclick="finishReview()">Done — Play Again</button>
+                </div>
             </div>
         </div>
     </div>

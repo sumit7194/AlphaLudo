@@ -43,6 +43,10 @@ training_history.db
 /data/
 logs/
 *.log
+# Local-only play artifacts (user gameplay logs, eval-lens decision logs)
+td_ludo/play/decision_logs/
+td_ludo/play/server_logs/
+td_ludo/play/game_logs/
 experiments/kickstart/buffer_current/
 experiments/kickstart/buffer_staging/
 training_logs*.txt
