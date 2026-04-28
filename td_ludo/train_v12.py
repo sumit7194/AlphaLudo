@@ -676,7 +676,7 @@ def main():
                 print(f"[Pre-eval-save] Checkpoint saved before eval starts")
 
                 print(f"\n--- Evaluation ({EVAL_GAMES} games) ---")
-                from evaluate_v10 import evaluate_model
+                from evaluate_v11 import evaluate_model  # V12.1+: 33ch V11 encoder
 
                 eval_results = evaluate_model(model, device, num_games=EVAL_GAMES, verbose=False)
                 eval_wr = eval_results['win_rate']
