@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>V12.2 — AlphaLudo Pipeline</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --bg-2: #131829;
+    --bg-3: #1d2233;
+    --border: #2a3044;
+    --text: #e6e9ef;
+    --text-2: #93a0b8;
+    --text-3: #5f6c85;
+    --accent: #6366f1;
+    --accent-2: #8b5cf6;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red:   #f87171;
+    --good:  #34d399;
+    --warn:  #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+         background: var(--bg); color: var(--text); padding: 22px 28px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.4px; }
+  h1 .accent { background: linear-gradient(90deg, var(--accent), var(--accent-2));
+               -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--text-2); font-size: 13px; margin-bottom: 22px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: 1fr; max-width: 1400px; }
+  @media (min-width: 980px) { .grid { grid-template-columns: 1.2fr 1fr; } }
+  .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 12px;
+          padding: 18px 20px; }
+  .card h2 { font-size: 14px; margin: 0 0 14px; letter-spacing: 0.4px;
+             text-transform: uppercase; color: var(--text-2); }
+  .card.full { grid-column: 1 / -1; }
+
+  /* Stage panel */
+  .stages { display: flex; gap: 14px; flex-wrap: wrap; }
+  .stage { flex: 1 1 220px; padding: 14px; border-radius: 10px;
+           background: var(--bg-3); border: 1px solid var(--border);
+           min-width: 220px; transition: all 0.3s; }
+  .stage.active { border-color: var(--accent); box-shadow: 0 0 18px rgba(99,102,241,0.18); }
+  .stage.done { border-color: var(--green); opacity: 0.8; }
+  .stage.pending { opacity: 0.55; }
+  .stage-name { font-size: 12px; color: var(--text-2); text-transform: uppercase;
+                letter-spacing: 0.5px; margin-bottom: 6px; }
+  .stage-status { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .stage.active .stage-status { color: var(--accent); }
+  .stage.done .stage-status { color: var(--green); }
+  .stage-detail { font-size: 12px; color: var(--text-2); }
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px;
+                  overflow: hidden; margin-top: 8px; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+                   transition: width 0.5s; }
+
+  /* Stat tiles */
+  .tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .tile { background: var(--bg-3); border: 1px solid var(--border); border-radius: 8px;
+          padding: 10px 12px; }
+  .tile-label { font-size: 10px; color: var(--text-3); text-transform: uppercase;
+                letter-spacing: 0.5px; margin-bottom: 4px; }
+  .tile-value { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .tile-value.green { color: var(--green); }
+  .tile-value.amber { color: var(--amber); }
+  .tile-value.red { color: var(--red); }
+  .tile-sub { font-size: 11px; color: var(--text-2); margin-top: 2px; }
+
+  /* Plateau gate dots */
+  .plateau-gate { display: flex; gap: 8px; align-items: center; }
+  .plateau-dot { width: 14px; height: 14px; border-radius: 50%;
+                 background: var(--bg-3); border: 1px solid var(--border); }
+  .plateau-dot.met { background: var(--green); border-color: var(--green); }
+  .plateau-dot.partial { background: var(--amber); border-color: var(--amber); }
+
+  /* Charts */
+  .chart-wrap { height: 260px; }
+  table.compact { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.compact th, table.compact td { padding: 6px 8px; text-align: left;
+       border-bottom: 1px solid var(--border); }
+  table.compact th { color: var(--text-2); font-weight: 600; font-size: 10px;
+                     text-transform: uppercase; letter-spacing: 0.5px; }
+  .muted { color: var(--text-2); font-size: 11px; }
+</style>
+</head>
+<body>
+  <h1>Alpha<span class="accent">Ludo</span> — V12.2 Training Pipeline</h1>
+  <div class="sub" id="hdrSub">Loading…</div>
+
+  <div class="grid">
+    <!-- Pipeline stages -->
+    <div class="card full">
+      <h2>Pipeline</h2>
+      <div class="stages" id="stages">
+        <div class="stage pending" id="stage-data">
+          <div class="stage-name">Stage 0 — SL data gen</div>
+          <div class="stage-status">pending</div>
+          <div class="stage-detail" id="data-detail">—</div>
+        </div>
+        <div class="stage pending" id="stage-sl">
+          <div class="stage-name">Stage 1 — SL warm-up</div>
+          <div class="stage-status">pending</div>
+          <div class="stage-detail" id="sl-detail">—</div>
+          <div class="progress-bar"><div class="progress-fill" id="sl-fill" style="width:0%"></div></div>
+        </div>
+        <div class="stage pending" id="stage-rl">
+          <div class="stage-name">Stage 2 — RL</div>
+          <div class="stage-status">pending</div>
+          <div class="stage-detail" id="rl-detail">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SL stats -->
+    <div class="card">
+      <h2>Stage 1 — SL Warm-up</h2>
+      <div class="tiles" id="sl-tiles">
+        <div class="tile"><div class="tile-label">epoch</div>
+          <div class="tile-value" id="sl-epoch">—</div></div>
+        <div class="tile"><div class="tile-label">val pol acc</div>
+          <div class="tile-value green" id="sl-pol">—</div>
+          <div class="tile-sub">target ≥ 90%</div></div>
+        <div class="tile"><div class="tile-label">val win acc</div>
+          <div class="tile-value" id="sl-win">—</div></div>
+        <div class="tile"><div class="tile-label">val moves MAE</div>
+          <div class="tile-value" id="sl-mae">—</div></div>
+        <div class="tile"><div class="tile-label">best combined</div>
+          <div class="tile-value" id="sl-best">—</div></div>
+        <div class="tile"><div class="tile-label">augmentation</div>
+          <div class="tile-value" id="sl-aug">—</div></div>
+      </div>
+    </div>
+
+    <!-- RL stats -->
+    <div class="card">
+      <h2>Stage 2 — RL</h2>
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">games</div>
+          <div class="tile-value" id="rl-games">—</div></div>
+        <div class="tile"><div class="tile-label">recent WR (100)</div>
+          <div class="tile-value" id="rl-wr">—</div></div>
+        <div class="tile"><div class="tile-label">policy entropy</div>
+          <div class="tile-value" id="rl-ent">—</div>
+          <div class="tile-sub">healthy 0.3–0.6</div></div>
+        <div class="tile"><div class="tile-label">eval WR</div>
+          <div class="tile-value" id="rl-eval">—</div></div>
+        <div class="tile"><div class="tile-label">best eval</div>
+          <div class="tile-value green" id="rl-best">—</div></div>
+        <div class="tile"><div class="tile-label">model ELO</div>
+          <div class="tile-value" id="rl-elo">—</div></div>
+        <div class="tile"><div class="tile-label">games / min</div>
+          <div class="tile-value" id="rl-gpm">—</div></div>
+        <div class="tile"><div class="tile-label">temperature</div>
+          <div class="tile-value" id="rl-temp">—</div></div>
+      </div>
+      <div style="margin-top: 14px;">
+        <div class="tile-label">Plateau-break gate (3 consec evals ≥80%)</div>
+        <div class="plateau-gate" id="plateau-gate" style="margin-top:6px"></div>
+      </div>
+    </div>
+
+    <!-- ELO leaderboard -->
+    <div class="card">
+      <h2>ELO leaderboard (top 10)</h2>
+      <table class="compact" id="elo-table">
+        <thead><tr><th>Name</th><th>ELO</th></tr></thead>
+        <tbody><tr><td colspan="2" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- Eval WR over time -->
+    <div class="card full">
+      <h2>Eval WR over training</h2>
+      <div class="chart-wrap"><canvas id="eval-chart"></canvas></div>
+    </div>
+  </div>
+
+<script>
+let evalChart = null;
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function setStage(el, klass, status, detail) {
+  el.classList.remove('pending', 'active', 'done');
+  el.classList.add(klass);
+  el.querySelector('.stage-status').textContent = status;
+  el.querySelector('.stage-detail').textContent = detail || '—';
+}
+
+function fmtPct(x, dp = 1) {
+  if (x == null || isNaN(x)) return '—';
+  return `${x.toFixed(dp)}%`;
+}
+function fmtNum(x, dp = 0) {
+  if (x == null || isNaN(x)) return '—';
+  return x.toLocaleString(undefined, { maximumFractionDigits: dp });
+}
+
+async function refreshAll() {
+  const [chain, sl, stats] = await Promise.all([
+    fetchJSON('/api/chain'),
+    fetchJSON('/api/sl_stats'),
+    fetchJSON('/api/stats'),
+  ]);
+
+  // Header subtitle
+  const parts = [];
+  if (chain && chain.run_name) parts.push(`run: ${chain.run_name}`);
+  if (chain && chain.stage) parts.push(`stage: ${chain.stage}`);
+  document.getElementById('hdrSub').textContent =
+    parts.length ? parts.join(' · ') : 'Live pipeline status';
+
+  // ── Pipeline stages ──
+  const stageData = document.getElementById('stage-data');
+  const stageSL = document.getElementById('stage-sl');
+  const stageRL = document.getElementById('stage-rl');
+
+  if (chain) {
+    if (chain.stage === 'data') {
+      setStage(stageData, 'active', 'running', chain.detail || '');
+      setStage(stageSL, 'pending', 'pending', '');
+      setStage(stageRL, 'pending', 'pending', '');
+    } else if (chain.stage === 'SL') {
+      setStage(stageData, 'done', 'done', chain.data_total ? `${chain.data_total.toLocaleString()} states` : '');
+      setStage(stageSL, 'active', 'running', sl ? `epoch ${sl.epoch}/${sl.epochs_total}` : '');
+      setStage(stageRL, 'pending', 'pending', '');
+    } else if (chain.stage === 'RL') {
+      setStage(stageData, 'done', 'done', chain.data_total ? `${chain.data_total.toLocaleString()} states` : '');
+      setStage(stageSL, 'done', 'done', sl ? `pol_acc ${fmtPct(sl.val_pol_acc)}` : 'done');
+      setStage(stageRL, 'active', 'running', stats ? `G=${(stats.total_games || 0).toLocaleString()}` : '');
+    } else if (chain.stage === 'done') {
+      setStage(stageData, 'done', 'done', '');
+      setStage(stageSL, 'done', 'done', '');
+      setStage(stageRL, 'done', 'done', '');
+    }
+  }
+
+  // ── SL panel ──
+  if (sl) {
+    document.getElementById('sl-epoch').textContent = `${sl.epoch}/${sl.epochs_total}`;
+    const polEl = document.getElementById('sl-pol');
+    polEl.textContent = fmtPct(sl.val_pol_acc);
+    polEl.className = 'tile-value ' + (sl.val_pol_acc >= 90 ? 'green' : sl.val_pol_acc >= 80 ? 'amber' : 'red');
+    document.getElementById('sl-win').textContent = fmtPct(sl.val_win_acc);
+    document.getElementById('sl-mae').textContent = (sl.val_moves_mae || 0).toFixed(2);
+    document.getElementById('sl-best').textContent = (sl.best_val_combined || 0).toFixed(4);
+    document.getElementById('sl-aug').textContent = sl.augment_permute_own_tokens ? 'permute ON' : 'permute OFF';
+    document.getElementById('sl-fill').style.width = `${(sl.progress_frac || 0) * 100}%`;
+  }
+
+  // ── RL panel ──
+  if (stats) {
+    document.getElementById('rl-games').textContent = fmtNum(stats.total_games);
+    document.getElementById('rl-wr').textContent = fmtPct(stats.win_rate_100);
+    const entEl = document.getElementById('rl-ent');
+    entEl.textContent = (stats.policy_entropy || 0).toFixed(3);
+    const e = stats.policy_entropy || 0;
+    entEl.className = 'tile-value ' + (e >= 0.3 && e <= 0.6 ? 'green' : e < 0.2 ? 'red' : 'amber');
+    document.getElementById('rl-eval').textContent = stats.eval_win_rate != null ? fmtPct(stats.eval_win_rate) : '—';
+    document.getElementById('rl-best').textContent = stats.best_eval_win_rate != null ? fmtPct(stats.best_eval_win_rate) : '—';
+    document.getElementById('rl-elo').textContent = stats.main_elo ? stats.main_elo.toFixed(0) : '—';
+    document.getElementById('rl-gpm').textContent = stats.games_per_minute ? stats.games_per_minute.toFixed(0) : '—';
+    document.getElementById('rl-temp').textContent = stats.temperature != null ? stats.temperature.toFixed(2) : '—';
+
+    // Plateau gate visualization (3 dots)
+    const recent = stats.recent_evals || [];
+    const lastThree = recent.slice(-3);
+    const dots = document.getElementById('plateau-gate');
+    dots.innerHTML = '';
+    for (let i = 0; i < 3; i++) {
+      const d = document.createElement('span');
+      d.className = 'plateau-dot';
+      const ev = lastThree[i];
+      if (ev != null && ev >= 80) d.classList.add('met');
+      else if (ev != null) d.classList.add('partial');
+      d.title = ev != null ? `${ev.toFixed(1)}%` : 'pending';
+      dots.appendChild(d);
+    }
+    if (stats.best_eval_win_rate != null) {
+      const txt = document.createElement('span');
+      txt.className = 'muted';
+      txt.style.marginLeft = '8px';
+      txt.textContent = `best ${stats.best_eval_win_rate.toFixed(1)}%`;
+      dots.appendChild(txt);
+    }
+  }
+}
+
+async function refreshElo() {
+  const elo = await fetchJSON('/api/elo');
+  if (!elo) return;
+  const tbody = document.querySelector('#elo-table tbody');
+  tbody.innerHTML = '';
+  (elo.rankings || []).slice(0, 10).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.name}</td><td style="font-family:monospace">${(r.elo || 0).toFixed(0)}</td>`;
+    tbody.appendChild(tr);
+  });
+  // Eval WR chart
+  const hist = elo.history || {};
+  const main = hist.Model || hist.model || [];
+  if (main.length) {
+    const labels = main.map(p => p.games || p.game_count || 0);
+    const data = main.map(p => p.elo || 0);
+    if (!evalChart) {
+      const ctx = document.getElementById('eval-chart').getContext('2d');
+      evalChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets: [{
+          label: 'Model ELO', data,
+          borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.12)',
+          fill: true, tension: 0.2, pointRadius: 0, borderWidth: 2,
+        }]},
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { color: '#93a0b8' }, grid: { color: '#2a3044' } },
+            y: { ticks: { color: '#93a0b8' }, grid: { color: '#2a3044' } },
+          },
+          plugins: { legend: { labels: { color: '#e6e9ef' } } },
+        },
+      });
+    } else {
+      evalChart.data.labels = labels;
+      evalChart.data.datasets[0].data = data;
+      evalChart.update();
+    }
+  }
+}
+
+refreshAll();
+refreshElo();
+setInterval(refreshAll, 2500);
+setInterval(refreshElo, 10000);
+</script>
+</body>
+</html>

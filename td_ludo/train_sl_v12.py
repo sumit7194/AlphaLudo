@@ -55,16 +55,23 @@ class InMemoryDataset(Dataset):
             if max_states and running >= max_states:
                 break
         total = running
-        # V12.1: allocate 33 channels (V11 encoder). The on-disk SL data is
-        # 28-ch (V10 encoder) — we pad channels 28-32 with zeros. The model's
-        # conv weights for those slices are zero-init from surgery, so SL
-        # leaves them at zero too; RL teaches them to be useful via PPO.
-        # This is the principled "warm up the architecture, fine-tune the
-        # new signals" approach. Costs ~18% more RAM but avoids regen.
+        # Detect on-disk channel count from first chunk so we can handle:
+        #   - V10 SL data (28ch) — pad channels 28-32 to zero (V12.1 surgery flow)
+        #   - V12.2 SL data (33ch) — copy all channels directly
+        with np.load(need[0][0]) as d:
+            disk_channels = int(d['states'].shape[1])
+        target_channels = 33   # V11 encoder
+        if disk_channels not in (28, 33):
+            raise ValueError(f"Unexpected disk channel count {disk_channels}; "
+                             f"expected 28 (V10) or 33 (V11)")
+        pad_mode = (disk_channels == 28)
+        msg = (f"33ch with channels 28-32 zero-padded from 28ch on-disk"
+               if pad_mode else
+               f"33ch native (V12.2 SL data — copy all channels)")
         print(f"[Dataset] Preallocating for {total:,} samples "
-              f"({(total * 33 * 15 * 15 * 4) / 1e9:.2f} GB for states, "
-              f"33ch with channels 28-32 zero-padded from 28ch on-disk)...", flush=True)
-        self.states = np.zeros((total, 33, 15, 15), dtype=np.float32)
+              f"({(total * target_channels * 15 * 15 * 4) / 1e9:.2f} GB for states, {msg})...",
+              flush=True)
+        self.states = np.zeros((total, target_channels, 15, 15), dtype=np.float32)
         self.policies = np.empty((total, 4), dtype=np.float32)
         self.masks = np.empty((total, 4), dtype=np.float32)
         self.won = np.empty(total, dtype=np.float32)
@@ -73,8 +80,12 @@ class InMemoryDataset(Dataset):
         idx = 0
         for i, (p, n) in enumerate(need):
             d = np.load(p)
-            # Copy first 28 channels; channels 28-32 stay zero-padded.
-            self.states[idx:idx+n, :28] = d['states'][:n]
+            if pad_mode:
+                # Copy first 28 channels; channels 28-32 stay zero-padded.
+                self.states[idx:idx+n, :28] = d['states'][:n]
+            else:
+                # 33ch on disk → direct copy.
+                self.states[idx:idx+n] = d['states'][:n]
             self.policies[idx:idx+n] = d['policies'][:n]
             self.masks[idx:idx+n] = d['legal_masks'][:n]
             self.won[idx:idx+n] = d['won'][:n].astype(np.float32)
@@ -407,10 +418,37 @@ def main():
                 'num_heads': args.num_heads,
                 'ffn_ratio': args.ffn_ratio,
                 'dropout': args.dropout,
-                'in_channels': 28,
+                'in_channels': 33,  # V12.1+: V11 encoder
             },
         }
         torch.save(save, args.output)
+
+        # V12.2: write sl_stats.json next to the model so the dashboard can
+        # show live SL progress alongside RL stats. Best-effort — never fail
+        # training because of a JSON write hiccup.
+        try:
+            import json
+            sl_stats = {
+                'stage': 'SL',
+                'epoch': epoch + 1,
+                'epochs_total': args.epochs,
+                'progress_frac': (epoch + 1) / args.epochs,
+                'val_pol_acc': float(v_pol_acc),
+                'val_win_acc': float(v_win_acc),
+                'val_moves_mae': float(v_mae),
+                'tr_pol_acc': float(tr_pol_acc_pct),
+                'tr_win_acc': float(tr_win_acc_pct),
+                'best_val_combined': float(best_val),
+                'lr': float(lr),
+                'augment_permute_own_tokens': bool(augment_perm),
+                'arch': save['arch'],
+                'timestamp': time.time(),
+            }
+            stats_path = os.path.join(os.path.dirname(args.output) or '.', 'sl_stats.json')
+            with open(stats_path, 'w') as f:
+                json.dump(sl_stats, f, indent=2)
+        except Exception as _e:
+            print(f"[V12 SL] sl_stats.json write failed (non-fatal): {_e}")
 
     print(f"\n[V12 SL] Done. Best val combined: {best_val:.4f}  | saved to {args.output}")
     print(f"[V12 SL] V10 SL parity gate: ≥73% WR vs bots (run eval_v10_sl.py "

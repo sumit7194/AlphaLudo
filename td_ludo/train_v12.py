@@ -190,30 +190,49 @@ _player = None
 
 
 def start_dashboard_server(port=8789):
-    """Dashboard on port 8789 (8787=V10, 8788=exploiter, 8789=V11)."""
+    """Dashboard on port 8789 (8787=V10, 8788=exploiter, 8789=V11, 8790=V12 default)."""
     dashboard_dir = os.path.dirname(os.path.abspath(__file__))
-    if not os.path.exists(os.path.join(dashboard_dir, 'index.html')):
-        print(f"[Dashboard] index.html not found, skipping")
+    # V12.2: prefer v12_dashboard.html if present (chain-aware + plateau gate),
+    # fall back to v11_dashboard.html, then index.html.
+    landing = None
+    for cand in ('v12_dashboard.html', 'v11_dashboard.html', 'index.html'):
+        if os.path.exists(os.path.join(dashboard_dir, cand)):
+            landing = cand
+            break
+    if landing is None:
+        print(f"[Dashboard] No dashboard HTML found, skipping")
         return None
-    handler = functools.partial(DashboardHandler, directory=dashboard_dir)
+    handler = functools.partial(DashboardHandler, directory=dashboard_dir,
+                                landing_page=landing)
     server = HTTPServer(('0.0.0.0', port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f"[Dashboard] http://localhost:{port}  (V11 dashboard: /v11_dashboard.html)")
+    print(f"[Dashboard] http://localhost:{port}  (default: /{landing})")
     return server
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, directory=None, **kwargs):
+    def __init__(self, *args, directory=None, landing_page='index.html', **kwargs):
+        self._landing = landing_page
         super().__init__(*args, directory=directory, **kwargs)
 
     def do_GET(self):
+        # V12.2: redirect '/' to the chain-aware dashboard if available.
+        if self.path == '/' or self.path == '':
+            self.path = '/' + self._landing
+            return super().do_GET()
         if self.path == '/api/stats':
             self._serve_json(STATS_PATH)
         elif self.path == '/api/metrics':
             self._serve_json(METRICS_PATH)
         elif self.path == '/api/elo':
             self._serve_elo()
+        elif self.path == '/api/sl_stats':
+            # V12.2: SL warm-up progress (only present during/after stage 1)
+            self._serve_json(os.path.join(os.path.dirname(STATS_PATH), 'sl_stats.json'))
+        elif self.path == '/api/chain':
+            # V12.2: pipeline status (data-gen / SL / RL)
+            self._serve_json(os.path.join(os.path.dirname(STATS_PATH), 'chain_status.json'))
         elif self.path.startswith('/api/games'):
             self._serve_games()
         elif self.path == '/api/system':
@@ -366,6 +385,14 @@ def main():
                         help='Linear LR warmup over first N games. Transformers '
                              'benefit from warmup; default V10 didn\'t need it.')
 
+    # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
+    # self-play vs ghosts gives more useful gradient than easy bot wins.
+    parser.add_argument('--game-composition', default='default',
+                        choices=['default', 'v122'],
+                        help="'default' = config PROD mix (40/25/15/10/10). "
+                             "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
+                             "/ Aggressive 3 / Defensive 2.")
+
     args = parser.parse_args()
 
     # Fresh start: wipe run dir but keep model_sl.pt
@@ -457,6 +484,26 @@ def main():
         trainer.entropy_coeff = args.entropy_coeff
         print(f"[V12 Train] Entropy: {old_ent} → {args.entropy_coeff}")
 
+    # V12.2: opponent-mix preset override.
+    # `_random_composition` looks up GAME_COMPOSITION from its module's namespace
+    # at call time, so we can safely monkey-patch already-imported modules.
+    if args.game_composition == 'v122':
+        V122_MIX = {
+            "SelfPlay":   0.75,
+            "Expert":     0.15,
+            "Heuristic":  0.05,
+            "Aggressive": 0.03,
+            "Defensive":  0.02,
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V122_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V122_MIX
+        print(f"[V12 Train] Game composition: V12.2 mix → {V122_MIX}")
+    else:
+        from src.config import GAME_COMPOSITION as _gc_default
+        print(f"[V12 Train] Game composition: PROD default → {_gc_default}")
+
     # PPO minibatch override (memory-safety on tight RAM systems)
     if args.ppo_minibatch_size > 0:
         old_mb = trainer.ppo_minibatch_size
@@ -473,7 +520,7 @@ def main():
     print(f"[V12 Train] Game DB: {game_db.get_total_games()} games recorded")
 
     if args.eval_only:
-        from evaluate_v10 import evaluate_model  # V10 eval works (same encoder)
+        from evaluate_v11 import evaluate_model  # V12.1+: 33ch V11 encoder
         results = evaluate_model(model, device, num_games=500, verbose=True)
         print(f"\nWin Rate: {results['win_rate_percent']}%")
         return
