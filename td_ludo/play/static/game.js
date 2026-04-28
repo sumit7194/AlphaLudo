@@ -23,13 +23,15 @@ const cellTypes = {};  // "r,c" -> type string
 
 // ── Initialization ──────────────────────────────────────────
 async function init() {
-    // Fetch model info and update AI subtitle
+    // Fetch model info and populate header chip + AI subtitle
     try {
         const infoRes = await fetch('/api/info');
         if (infoRes.ok) {
             const info = await infoRes.json();
             const subtitle = document.getElementById('aiSubtitle');
             if (subtitle && info.subtitle) subtitle.textContent = info.subtitle;
+            const chip = document.getElementById('modelChip');
+            if (chip) chip.textContent = info.label || (info.version || 'AI').toUpperCase();
         }
     } catch (e) { console.warn('Could not fetch model info', e); }
 
@@ -293,12 +295,23 @@ async function doAITurn() {
     }
     await sleep(1200);  // Pause to show dice result
     
-    // Show AI probabilities
+    // Show AI probabilities — visual prob bars per token
     if (data.ai_probs) {
         const probsDiv = document.getElementById('aiProbs');
+        const legalSet = new Set(data.legal_moves || []);
         probsDiv.innerHTML = data.ai_probs
-            .map((p, i) => `T${i}: ${(p * 100).toFixed(1)}%${i === data.ai_chosen ? ' ✓' : ''}`)
-            .join('<br>');
+            .map((p, i) => {
+                const pct = (p * 100).toFixed(1);
+                const isChosen = i === data.ai_chosen;
+                const isIllegal = data.legal_moves && !legalSet.has(i);
+                const cls = isChosen ? 'chosen' : (isIllegal ? 'illegal' : '');
+                return `<div class="prob-row ${cls}">
+                    <span class="prob-label">T${i}${isChosen ? '✓' : ''}</span>
+                    <span class="prob-bar"><span class="prob-fill" style="width:${pct}%"></span></span>
+                    <span class="prob-pct">${pct}%</span>
+                </div>`;
+            })
+            .join('');
     }
     
     if (data.triple_six) {
@@ -395,6 +408,7 @@ function renderState() {
     // Update scores
     updateScores();
     updateTurnIndicator();
+    updateStatusPills();
     updateWinChance();
 }
 
@@ -432,8 +446,37 @@ function updateScores() {
         if (aEl) aEl.classList.toggle('active', i < aiScore);
     }
     
-    document.getElementById('human-score-label').textContent = `${humanScore} / 4 Home`;
-    document.getElementById('ai-score-label').textContent = `${aiScore} / 4 Home`;
+    document.getElementById('human-score-label').textContent = `${humanScore} / 4`;
+    document.getElementById('ai-score-label').textContent = `${aiScore} / 4`;
+}
+
+function updateStatusPills() {
+    if (!gameState) return;
+    const humanPill = document.getElementById('humanStatusPill');
+    const aiPill = document.getElementById('aiStatusPill');
+    const humanText = document.getElementById('humanStatusText');
+    const aiText = document.getElementById('aiStatusText');
+    if (!humanPill || !aiPill) return;
+
+    humanPill.classList.remove('active');
+    aiPill.classList.remove('active');
+
+    if (gameState.is_terminal) {
+        const winner = gameState.winner;
+        humanText.textContent = winner === HUMAN ? 'Won 🏆' : 'Lost';
+        aiText.textContent = winner === AI_PLAYER ? 'Won 🏆' : 'Lost';
+        return;
+    }
+
+    if (gameState.current_player === HUMAN) {
+        humanPill.classList.add('active');
+        humanText.textContent = 'Your Turn';
+        aiText.textContent = 'Waiting…';
+    } else {
+        aiPill.classList.add('active');
+        aiText.textContent = 'Thinking…';
+        humanText.textContent = 'Waiting…';
+    }
 }
 
 function updateTurnIndicator() {

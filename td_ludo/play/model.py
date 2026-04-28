@@ -22,9 +22,9 @@ _TD_LUDO_DIR = os.path.dirname(_PLAY_DIR)
 if _TD_LUDO_DIR not in sys.path:
     sys.path.insert(0, _TD_LUDO_DIR)
 
-# Re-export V11 from the canonical implementation in the main package.
-# Using import (not redefinition) avoids drift if the main model file changes.
-from td_ludo.models.v11 import AlphaLudoV11  # noqa: F401  (re-exported)
+# Re-export V11 + V12 from canonical implementations in the main package.
+from td_ludo.models.v11 import AlphaLudoV11  # noqa: F401
+from td_ludo.models.v12 import AlphaLudoV12  # noqa: F401
 
 
 class ResidualBlock(nn.Module):

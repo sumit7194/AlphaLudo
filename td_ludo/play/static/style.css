@@ -118,79 +118,303 @@ body {
 }
 
 .player-card {
-    background: var(--bg-card);
+    background: linear-gradient(180deg, var(--bg-card), #15151f);
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px;
-    text-align: center;
+    border-radius: 14px;
+    padding: 18px 18px 16px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    position: relative;
+    overflow: hidden;
+}
+
+.player-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--border);
 }
 
 .player-card.ai {
-    border-color: rgba(245, 158, 11, 0.2);
+    border-color: rgba(245, 158, 11, 0.25);
+}
+.player-card.ai::before {
+    background: linear-gradient(90deg, transparent, var(--ai-color), transparent);
 }
 
 .player-card.human {
-    border-color: rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.25);
+}
+.player-card.human::before {
+    background: linear-gradient(90deg, transparent, var(--human-color), transparent);
 }
 
-.player-avatar {
-    font-size: 40px;
-    margin-bottom: 8px;
-}
-
-.player-card h3 {
-    font-size: 16px;
-    font-weight: 700;
-    margin-bottom: 2px;
-}
-
-.player-subtitle {
-    font-size: 11px;
-    color: var(--text-muted);
+.player-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin-bottom: 14px;
 }
 
-.score-display {
-    margin-top: 8px;
+.player-avatar {
+    font-size: 32px;
+    line-height: 1;
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
+
+.player-card.human .player-avatar {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.player-card.ai .player-avatar {
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.player-name-block {
+    flex: 1;
+    text-align: left;
+}
+
+.player-card h3 {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 1px;
+    letter-spacing: -0.2px;
+}
+
+.player-subtitle {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    line-height: 1.3;
+    margin: 0;
+}
+
+/* Score visualization — filled progress circles */
+.score-display {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+
+.score-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.score-label-text {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 500;
+}
+
+.score-label {
+    font-size: 13px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.player-card.human .score-label { color: var(--human-color); }
+.player-card.ai .score-label { color: var(--ai-color); }
 
 .score-tokens {
     display: flex;
     justify-content: center;
-    gap: 6px;
-    margin-bottom: 6px;
+    gap: 8px;
 }
 
+/* New: filled circle progress indicators (replaces text dots) */
 .scored-token {
-    font-size: 18px;
-    opacity: 0.2;
-    transition: opacity 0.4s, text-shadow 0.4s;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: transparent;
+    border: 2px solid currentColor;
+    opacity: 0.25;
+    transition: opacity 0.4s, background 0.4s, box-shadow 0.4s, transform 0.4s;
+    /* Reset old text-based style */
+    font-size: 0;
+    display: inline-block;
 }
 
 .scored-token.active {
     opacity: 1;
+    transform: scale(1.05);
 }
 
-.scored-token.human-color {
+.scored-token.human-color { color: var(--human-color); }
+.scored-token.human-color.active {
+    background: radial-gradient(circle at 35% 35%, #34d399, #059669);
+    box-shadow: 0 0 8px var(--human-glow);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+.scored-token.ai-color { color: var(--ai-color); }
+.scored-token.ai-color.active {
+    background: radial-gradient(circle at 35% 35%, #fbbf24, #d97706);
+    box-shadow: 0 0 8px var(--ai-glow);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* Status pill — "Your turn" / "AI thinking" / "Waiting" */
+.status-pill {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.status-pill .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: background 0.2s, box-shadow 0.2s;
+}
+
+.status-pill.active {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.player-card.human .status-pill.active {
+    border-color: var(--human-color);
     color: var(--human-color);
 }
-
-.scored-token.human-color.active {
-    text-shadow: 0 0 8px var(--human-glow);
+.player-card.human .status-pill.active .status-dot {
+    background: var(--human-color);
+    box-shadow: 0 0 8px var(--human-glow);
+    animation: pulse-dot 1.5s infinite;
 }
 
-.scored-token.ai-color {
+.player-card.ai .status-pill.active {
+    border-color: var(--ai-color);
     color: var(--ai-color);
 }
-
-.scored-token.ai-color.active {
-    text-shadow: 0 0 8px var(--ai-glow);
+.player-card.ai .status-pill.active .status-dot {
+    background: var(--ai-color);
+    box-shadow: 0 0 8px var(--ai-glow);
+    animation: pulse-dot 1.5s infinite;
 }
 
-.score-label {
-    font-size: 12px;
-    color: var(--text-secondary);
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Header — model chip */
+.model-chip {
+    margin-left: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+/* Move probabilities — visual bars instead of text */
+.ai-probs-wrapper {
+    margin-top: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+
+.ai-probs-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 8px;
     font-weight: 500;
+}
+
+.ai-probs {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: left;
+}
+
+.prob-row {
+    display: grid;
+    grid-template-columns: 22px 1fr 38px;
+    gap: 6px;
+    align-items: center;
+}
+
+.prob-row .prob-label {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.prob-row .prob-bar {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.prob-row .prob-fill {
+    height: 100%;
+    background: var(--ai-color);
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+.prob-row.chosen .prob-fill {
+    background: linear-gradient(90deg, #fbbf24, #f59e0b);
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+
+.prob-row.illegal .prob-fill {
+    background: rgba(239, 68, 68, 0.4);
+}
+
+.prob-row .prob-pct {
+    text-align: right;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.prob-row.chosen .prob-pct {
+    color: var(--ai-color);
+    font-weight: 700;
+}
+
+.prob-row.illegal .prob-label,
+.prob-row.illegal .prob-pct {
+    color: var(--text-muted);
+    text-decoration: line-through;
 }
 
 /* AI Thinking Animation */
@@ -558,9 +782,42 @@ body {
 }
 
 .btn-primary {
-    background: var(--accent);
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
     color: #fff;
     box-shadow: 0 2px 8px var(--accent-glow);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-primary:hover {
+    box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.btn-ghost {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+.btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.btn-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.btn-restart {
+    margin-top: 6px;
 }
 
 /* ── Win Modal ───────────────────────────────────────────── */

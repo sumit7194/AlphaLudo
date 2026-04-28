@@ -2,12 +2,13 @@
 AlphaLudo Play — Web Server for Human vs AI Ludo
 
 Flask backend that manages game state via the C++ engine and runs AI
-inference. Supports V6.1 (24ch), V6.3 (27ch), and V11.1 (28ch CNN+attention).
+inference. Supports V6.1, V6.3, V11.1, V12 (all 28ch input, different attn).
 
 Select via env var:
     LUDO_MODEL=v6_1                  (loads model_weights/model.pt)
     LUDO_MODEL=v6_3                  (loads model_weights/model_v6_3.pt)
-    LUDO_MODEL=v11   (default)       (loads model_weights/model_v11.pt)
+    LUDO_MODEL=v11                   (loads model_weights/model_v11.pt)
+    LUDO_MODEL=v12   (default)       (loads model_weights/model_v12.pt)
 """
 
 import os
@@ -24,17 +25,18 @@ sys.path.insert(0, TD_LUDO_DIR)
 
 import td_ludo_cpp as ludo_cpp
 from flask import Flask, jsonify, request, send_from_directory
-from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11
+from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11, AlphaLudoV12
 
 # ── Configuration ──────────────────────────────────────────────
-MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v11').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11'):
-    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', or 'v11'.")
+MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12').lower()
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12'):
+    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', 'v11', or 'v12'.")
 
 MODEL_FILES = {
     'v6_1': os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
     'v6_3': os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
     'v11':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
+    'v12':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
 
@@ -153,9 +155,16 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v11':
-        # V11.1 architecture: 4 ResBlocks + 1 attn layer × 2 heads × dim 64,
-        # 96ch CNN backbone, 28-channel input, dropout=0 for deterministic play.
+    if MODEL_VERSION == 'v12':
+        # V12: same CNN backbone as V11.1, but attention over 8 game-piece
+        # tokens (not 225 cells). 4 ResBlocks × 96ch + 2 attn × 4 heads.
+        model = AlphaLudoV12(
+            num_res_blocks=4, num_channels=96,
+            num_attn_layers=2, num_heads=4,
+            ffn_ratio=4, dropout=0.0, in_channels=28,
+        )
+    elif MODEL_VERSION == 'v11':
+        # V11.1: 4 ResBlocks + 1 attn × 2 heads × dim 64, 28ch input.
         model = AlphaLudoV11(
             num_res_blocks=4, num_channels=96,
             num_attn_layers=1, num_heads=2,
@@ -302,11 +311,10 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION == 'v11':
-                # V11 uses the V10 encoder (28 channels) — same as encode_state_v10.
+            if MODEL_VERSION in ('v11', 'v12'):
+                # V11 and V12 both use the V10 encoder (28 channels).
                 state_tensor = ludo_cpp.encode_state_v10(self.state)
             elif MODEL_VERSION == 'v6_3':
-                # Use AI's consecutive sixes count for ch 25
                 state_tensor = ludo_cpp.encode_state_v6_3(
                     self.state, int(self.consecutive_sixes[AI_PLAYER])
                 )
@@ -325,9 +333,10 @@ class GameManager:
                     self.device, dtype=torch.float32
                 )
                 out = self.model(s_t, m_t)
-                # V6.1: (policy, value)
-                # V6.3: (policy, value, aux)
-                # V11:  (policy, win_prob, moves_remaining)
+                # V6.1:  (policy, value)
+                # V6.3:  (policy, value, aux)
+                # V11:   (policy, win_prob, moves_remaining)
+                # V12:   (policy, win_prob, moves_remaining)
                 v = float(out[1].squeeze().item())
         except Exception as e:
             print(f"[Play] win_chance failed: {e}")
@@ -337,8 +346,8 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        if MODEL_VERSION == 'v11':
-            # V11's win_prob head is sigmoid-output, BCE-trained on actual
+        if MODEL_VERSION in ('v11', 'v12'):
+            # V11/V12 win_prob head is sigmoid-output, BCE-trained on actual
             # outcomes — already a calibrated probability in [0, 1].
             ai_win_prob = v
         else:
@@ -540,7 +549,7 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': int(self.state.current_dice_roll) or roll_result['dice_roll']}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION == 'v11':
+        if MODEL_VERSION in ('v11', 'v12'):
             state_tensor = ludo_cpp.encode_state_v10(self.state)
         elif MODEL_VERSION == 'v6_3':
             state_tensor = ludo_cpp.encode_state_v6_3(
@@ -606,6 +615,10 @@ MODEL_INFO = {
     'v11': {
         'label': 'V11.1 ResTNet',
         'subtitle': 'V11.1 CNN+Attention · 79.05% eval (best) · 780K params',
+    },
+    'v12': {
+        'label': 'V12 Token-Entity Attn',
+        'subtitle': 'V12 CNN + token-entity attn · 81.00% eval (best) · 951K params',
     },
 }
 
