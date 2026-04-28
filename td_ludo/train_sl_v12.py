@@ -249,14 +249,43 @@ def main():
     if args.resume and os.path.exists(args.output):
         print(f"[V12 SL] Resuming from {args.output}")
         ckpt = torch.load(args.output, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt['model_state_dict'])
-        if 'optimizer_state_dict' in ckpt:
+        # V12.1: use strict=False so a surgery'd ckpt (missing reshaped policy
+        # head weights) can be loaded — the model class will keep the freshly
+        # initialized random weights for missing keys, which SL training then
+        # learns from scratch. Log the deltas so post-mortems are easy.
+        sd = ckpt['model_state_dict']
+        if any(k.startswith('_orig_mod.') for k in sd):
+            sd = {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
+        # Filter out shape-mismatched entries to avoid load-time RuntimeError.
+        target = model.state_dict()
+        filtered, shape_skipped = {}, []
+        for k, v in sd.items():
+            if k in target and v.shape != target[k].shape:
+                shape_skipped.append(f'{k} {tuple(v.shape)}->{tuple(target[k].shape)}')
+                continue
+            filtered[k] = v
+        result = model.load_state_dict(filtered, strict=False)
+        print(f"[V12 SL] Loaded {len(filtered)} tensors")
+        if result.missing_keys:
+            print(f"[V12 SL]   missing (will train from random init): {result.missing_keys}")
+        if result.unexpected_keys:
+            print(f"[V12 SL]   unexpected (in ckpt, not in model — skipped): {result.unexpected_keys}")
+        if shape_skipped:
+            print(f"[V12 SL]   shape-mismatched (skipped, will random-init): {shape_skipped}")
+        # Optimizer state can only resume cleanly when shapes match exactly.
+        # If anything was reshaped/missing, start optimizer fresh.
+        clean_resume = not (result.missing_keys or shape_skipped or result.unexpected_keys)
+        if clean_resume and 'optimizer_state_dict' in ckpt:
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        if 'scheduler_state_dict' in ckpt:
-            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-        start_epoch = ckpt.get('epoch', 0)
-        best_val = ckpt.get('best_val', float('inf'))
-        print(f"[V12 SL] Resumed at epoch {start_epoch}/{args.epochs} (best_val={best_val:.4f})")
+            if 'scheduler_state_dict' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            start_epoch = ckpt.get('epoch', 0)
+            best_val = ckpt.get('best_val', float('inf'))
+            print(f"[V12 SL] Resumed clean at epoch {start_epoch}/{args.epochs} "
+                  f"(best_val={best_val:.4f})")
+        else:
+            print(f"[V12 SL] Surgery-style resume: fresh optimizer + scheduler "
+                  f"+ epoch counter (model partially loaded)")
     elif args.resume:
         print(f"[V12 SL] --resume set but {args.output} not found; starting fresh")
 
