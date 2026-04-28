@@ -777,7 +777,12 @@ void write_state_tensor_v6(const GameState &state, float *buffer) {
     }
   }
 
-  // === CHANNEL 21: Danger Map ===
+  // === CHANNEL 21: Danger Map (graded, 12-square horizon) ===
+  // V12.1 fix: was binary at distance 1..6 only — created a perceptual cliff.
+  // Eval-lens analysis showed V12 was blind to opponents 7..12 squares behind
+  // ("sits comfortably until opponent reaches d=6, then panics"). Now writes a
+  // graded value over 12 squares: 1.0 at d=1, ~0.15 at d=12, 0 beyond.
+  // Two-square horizon = single dice (1..6) + bonus-turn dice (1..6) = up to 12.
   for (int t = 0; t < NUM_TOKENS; ++t) {
     int my_pos = state.player_positions[current_p][t];
     if (my_pos < 0 || my_pos > 50)
@@ -797,7 +802,7 @@ void write_state_tensor_v6(const GameState &state, float *buffer) {
       }
     }
     if (stacked) continue;
-    bool endangered = false;
+    int min_dist = 0;  // 0 = no opponent within horizon
     for (int op = 0; op < NUM_PLAYERS; ++op) {
       if (op == current_p || !state.active_players[op]) continue;
       for (int ot = 0; ot < NUM_TOKENS; ++ot) {
@@ -806,14 +811,17 @@ void write_state_tensor_v6(const GameState &state, float *buffer) {
         int op_abs = get_absolute_pos(op, op_pos);
         if (op_abs < 0) continue;
         int dist = (my_abs - op_abs + 52) % 52;
-        if (dist >= 1 && dist <= 6) { endangered = true; break; }
+        if (dist >= 1 && dist <= 12) {
+          if (min_dist == 0 || dist < min_dist) min_dist = dist;
+        }
       }
-      if (endangered) break;
     }
-    if (endangered) {
+    if (min_dist > 0) {
+      // Graded: linear from 1.0 (d=1) to 0.15 (d=12).
+      float danger = 1.0f - (float)(min_dist - 1) * (0.85f / 11.0f);
       int r, c;
       get_board_coords(current_p, my_pos, r, c);
-      if (r >= 0) write_tensor_val(buffer, 21, r, c, 1.0f, k, false);
+      if (r >= 0) write_tensor_val(buffer, 21, r, c, danger, k, false);
     }
   }
 

@@ -344,7 +344,13 @@ def main():
     # PPO config overrides
     parser.add_argument('--anneal-lr', type=float, default=0.0)
     parser.add_argument('--anneal-games', type=int, default=20000)
-    parser.add_argument('--entropy-coeff', type=float, default=-1.0)
+    # V12.1: bump default from 0.005 (config) → 0.01 to fight overconfidence.
+    # Eval-lens analysis showed V12 collapsed to 0.14 entropy; ~70% of decisions
+    # >0.95 confidence; confident-disagreements had no win-prob signal.
+    # Higher entropy bonus keeps the policy from collapsing into a single-token
+    # greedy mode, lets PPO actually explore alternatives during self-play.
+    # Pass --entropy-coeff <other> to override; pass -1 to use config default.
+    parser.add_argument('--entropy-coeff', type=float, default=0.01)
     parser.add_argument('--reset-lr', action='store_true')
     parser.add_argument('--save-interval', type=float, default=90.0,
                         help='Seconds between auto-saves with backup rotation. '
