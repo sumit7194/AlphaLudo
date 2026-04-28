@@ -24,9 +24,20 @@ from td_ludo.models.v12 import AlphaLudoV12
 
 
 class InMemoryDataset(Dataset):
-    """Load chunks up to max_states into RAM as float32. Same as V10."""
+    """Load chunks up to max_states into RAM as float32. Same as V10.
 
-    def __init__(self, chunk_paths, max_states=None):
+    V12.1: optional per-sample own-token permutation augmentation. With
+    architectural permutation-equivariance (per-token policy head + dropped
+    token_idx_emb), the model output should be invariant to relabeling the
+    4 own tokens. Augmenting the SL data with random permutations of own
+    channels (0-3) + matching policy/mask permutation teaches the upstream
+    CNN to learn equivariant features. Directly attacks the T2 blind spot
+    measured in eval-lens analysis.
+    """
+
+    def __init__(self, chunk_paths, max_states=None,
+                 augment_permute_own_tokens: bool = False):
+        self.augment_permute_own_tokens = augment_permute_own_tokens
         need = []
         running = 0
         for p in chunk_paths:
@@ -72,10 +83,24 @@ class InMemoryDataset(Dataset):
     def __len__(self): return len(self.states)
 
     def __getitem__(self, idx):
+        state = self.states[idx]
+        policy = self.policies[idx]
+        mask = self.masks[idx]
+
+        if self.augment_permute_own_tokens:
+            # Random permutation of the 4 own-token slots. State channels
+            # 0..3 hold one-hot positions of own T0..T3; policies and masks
+            # are aligned with the same slots. Apply same permutation to all.
+            perm = np.random.permutation(4)
+            state = state.copy()  # don't mutate the underlying buffer
+            state[0:4] = state[0:4][perm]
+            policy = policy[perm]
+            mask = mask[perm]
+
         return (
-            torch.from_numpy(self.states[idx]),
-            torch.from_numpy(self.policies[idx]),
-            torch.from_numpy(self.masks[idx]),
+            torch.from_numpy(state),
+            torch.from_numpy(policy),
+            torch.from_numpy(mask),
             torch.tensor(self.won[idx], dtype=torch.float32),
             torch.tensor(self.moves[idx], dtype=torch.float32),
         )
@@ -117,6 +142,12 @@ def main():
                         help='SL training: 0.1 dropout in attention/FFN '
                              '(set 0 for RL to keep PPO importance ratios valid)')
 
+    # V12.1: token-permutation augmentation (companion to per-token policy head).
+    # Default ON for V12.1+ — actively breaks the T2 blind spot we measured.
+    parser.add_argument('--no-permute-own-tokens', action='store_true',
+                        help='Disable own-token permutation augmentation (V12.1 default ON). '
+                             'Set this only for ablation studies vs the V12 baseline.')
+
     parser.add_argument('--resume', action='store_true',
                         help='Resume from existing --output checkpoint')
     parser.add_argument('--init-from-v10', action='store_true',
@@ -142,8 +173,14 @@ def main():
         raise FileNotFoundError(f"No chunks in {args.data_dir}")
     val_chunks = chunks[-2:]
     train_chunks = chunks[:-2]
-    train_set = InMemoryDataset(train_chunks, max_states=args.max_states)
-    val_set = InMemoryDataset(val_chunks, max_states=20000)
+    augment_perm = not args.no_permute_own_tokens
+    print(f"[V12 SL] Own-token permutation augmentation: "
+          f"{'ON' if augment_perm else 'OFF (--no-permute-own-tokens)'}")
+    train_set = InMemoryDataset(train_chunks, max_states=args.max_states,
+                                augment_permute_own_tokens=augment_perm)
+    # Val set unaugmented — stable metric, comparable across runs.
+    val_set = InMemoryDataset(val_chunks, max_states=20000,
+                              augment_permute_own_tokens=False)
 
     # pin_memory disabled: not supported on MPS and combining it with
     # non_blocking transfers caused stale/garbage reads on MPS (V11 NaN bug
