@@ -85,7 +85,7 @@ class AlphaLudoV12(nn.Module):
         num_heads: int = 4,
         ffn_ratio: int = 4,
         dropout: float = 0.0,
-        in_channels: int = 28,
+        in_channels: int = 33,  # V12.1 default: V11 encoder (28 + 4 idle + 1 streak)
     ):
         super().__init__()
         self.num_channels = num_channels

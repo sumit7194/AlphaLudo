@@ -32,6 +32,19 @@ struct GameState {
   int8_t current_player;                        // 0-3
   int8_t current_dice_roll;                     // 1-6
   bool is_terminal;
+
+  // V12.1 (encoder v11): per-token-per-player idleness tracking.
+  // idle_counter[p][t] = number of times player p has moved since they last
+  //   moved their token t (incremented on p's moves, reset to 0 on the moved
+  //   token). Initialized to 0 at game start. Encoded as 4 broadcast channels
+  //   (per own token, normalized by 20-turn cap) in encode_state_v11.
+  // last_moved_token[p] = last token p moved (0..3), or -1 if p never moved.
+  // streak[p] = consecutive moves p has made on the same token (≥1 once moving).
+  //   Encoded as 1 broadcast channel for current player (normalized by 10-turn cap).
+  // Total state add: 4*4 + 4 + 4 = 24 int8s. Negligible memory.
+  std::array<std::array<int8_t, NUM_TOKENS>, NUM_PLAYERS> idle_counter;
+  std::array<int8_t, NUM_PLAYERS> last_moved_token;
+  std::array<int8_t, NUM_PLAYERS> streak;
 };
 
 // Core Logic
@@ -60,6 +73,13 @@ void write_state_tensor_v9(const GameState &state, float *buffer);
 // Spatial: (27, 15, 15) -> writes 6075 floats
 void write_state_tensor_v6_3(const GameState &state, float *buffer,
                               int consecutive_sixes_count);
+
+// V11 encoder (33 channels) — V12.1 input:
+// - Channels 0-27: identical to V10 encoder
+// - Channels 28-31: per-own-token idle_counter / 20.0 (broadcast per token)
+// - Channel 32: current player's streak / 10.0 (broadcast)
+// Spatial: (33, 15, 15) -> writes 7425 floats
+void write_state_tensor_v11(const GameState &state, float *buffer);
 
 // V10 encoder (28 channels):
 // - Channels 0-23: same as V6.1/V6.3 (strategic channels)

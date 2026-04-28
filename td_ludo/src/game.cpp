@@ -144,6 +144,12 @@ GameState create_initial_state() {
   for (int p = 0; p < NUM_PLAYERS; ++p)
     state.active_players[p] = true;
 
+  // V12.1: idleness + streak tracking. Memset above zeroed idle_counter/streak;
+  // explicitly set last_moved_token to -1 (sentinel: 'never moved').
+  for (int p = 0; p < NUM_PLAYERS; ++p) {
+    state.last_moved_token[p] = -1;
+  }
+
   update_board(state);
   return state;
 }
@@ -300,6 +306,26 @@ GameState apply_move(const GameState &state, int token_index) {
   }
 
   update_board(next_state);
+
+  // V12.1 (encoder v11): per-token idleness + same-token streak.
+  // Increment all 4 of mover p's own counters by 1, reset moved token to 0.
+  // Only mover p's counters change — opponent counters keep their last value
+  // and resume incrementing on opp's next move.
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    if (next_state.idle_counter[p][t] < 127) {  // saturate at int8 max
+      next_state.idle_counter[p][t] = next_state.idle_counter[p][t] + 1;
+    }
+  }
+  next_state.idle_counter[p][token_index] = 0;
+  // Streak: did p move the same token as last time p moved?
+  if (state.last_moved_token[p] == token_index) {
+    if (next_state.streak[p] < 127) {
+      next_state.streak[p] = state.streak[p] + 1;
+    }
+  } else {
+    next_state.streak[p] = 1;
+  }
+  next_state.last_moved_token[p] = (int8_t)token_index;
 
   // Update turn
   if (!bonus_turn) {
@@ -1125,5 +1151,51 @@ void write_state_tensor_v10(const GameState &state, float *buffer) {
   if (max_progress > 0.0f) {
     float *ch27 = buffer + 27 * spatial_size;
     std::fill(ch27, ch27 + spatial_size, max_progress);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// V11 encoder: V10 (28ch) + per-own-token idleness (4ch) + streak (1ch).
+// Used by V12.1 to fix the same-token-stickiness pattern observed in
+// eval-lens analysis: V12 picked the same token across consecutive turns
+// at ~60% rate (vs 33% baseline). New channels give the model an explicit
+// 'this token has been ignored' / 'you've moved the same token N times
+// in a row' signal.
+//
+// Channels 0..27: same as write_state_tensor_v10
+// Channels 28..31: idle_counter[current_p][t] / 20.0 (capped at 1.0),
+//   broadcast to all spatial cells. One channel per own token (T0..T3).
+// Channel 32: streak[current_p] / 10.0 (capped at 1.0), broadcast.
+// ═══════════════════════════════════════════════════════════════
+void write_state_tensor_v11(const GameState &state, float *buffer) {
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+
+  // Clear full 33-channel buffer
+  clear_buffer(buffer, 33 * spatial_size);
+
+  // Channels 0-27: identical to V10 encoder
+  write_state_tensor_v10(state, buffer);
+
+  int current_p = state.current_player;
+
+  // === CHANNELS 28-31: per-own-token idle counter ===
+  // Normalized by 20-turn cap. Broadcast each token's value to its channel.
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int idle = (int)state.idle_counter[current_p][t];
+    float v = (float)idle / 20.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (v > 0.0f) {
+      float *ch = buffer + (28 + t) * spatial_size;
+      std::fill(ch, ch + spatial_size, v);
+    }
+  }
+
+  // === CHANNEL 32: streak / 10.0, broadcast (current player only) ===
+  int streak = (int)state.streak[current_p];
+  float sv = (float)streak / 10.0f;
+  if (sv > 1.0f) sv = 1.0f;
+  if (sv > 0.0f) {
+    float *ch32 = buffer + 32 * spatial_size;
+    std::fill(ch32, ch32 + spatial_size, sv);
   }
 }

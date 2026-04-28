@@ -44,7 +44,7 @@ os.environ.setdefault("TD_LUDO_RUN_NAME", "ac_v12")
 
 from td_ludo.models.v12 import AlphaLudoV12
 from td_ludo.training.trainer_v10 import ActorCriticTrainerV10  # V10 trainer is V11-compatible
-from td_ludo.game.players.v10 import VectorACGamePlayer  # V10 player uses encode_state_v10 (V11 same)
+from td_ludo.game.players.v11 import VectorACGamePlayer  # V12.1: V11 player uses encode_state_v11 (33ch: V10 + idle + streak)
 from src.elo_tracker import EloTracker
 from src.game_db import GameDB
 from src.config import (
@@ -395,7 +395,7 @@ def main():
     print(f"[V12 Train] Device: {device}")
     print(f"[V12 Train] Mode:   {MODE}")
 
-    # Build model — V11 architecture
+    # Build model — V12.1 architecture (V11 encoder, 33ch input)
     model_factory = lambda: AlphaLudoV12(
         num_res_blocks=args.num_res_blocks,
         num_channels=args.num_channels,
@@ -403,7 +403,7 @@ def main():
         num_heads=args.num_heads,
         ffn_ratio=args.ffn_ratio,
         dropout=args.dropout,  # 0.0 for RL
-        in_channels=28,
+        in_channels=33,  # V12.1: V10 (28) + idle (4) + streak (1)
     )
     model = model_factory()
     print(f"[V12 Train] Model: AlphaLudoV12 ({model.count_parameters():,} params)")

@@ -55,9 +55,16 @@ class InMemoryDataset(Dataset):
             if max_states and running >= max_states:
                 break
         total = running
+        # V12.1: allocate 33 channels (V11 encoder). The on-disk SL data is
+        # 28-ch (V10 encoder) — we pad channels 28-32 with zeros. The model's
+        # conv weights for those slices are zero-init from surgery, so SL
+        # leaves them at zero too; RL teaches them to be useful via PPO.
+        # This is the principled "warm up the architecture, fine-tune the
+        # new signals" approach. Costs ~18% more RAM but avoids regen.
         print(f"[Dataset] Preallocating for {total:,} samples "
-              f"({(total * 28 * 15 * 15 * 4) / 1e9:.2f} GB for states)...", flush=True)
-        self.states = np.empty((total, 28, 15, 15), dtype=np.float32)
+              f"({(total * 33 * 15 * 15 * 4) / 1e9:.2f} GB for states, "
+              f"33ch with channels 28-32 zero-padded from 28ch on-disk)...", flush=True)
+        self.states = np.zeros((total, 33, 15, 15), dtype=np.float32)
         self.policies = np.empty((total, 4), dtype=np.float32)
         self.masks = np.empty((total, 4), dtype=np.float32)
         self.won = np.empty(total, dtype=np.float32)
@@ -66,7 +73,8 @@ class InMemoryDataset(Dataset):
         idx = 0
         for i, (p, n) in enumerate(need):
             d = np.load(p)
-            self.states[idx:idx+n] = d['states'][:n]
+            # Copy first 28 channels; channels 28-32 stay zero-padded.
+            self.states[idx:idx+n, :28] = d['states'][:n]
             self.policies[idx:idx+n] = d['policies'][:n]
             self.masks[idx:idx+n] = d['legal_masks'][:n]
             self.won[idx:idx+n] = d['won'][:n].astype(np.float32)
@@ -198,7 +206,7 @@ def main():
         num_heads=args.num_heads,
         ffn_ratio=args.ffn_ratio,
         dropout=args.dropout,
-        in_channels=28,
+        in_channels=33,  # V12.1: V11 encoder
     ).to(device)
     print(f"[V12 SL] Model: {model.count_parameters():,} params")
     print(f"[V12 SL]   {args.num_res_blocks} ResBlocks × {args.num_channels}ch")

@@ -180,6 +180,39 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
             auto buf = array.unchecked<1>();
             for (int i = 0; i < NUM_PLAYERS; ++i)
               s.active_players[i] = buf(i);
+          })
+      // V12.1 (encoder v11): per-token idleness + same-token streak.
+      .def_property(
+          "idle_counter",
+          [](GameState &s) -> py::array_t<int8_t> {
+            return py::array_t<int8_t>(
+                {NUM_PLAYERS, NUM_TOKENS},
+                {NUM_TOKENS * sizeof(int8_t), sizeof(int8_t)},
+                &s.idle_counter[0][0], py::cast(s));
+          },
+          [](GameState &s, py::array_t<int8_t> array) {
+            std::memcpy(&s.idle_counter[0][0], array.data(),
+                        NUM_PLAYERS * NUM_TOKENS * sizeof(int8_t));
+          })
+      .def_property(
+          "last_moved_token",
+          [](GameState &s) -> py::array_t<int8_t> {
+            return py::array_t<int8_t>({NUM_PLAYERS}, {sizeof(int8_t)},
+                                       &s.last_moved_token[0], py::cast(s));
+          },
+          [](GameState &s, py::array_t<int8_t> array) {
+            std::memcpy(&s.last_moved_token[0], array.data(),
+                        NUM_PLAYERS * sizeof(int8_t));
+          })
+      .def_property(
+          "streak",
+          [](GameState &s) -> py::array_t<int8_t> {
+            return py::array_t<int8_t>({NUM_PLAYERS}, {sizeof(int8_t)},
+                                       &s.streak[0], py::cast(s));
+          },
+          [](GameState &s, py::array_t<int8_t> array) {
+            std::memcpy(&s.streak[0], array.data(),
+                        NUM_PLAYERS * sizeof(int8_t));
           });
 
   m.def("get_legal_moves", &get_legal_moves,
@@ -216,6 +249,14 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
     py::array_t<float> result({28, BOARD_SIZE, BOARD_SIZE});
     auto buf = result.mutable_data();
     write_state_tensor_v10(state, buf);
+    return result;
+  });
+
+  m.def("encode_state_v11", [](const GameState &state) {
+    // Return shape (33, 15, 15) - V11 = V10 + per-own-token idle (4) + streak (1)
+    py::array_t<float> result({33, BOARD_SIZE, BOARD_SIZE});
+    auto buf = result.mutable_data();
+    write_state_tensor_v11(state, buf);
     return result;
   });
 
