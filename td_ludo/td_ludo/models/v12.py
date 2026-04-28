@@ -105,14 +105,14 @@ class AlphaLudoV12(nn.Module):
         )
 
         # ---- Token-entity embeddings ----
-        # 2 owners × 4 token slots = 8 unique combinations, but we factor:
-        #   owner_emb (2 × C) + token_idx_emb (4 × C)
-        # so the model can learn "any-mine" vs "any-opp" semantics separately
-        # from per-slot semantics.
+        # V12.1: dropped token_idx_emb. Eval-lens analysis showed V12 had a
+        # T2 blind spot: V12 picked T2 in 12% of decisions but in 0% of
+        # disagreements (vs ~25% baseline if uniform). Strong evidence the
+        # 4-slot index embedding leaked spurious slot identity into the
+        # policy. Slot index is arbitrary metadata; only owner is real.
+        # Now permutation-equivariant within each owner's 4 tokens.
         self.owner_emb = nn.Embedding(2, num_channels)        # 0=mine, 1=opp
-        self.token_idx_emb = nn.Embedding(4, num_channels)    # T0..T3
         nn.init.trunc_normal_(self.owner_emb.weight, std=0.02)
-        nn.init.trunc_normal_(self.token_idx_emb.weight, std=0.02)
 
         # ---- Token-entity attention ----
         encoder_layer = nn.TransformerEncoderLayer(
@@ -130,11 +130,17 @@ class AlphaLudoV12(nn.Module):
         self.token_attn_norm = nn.LayerNorm(num_channels)
 
         # ---- Heads ----
-        # Combine: GAP of CNN (96) + mean of attended tokens (96) = 192
+        # Pooled feature for value-style heads: GAP CNN (C) + mean tokens (C).
         feat = num_channels * 2
 
-        self.policy_fc1 = nn.Linear(feat, 64)
-        self.policy_fc2 = nn.Linear(64, 4)
+        # V12.1: per-token policy head — permutation-equivariant by construction.
+        # logit[i] = MLP(own_attended[i]) with shared MLP across the 4 own tokens.
+        # Forces "decision for token i depends on token i's situation" prior;
+        # combined with dropped token_idx_emb, permuting the 4 own tokens
+        # permutes the 4 logits exactly. Replaces Linear(192,64)+Linear(64,4)
+        # with Linear(C,64)+Linear(64,1). ~12K policy params change shape.
+        self.policy_fc1 = nn.Linear(num_channels, 64)
+        self.policy_fc2 = nn.Linear(64, 1)
 
         self.win_fc1 = nn.Linear(feat, 64)
         self.win_fc2 = nn.Linear(64, 1)
@@ -178,18 +184,14 @@ class AlphaLudoV12(nn.Module):
         own_features = torch.einsum("btij,bcij->btc", own_mask, cnn_features)
         opp_features = torch.einsum("btij,bcij->btc", opp_mask, cnn_features)
 
-        # Add owner + token-idx embeddings
-        # token_idx: 0..3
-        token_idx = torch.arange(4, device=x.device)
-        token_idx_e = self.token_idx_emb(token_idx)  # (4, C)
+        # V12.1: only owner embedding remains (token_idx_emb dropped).
+        # Tokens within an owner are now permutation-equivariant.
         own_owner_e = self.owner_emb(torch.zeros(1, dtype=torch.long, device=x.device))  # (1, C)
         opp_owner_e = self.owner_emb(torch.ones(1, dtype=torch.long, device=x.device))   # (1, C)
-
-        # Broadcast: (B, 4, C) + (4, C) + (1, C) → (B, 4, C)
-        own_features = own_features + token_idx_e.unsqueeze(0) + own_owner_e.unsqueeze(0)
-        opp_features = opp_features + token_idx_e.unsqueeze(0) + opp_owner_e.unsqueeze(0)
-
-        # Concatenate into (B, 8, C)
+        # Broadcast: (B, 4, C) + (1, C) → (B, 4, C)
+        own_features = own_features + own_owner_e.unsqueeze(0)
+        opp_features = opp_features + opp_owner_e.unsqueeze(0)
+        # Concatenate into (B, 8, C). Order: 4 own followed by 4 opp.
         return torch.cat([own_features, opp_features], dim=1)
 
     def _apply_legal_mask(
@@ -207,35 +209,53 @@ class AlphaLudoV12(nn.Module):
             )
         return policy_logits
 
-    def _build_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Run full backbone (CNN + token attention) and return combined features."""
+    def _build_features(self, x: torch.Tensor):
+        """Run full backbone (CNN + token attention).
+
+        Returns:
+            pooled       : (B, 2C) — for win/moves heads (CNN GAP + mean tokens)
+            own_attended : (B, 4, C) — per-own-token attended features for the
+                            permutation-equivariant policy head.
+        """
         cnn_features = self._cnn_backbone(x)  # (B, C, H, W)
 
         # Per-token features at game-piece cells
         tokens = self._extract_token_features(x, cnn_features)  # (B, 8, C)
         tokens = self.token_attention(tokens)
         tokens = self.token_attn_norm(tokens)
-        token_summary = tokens.mean(dim=1)  # (B, C)
 
-        # Spatial summary
+        own_attended = tokens[:, :4]                # (B, 4, C) — own tokens only
+        token_summary = tokens.mean(dim=1)          # (B, C)
         cnn_gap = F.adaptive_avg_pool2d(cnn_features, 1).flatten(1)  # (B, C)
+        pooled = torch.cat([cnn_gap, token_summary], dim=1)         # (B, 2C)
+        return pooled, own_attended
 
-        return torch.cat([cnn_gap, token_summary], dim=1)  # (B, 2C)
+    def _policy_logits(self, own_attended: torch.Tensor,
+                       legal_mask: torch.Tensor | None) -> torch.Tensor:
+        """Per-token policy head shared across the 4 own tokens.
+
+        own_attended: (B, 4, C)
+        Returns: legal-masked logits (B, 4).
+        """
+        # Apply Linear over feature dim of (B, 4, C) → (B, 4, 64)
+        p = F.relu(self.policy_fc1(own_attended))
+        # → (B, 4, 1) → (B, 4)
+        logits = self.policy_fc2(p).squeeze(-1)
+        return self._apply_legal_mask(logits, legal_mask)
 
     # ------------------------------------------------------------------
     # Forward signatures — match V10/V11 (drop-in for trainer_v10).
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor, legal_mask: torch.Tensor | None = None):
-        features = self._build_features(x)
+        pooled, own_attended = self._build_features(x)
 
-        p = F.relu(self.policy_fc1(features))
-        policy_logits = self._apply_legal_mask(self.policy_fc2(p), legal_mask)
+        policy_logits = self._policy_logits(own_attended, legal_mask)
         policy = F.softmax(policy_logits, dim=1)
 
-        w = F.relu(self.win_fc1(features))
+        w = F.relu(self.win_fc1(pooled))
         win_prob = torch.sigmoid(self.win_fc2(w)).squeeze(-1)
 
-        m = F.relu(self.moves_fc1(features))
+        m = F.relu(self.moves_fc1(pooled))
         moves_remaining = F.softplus(self.moves_fc2(m)).squeeze(-1)
 
         return policy, win_prob, moves_remaining
@@ -243,25 +263,24 @@ class AlphaLudoV12(nn.Module):
     def forward_policy_only(
         self, x: torch.Tensor, legal_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        features = self._build_features(x)
-        p = F.relu(self.policy_fc1(features))
-        return self._apply_legal_mask(self.policy_fc2(p), legal_mask)
+        _, own_attended = self._build_features(x)
+        return self._policy_logits(own_attended, legal_mask)
 
     def forward_with_features(
         self, x: torch.Tensor, legal_mask: torch.Tensor | None = None
     ):
-        features = self._build_features(x)
-        p = F.relu(self.policy_fc1(features))
-        policy_logits = self._apply_legal_mask(self.policy_fc2(p), legal_mask)
+        pooled, own_attended = self._build_features(x)
+
+        policy_logits = self._policy_logits(own_attended, legal_mask)
         policy = F.softmax(policy_logits, dim=1)
 
-        w = F.relu(self.win_fc1(features))
+        w = F.relu(self.win_fc1(pooled))
         win_prob = torch.sigmoid(self.win_fc2(w)).squeeze(-1)
 
-        m = F.relu(self.moves_fc1(features))
+        m = F.relu(self.moves_fc1(pooled))
         moves_remaining = F.softplus(self.moves_fc2(m)).squeeze(-1)
 
-        return policy, win_prob, moves_remaining, features
+        return policy, win_prob, moves_remaining, pooled
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
