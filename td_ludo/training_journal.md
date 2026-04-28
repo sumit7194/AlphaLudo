@@ -1965,3 +1965,107 @@ Early RL evals (3 evals, 30K games):
 Comparison to V11.1's first 3 evals: 73.85 / 71.80 / 71.50. **V12 is starting ~5pp higher** — consistent with V12's stronger SL baseline and possibly with the architecture being a better fit. Same plateau-break gate (≥80% sustained × 3 evals).
 
 Status: **early — too soon to call**. Need 10-15 more evals (G=130K-180K) before claiming V12 has broken through V11.1's 79.05% peak. 24-hour run gives us approximately 600K games at L4's ~500 GPM.
+
+---
+
+### Experiment 21 (continued): V12 RL final results (2026-04-28)
+
+**V12 trained for ~22 hours on L4, total 629,990 games, 757,089 PPO updates.** Stopped voluntarily after eval-lens analysis identified architectural weaknesses that more RL can't fix.
+
+**Eval trajectory** (single 2000-game evals; `best_eval_win_rate` is best ever seen):
+
+| Game count | eval_win_rate | best_eval | notes |
+|---:|---:|---:|---|
+| 30K  | 77.0% | 77.0% | first 3 evals avg |
+| 80K  | 75.7% | 77.5% | dipped briefly |
+| 270K | 79.5% | 79.5% | rose into V11 territory |
+| 390K | **81.00%** | **81.00%** | **first time the project crossed 80%** |
+| 530K | 79.7% | 81.00% | slipped, stayed sub-80 |
+| 629K | 79.4% | 81.00% | stopped here |
+
+**Plateau-break gate** (3 consecutive evals ≥ 80%): **NOT met** — only one eval crossed 80%. Best single eval (81.00%) was the project record but didn't reproduce.
+
+**Behavioral signature at end of training**:
+- `policy_entropy = 0.1447` (deeply collapsed — earlier we measured V6.3 ran ~0.4–0.6)
+- `win_rate_100 = 66.0%` recent self-play vs ghosts mix
+- `main_elo = 1655` (peer ghosts at 1620–1764)
+
+V12 is the strongest model the project has produced, but stopped well short of its theoretical ceiling because RL can't address the *input-feature* and *architectural* defects we identified in eval-lens analysis below.
+
+---
+
+### Experiment 22: Eval Lens — using human gameplay as a diagnostic signal (2026-04-28)
+
+**Approach**: Flask play server logs, at every human decision against V12, the model's would-have-chosen + full policy + win_prob + KL + interest_score. Generates a labeled dataset of "thoughtful human disagrees with V12" — diagnostic information self-play eval cannot produce. Levels:
+- **Level 1** — Silent logging on every move (JSONL in `play/decision_logs/`)
+- **Level 2** — Post-game review modal where the user labels the top-N most-interesting decisions
+- **Level 3** — Reward shaping for V12.1 RL (deferred until ~50 games of labels)
+
+Implementation: commit `017a3bb` (DecisionLogger class, review modal, real-time model-pick highlight, `/api/review_decisions/<game_id>`, `/api/submit_rating`). Plan in `~/.claude/plans/lets-plan-to-build-humming-bentley.md`.
+
+**Findings from 141 logged decisions (2 games, user vs V12)**:
+
+| Metric | Game 1 (user won) | Game 2 (user lost) | Combined |
+|---|---:|---:|---:|
+| Decisions | 64 | 77 | 141 |
+| Total moves | 114 | 153 | — |
+| Disagreement rate | 40.6% | 28.6% | 34.0% |
+| V12 ultra-confident (>0.95) | 70.3% | 70.1% | 70.2% |
+| Confident-WRONG-per-human | 20.3% | 10.4% | 14.9% |
+| Avg win_prob (user POV at decision) | 0.702 | 0.567 | — |
+
+**Key behavioral defects identified**:
+
+1. **Overconfidence calibration is broken.** 58.9% of decisions at policy max-prob ≥ 0.99; only 1.4% below 0.5. V12 almost never says "this is a hard call." Confident disagreements (V12 >0.95 confident, user picked something else) had Δwin_prob next-turn of **−1.4pt average, positive 48% of the time** — indistinguishable from a coin flip. **V12's confidence has zero signal in the data.**
+
+2. **T2 blind spot (smoking gun for slot-identity leakage).** V12 picked T2 in 17/141 = 12% of decisions but in **0/40 disagreements (0%)**. When the user picked T2 (35 times — second-most-used token), V12 wanted something else 18 times — 45% of all disagreements were "user T2, V12 anything-else." V12 had effectively learned that T2 is rarely worth advancing — a spurious slot-identity correlation, not a physical fact.
+
+3. **Same-token continuation pattern.** V12 repeated its previous turn's pick at 60% rate (vs 33% baseline). Verified to be **stateless** in architecture (V12 has no memory) — the stickiness comes from positional features marking the leader as persistently attractive. The model has no input feature for "this token has been ignored."
+
+4. **Channel 21 danger horizon is too short.** Inspection of `src/game.cpp` line 808 revealed Channel 21 (Danger Map) is hardcoded `if (dist >= 1 && dist <= 6)`. V12 is *literally blind* to opponents 7–12 squares behind. User's gameplay observation matched exactly: "V12 sits comfortably until opponent is 6 away, then panics."
+
+5. **Race-the-laggard obsession.** When V12 disagrees, it wants T3 in 50% of cases. The top-8 highest-interest disagreements (interest > 10) are ALL of the form "V12 with pH=0.000 demands the trailing token move." V12 has internalized "advance the laggard" past the point of correctness.
+
+**Verdict**: V12 has converged to a policy that is *over-decisive, slot-biased, danger-blind, and over-rotates to laggers*. None of these are RL-fixable on the same encoder + architecture; they require encoder/architecture changes.
+
+---
+
+### Experiment 22b: V12.1 — eval-lens-driven architecture fixes (2026-04-28)
+
+**One-to-one mapping** of eval-lens defects to V12.1 commits:
+
+| Defect | Fix | Commit |
+|---|---|---|
+| Channel 21 danger horizon binary at 1–6 | Graded value over 12 squares: 1.0 @ d=1 → 0.15 @ d=12, 0 beyond | `4afa4ac` |
+| Policy entropy collapsed to 0.14 | Bump train_v12.py default `entropy_coeff` 0.005 → 0.01 | `4afa4ac` |
+| T2 blind spot from slot-identity leak | Drop `token_idx_emb` (4×96 learned embedding) | `03499eb` |
+| Pooled-then-unrolled policy head leaks slot id | Per-token shared MLP `Linear(96,64)+Linear(64,1)` over each own attended-token feature | `03499eb` |
+| CNN per-channel weights still slot-specific | Token-permutation augmentation in SL (random permutation of channels 0–3 + policy + mask) | `d3c240d` |
+| No idleness signal → same-token stickiness | New input channels 28–31: per-own-token `idle_counter[player][token] / 20.0` | `01da450` |
+| No "stuck on one token" signal | New input channel 32: `streak[player] / 10.0` | `01da450` |
+| Resume V12 weights into wider input | Conv-input zero-pad surgery: `(96, 28, 3, 3) → (96, 33, 3, 3)`; drop reshaped policy head | `b97ea97` |
+
+**State changes** (`src/game.h`): `GameState` gains `idle_counter[NUM_PLAYERS][NUM_TOKENS]`, `last_moved_token[NUM_PLAYERS]`, `streak[NUM_PLAYERS]`. `apply_move()` updates them: increment all 4 mover-side counters, reset moved token to 0, track same-token streak.
+
+**Encoder v11** (`write_state_tensor_v11`): channels 0–27 identical to V10; channels 28–31 are per-own-token idle/20.0 (broadcast); channel 32 is current-player streak/10.0 (broadcast). Total `(33, 15, 15)`.
+
+**Model V12.1**: same backbone (4 ResBlocks × 96ch + 2 attn × 4 heads), but:
+- `in_channels = 33` (was 28)
+- No `token_idx_emb` (− 384 params)
+- Per-token policy head replaces pooled head (− 6.3K policy params)
+- Total: **944,643 params** (vs V12's 951,366)
+
+**Resume path**:
+1. `python scripts/surgery_v12_to_v12_1.py --in v12_final/model_latest.pt --out checkpoints/ac_v12/model_sl.pt` — produces V12.1-shaped ckpt with 89/94 V12 tensors transferred (CNN backbone + token attention + win/moves heads). Reinit: policy head (2K params) + new conv slices (4.3K, zero-init).
+2. `python train_sl_v12.py --resume` — SL warm-up restores policy quality with token-permutation augmentation ON; idle/streak channels stay at zero in SL data so conv slices remain near-zero.
+3. `python train_v12.py --resume` — RL with `entropy_coeff=0.01` default, V11 player (encode_state_v11), entropy-regularized PPO updates the new conv slices and adapts policy/value heads.
+
+**Success criteria** (re-run eval lens after V12.1 stabilizes):
+- T2 disagreement rate: 45% → ≤30%
+- V12-pick-repeat rate: 60% → ≤40%
+- Confident-disagreement aftermath: avg Δwin_prob from −1.4pt to ≥ 0
+- (Stretch) cross plateau-break gate: ≥80% on 3 consecutive 2000-game evals
+
+**Deferred to V12.2**: aux head for per-token home-turn prediction (forcing function for per-token reasoning). Speculative; not directly demanded by eval-lens evidence. Will revisit after measuring V12.1's gains.
+
+**Status (2026-04-28 22:55)**: code complete on `main` (`017a3bb` … `b97ea97`), pushed to origin, synced + rebuilt on `alphaludo-l4`. Trainer stopped (PID 16469 SIGTERM, clean). V12-final checkpoints (model_latest.pt + model_best.pt) saved to `play/model_weights/v12_final/`. VM left running (idle ~$0.70/hr) for the next SL warm-up + RL launch when ready.
