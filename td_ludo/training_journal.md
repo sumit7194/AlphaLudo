@@ -2174,3 +2174,53 @@ disown
 - `leading_token_in_danger` linear probe: 89.5% → ≥95%
 - Policy entropy stable in [0.3, 0.5]
 - Best eval WR ≥ V12's 81.0%; ideally 3 consecutive ≥80% (plateau-break gate met)
+
+---
+
+### Experiment 23 (continued): V12.2 launch + plateau break (2026-04-29)
+
+**Launch on alphaludo-l4 (19:10):** chain script `chain_v122.sh` ran cleanly through Stage 0 (~3 min for 500K SL data — 12× faster than estimate) and Stage 1 (10 epochs SL warm-up, ~17 min). SL final: val_pol_acc 88.4%, val_win_acc 67.6%, val_moves_mae 7.55. Below the original 90% parity target, but the V12 teacher's peaky policy (~70% confident-ultra) makes 88% an acceptable proxy.
+
+**Stage 2 RL crash at G=10K (the V12.1 bug, again):**
+
+```
+RuntimeError: weight of size [128, 33, 3, 3], expected input[1, 28, 15, 15]
+              to have 33 channels, but got 28 channels instead
+   at evaluate_v10.py:123
+```
+
+Root cause: `train_v12.py` had **TWO** `from evaluate_v10 import evaluate_model` sites. The V12.1 fix commit (`4afa4ac`) used `Edit replace_all=True` which only matched the line including the trailing comment "V10 eval works (same encoder)" at line 523. The second site at line 679 had no comment — Edit didn't match it — and continued to import the broken 28-channel evaluator. Fix: commit `5591cec` (one-line change to second import).
+
+V12.2 self-play training was healthy for those 10K games (entropy 0.20, GPM 638, ELO 1622). On crash, the trainer wrote `model_latest.pt` cleanly via the "[V12 Train] Final save" path. Resume from G=10,002 lost no work.
+
+**RL trajectory after resume (eval every 10K games, 2000 games each):**
+
+| G | eval_win_rate | policy_entropy | win_rate_100 | notes |
+|---:|---:|---:|---:|---|
+| 20K | 79.0% | 0.190 | 65.4% | first successful eval — V11.1 territory |
+| 40K | **82.65%** ★ | 0.173 | 60.2% | **V12 ceiling broken — project record** |
+| 50K | 80.85% | 0.171 | 55.2% | stayed above 80% |
+| 60K | 81.40% | 0.168 | 57.4% | |
+
+**Plateau-break gate (≥80% × 3 consecutive evals): MET at G=40-50-60K.** First time in project history. Original V12-era target accomplished by V12.2 within ~1 hour of RL.
+
+**Entropy analysis (user noticed it red on dashboard at 0.189):**
+
+The dashboard's "healthy 0.30–0.50" band was calibrated for V11/V12 broader policies. V12.2 operates at 0.16–0.20 — *below* that band but **not collapsed**. Crucial distinction:
+
+| Pattern | V12 (collapsed) | V12.2 (productive) |
+|---|---|---|
+| End entropy | 0.144 | 0.168 |
+| Best eval | 81.0% | 82.65% |
+| Trajectory | flat-then-decline | climbing while entropy steady |
+| Confidence on disagreements | useless (Δwp ≈ 0) | TBD (re-run eval lens) |
+
+The V12 collapse was *unproductive* (overconfident on calls that didn't correlate with winning — eval-lens evidence). V12.2's tighter policy distribution is paired with rising eval WR, suggesting the SL teacher's confident style is being reproduced *on the right answers* — exactly what the V12.2 commits 2+3 (drop slot embedding + per-token policy + permutation augmentation) were designed for. **Decision: don't intervene with entropy_coeff bumps yet.** Re-run mech-interp at G≥100K to verify.
+
+**Target raised: 85% on 3 consecutive evals.** The original 80% gate was V12-era — V12.2 has earned a higher bar:
+- Tier 1 (current run): **3 consecutive evals ≥ 85%** at 2000 games each (~2pp above current 82.65% best)
+- Tier 2 (stretch): 87% single eval (likely needs MCTS at inference)
+
+**Dashboard rebuild (`520035a`)**: full v11_dashboard.html structure ported to V12.2 — header status dot, plateau-break gate visualization, big eval chart with reference lines (now showing 85% NEW TARGET, 81% V12 broken, 79% V11.1, 78.8% V6.1), KPI row, split charts (rolling WR + entropy with healthy-band shading), PPO dynamics, bot-WR breakdown, ELO leaderboard. Color palette swapped to purple to distinguish V12.2 from V11 cyan.
+
+**Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://34.143.250.98:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.

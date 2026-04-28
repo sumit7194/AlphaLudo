@@ -148,7 +148,7 @@
   <h1>
     V12.2 Wider+Shallower
     <span class="badge">Exp 23</span>
-    <span class="subtitle">3 ResBlocks × 128ch · fresh init from V12 SL teacher · plateau-break attempt</span>
+    <span class="subtitle">3 ResBlocks × 128ch · fresh init · V12 ceiling broken (82.65%) — chasing 85%</span>
   </h1>
   <div class="header-meta">
     <span><span id="status-dot" class="status-dot"></span><span id="status-text">connecting…</span></span>
@@ -162,7 +162,8 @@
 <div class="context-note">
   V12.2 fresh-init from <code>generate_sl_data_v122.py</code> (V12-latest as teacher, 75/15/5/3/2 game mix).
   Architecture: 3 ResBlocks × 128ch + 2 Transformer attention layers (128d, 4 heads) — informed by V12 mech-interp
-  (CKA &gt; 0.95 across 4 ResBlocks → wasted depth). Goal: break the 81.0% V12 ceiling — 3 consecutive evals ≥ 80%.
+  (CKA &gt; 0.95 across 4 ResBlocks → wasted depth). V12 ceiling (81.0%) BROKEN at G=40K (82.65%).
+  New target: 3 consecutive 2000-game evals ≥ 85%.
 </div>
 
 <!-- PIPELINE -->
@@ -192,17 +193,17 @@
     <div id="latest-eval" class="big-number">--</div>
     <div class="sub" id="latest-eval-detail">No eval yet — first at G=10K</div>
     <table class="ref-table">
-      <tr><td><span class="ref-mark" style="background:var(--good)"></span>≥ 80%</td><td>plateau-break target</td></tr>
-      <tr><td><span class="ref-mark" style="background:var(--gold)"></span>81.0%</td><td>V12 single-eval peak</td></tr>
-      <tr><td><span class="ref-mark" style="background:var(--warn)"></span>79.05%</td><td>V11.1 single-eval peak</td></tr>
-      <tr><td><span class="ref-mark" style="background:var(--accent)"></span>78.8%</td><td>V6.1 all-time peak</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--good)"></span>≥ 85%</td><td>NEW plateau-break target</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--gold)"></span>82.65%</td><td>V12.2 best so far (G=40K)</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--warn)"></span>81.0%</td><td>V12 single-eval peak (broken)</td></tr>
+      <tr><td><span class="ref-mark" style="background:var(--accent)"></span>79.05%</td><td>V11.1 single-eval peak</td></tr>
     </table>
   </div>
 
   <div class="card celebrate" id="plateau-card">
-    <div class="label">Plateau Break Progress</div>
+    <div class="label">85% Gate Progress</div>
     <div class="big-number" id="plateau-count">0 / 3</div>
-    <div class="sub">Evals ≥ 80% required in a row (= first plateau break)</div>
+    <div class="sub">Evals ≥ 85% required in a row (V12 ceiling already broken)</div>
     <div class="plateau-grid" id="plateau-grid">
       <div class="plateau-slot"><div class="slot-wr">--</div>eval N-2</div>
       <div class="plateau-slot"><div class="slot-wr">--</div>eval N-1</div>
@@ -306,8 +307,9 @@
 </div>
 
 <script>
-const PLATEAU_TARGET = 0.80;
-const V12_PEAK = 0.810;
+const PLATEAU_TARGET = 0.85;     // raised from 0.80 — V12 ceiling already broken
+const V12_PEAK = 0.810;          // V12 final ceiling
+const V122_BEST_SO_FAR = 0.8265; // V12.2 best as of G=40K — informational
 const V111_PEAK = 0.7905;
 const V61_PEAK = 0.788;
 
@@ -342,9 +344,9 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
     pointBackgroundColor: (ctx) => {
       const v = ctx.raw;
       if (v == null) return palette.muted;
-      if (v >= 0.83) return palette.good;
-      if (v >= 0.80) return palette.gold;
-      if (v >= V12_PEAK) return palette.warn;
+      if (v >= 0.85) return palette.good;       // hit new target
+      if (v >= 0.82) return palette.gold;       // beat V12 ceiling
+      if (v >= 0.80) return palette.warn;       // hit old plateau
       return palette.accent;
     },
     borderWidth: 2,
@@ -352,7 +354,7 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
   options: {
     responsive: true, maintainAspectRatio: false,
     scales: {
-      y: { min: 0.5, max: 0.9, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.05 }, grid: { color: palette.grid } },
+      y: { min: 0.55, max: 0.92, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.05 }, grid: { color: palette.grid } },
       x: { title: { display: true, text: "games trained" }, grid: { display: false } },
     },
     plugins: { legend: { display: false } },
@@ -372,10 +374,10 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
         ctx.textAlign = "right"; ctx.fillText(label, right - 8, yPos - 4);
         ctx.restore();
       };
-      drawLine(PLATEAU_TARGET, palette.good, "80% PLATEAU BREAK", false);
-      drawLine(V12_PEAK,   palette.gold, "81.0% V12 ceiling");
-      drawLine(V111_PEAK,  palette.warn, "79.0% V11.1 peak");
-      drawLine(V61_PEAK,   palette.muted, "78.8% V6.1 peak");
+      drawLine(PLATEAU_TARGET, palette.good, "85% NEW TARGET", false);
+      drawLine(0.80,       palette.warn, "80% (cleared)");
+      drawLine(V12_PEAK,   palette.gold, "81.0% V12 ceiling (broken)");
+      drawLine(V111_PEAK,  palette.muted, "79.0% V11.1 peak");
     },
   }],
 });
@@ -639,9 +641,9 @@ function updateFromMetrics(m) {
       div.className = "plateau-slot";
       div.innerHTML = `<div class="slot-wr">--</div>eval ${i+1}`;
     } else {
-      const hit80 = e.eval_win_rate >= PLATEAU_TARGET;
-      const hit78 = e.eval_win_rate >= V61_PEAK;
-      div.className = "plateau-slot " + (hit80 ? "filled" : hit78 ? "warning" : "");
+      const hit85 = e.eval_win_rate >= PLATEAU_TARGET;
+      const hit80 = e.eval_win_rate >= 0.80;
+      div.className = "plateau-slot " + (hit85 ? "filled" : hit80 ? "warning" : "");
       div.innerHTML = `<div class="slot-wr">${(e.eval_win_rate*100).toFixed(1)}%</div>G=${(e.games/1000).toFixed(0)}K`;
     }
   });
@@ -655,9 +657,9 @@ function updateFromMetrics(m) {
     const latestEl = document.getElementById("latest-eval");
     latestEl.textContent = (latest*100).toFixed(1) + "%";
     latestEl.className = "big-number";
-    if (latest >= 0.83) latestEl.classList.add("good");
-    else if (latest >= PLATEAU_TARGET) latestEl.classList.add("gold");
-    else if (latest >= V12_PEAK) latestEl.classList.add("warn");
+    if (latest >= PLATEAU_TARGET) latestEl.classList.add("good");   // ≥85% target hit
+    else if (latest >= 0.82) latestEl.classList.add("gold");        // beat V12 ceiling
+    else if (latest >= 0.80) latestEl.classList.add("warn");        // cleared old plateau
     else if (latest < 0.65) latestEl.classList.add("bad");
 
     document.getElementById("latest-eval-detail").textContent =
