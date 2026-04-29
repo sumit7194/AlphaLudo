@@ -2174,3 +2174,79 @@ disown
 - `leading_token_in_danger` linear probe: 89.5% → ≥95%
 - Policy entropy stable in [0.3, 0.5]
 - Best eval WR ≥ V12's 81.0%; ideally 3 consecutive ≥80% (plateau-break gate met)
+
+---
+
+### Discussion (2026-04-29): why "computed" channels aren't spoon-feeding, and a pivot to search-during-training
+
+V12.2 is mid-run (Exp 23, ~425K games, 80–83% with one 83.1% peak; 85% gate
+0/3). Triggered by the persistent ceiling, a discussion clarified two things
+that change the framing of every architecture experiment so far.
+
+**1. CKA-redundancy in the late ResBlocks is structural, not wasted capacity.**
+Every depth shrink (10→6→5→3) has surfaced "the last two blocks look the same
+in CKA." This is not capacity slack — it is a property of ResNets with skip
+connections on a bounded-complexity task: late blocks drive `f(x) → 0`
+because that is the loss-minimizing solution given the task's intrinsic
+representational depth. The 33-channel encoder front-loads feature
+extraction, leaving the CNN with a roughly 2–3-block job. Continuing to chase
+this with more CKA is unlikely to be informative. The right diagnostics are
+per-block linear probes on `eventual_win` and per-block layer ablation.
+
+**2. The encoder's "computed" channels are mostly the bridge between
+game-rule reality and what a stateless model can see.** The framing "the
+model can derive this from raw inputs" mostly fails because
+`f(state, dice) → policy` has no access to history or future-turn structure.
+A walk through the V11 33-channel set:
+
+| Channel | Encodes | Derivable from raw inputs? |
+|---|---|---|
+| 24 (bonus_turn_flag) | "dice=6 → another action" | No — turn-structure rule, not visible to a single-frame model |
+| 25 (two_roll_capture_map) | spatial bonus-turn rule | No — same reason |
+| 28–31 (idle counters) | per-token multi-turn history | No — history invisible to stateless model |
+| 32 (streak) | consecutive-same-token history | No — same reason |
+| 21 (graded danger map) | 7-square opponent reach | Empirically a blind spot when removed (Exp 22) |
+| 26 (non_home_fraction) | scalar reduction over own positions | Yes (trivially derivable) |
+| 27 (leader_progress) | scalar reduction over all players | Yes (trivially derivable) |
+
+So the channels are not spoon-feeding; they are necessary information
+injection given the architectural constraint. Removing them and expecting
+the model to "internalize the rule" is asking the architecture to reach
+beyond its expressive scope. To remove them, the architecture has to change
+first.
+
+**Architectural classes that could enable rule-learning**
+
+1. History via attention/recurrence — solves history-related defects
+   (T2 slot bias, same-token stickiness, idle channels). Doesn't solve
+   forward planning. Cheapest.
+2. Forward simulation (MuZero-style) — solves rule-learning *and* planning.
+   Most expensive. Stochastic MuZero on backgammon is the closest published
+   analog.
+3. Auxiliary forward-prediction head — cheap intermediate; force the
+   backbone to encode features useful for next-state prediction without
+   doing search. Diagnostic for whether forward modeling is the binding
+   constraint.
+4. Search-during-training (revisit of Exp 9) — AlphaZero-spirit policy
+   improvement via shallow expectimax, with the search output used as an
+   auxiliary policy target rather than as inference-time refinement.
+
+**Re-reading the journal's "value-driven search amplifies noise on Ludo"
+finding.** Four prior search attempts (Exp 9 MCTS-training; Exp 13c V6.1
+inference; V6.3 1-ply; Exp 17b V10 expectimax) all degraded eval WR. The
+common failure mode is **value-head-as-evaluator** at search leaves: value
+noise is amplified by the 6× dice branching factor, so leaf scores become
+dominated by value-head error rather than position quality. The mechanism
+is search-by-value-head, not search-as-such. A training-time setup where
+search outputs a refined policy target — and at inference the model emits
+the searched-into policy without re-searching — bypasses this failure mode
+because (a) per-state noise averages out across many training states, and
+(b) policy targets encode rule-consistent action selection that is not
+itself a value-head estimate. The simulator inside the search is also where
+game rules (notably the bonus-turn rule) enter the model: depth-1 search
+correctly assigns the second action's value to the right player based on
+whether dice=6, even though the bare model has no architectural way to
+represent that.
+
+This motivates Exp 24 (search-during-training with depth-1 expectimax as
+auxiliary policy target). Plan in progress; not yet committed to code.
