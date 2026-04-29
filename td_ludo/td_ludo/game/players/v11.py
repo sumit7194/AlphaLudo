@@ -112,8 +112,27 @@ class VectorACGamePlayer:
         if self.model_factory is None:
             return None
 
+        # Race-condition fix: ghosts are pruned to MAX_GHOSTS=20 by the
+        # ghost-saver, so a path returned by listdir() can disappear before
+        # we torch.load() it. Treat as "ghost evicted, just skip" — a None
+        # return makes the caller fall back to a different opponent rather
+        # than crashing the whole trainer.
+        try:
+            checkpoint = torch.load(ghost_path, map_location=self.device, weights_only=False)
+        except FileNotFoundError:
+            print(f"[v11 player] ghost evicted before load, skipping: {ghost_path}")
+            # Drop any stale active-ghost reference pointing here so the
+            # next decision picks a fresh one.
+            if self.active_ghost is not None and self.active_ghost.get('path') == ghost_path:
+                self.active_ghost = None
+            return None
+        except Exception as e:
+            print(f"[v11 player] ghost load failed ({type(e).__name__}: {e}), skipping: {ghost_path}")
+            if self.active_ghost is not None and self.active_ghost.get('path') == ghost_path:
+                self.active_ghost = None
+            return None
+
         model = self.model_factory().to(self.device)
-        checkpoint = torch.load(ghost_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         model.load_state_dict(state_dict)
         model.eval()
