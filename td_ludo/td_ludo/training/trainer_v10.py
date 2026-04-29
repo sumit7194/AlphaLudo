@@ -41,10 +41,18 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
     """
 
     def __init__(self, model, device, learning_rate=1e-5,
-                 moves_aux_coeff=0.003, win_bce_coeff=0.5, **kwargs):
+                 moves_aux_coeff=0.003, win_bce_coeff=0.5,
+                 alpha_search=0.0, **kwargs):
         super().__init__(model, device, learning_rate=learning_rate, **kwargs)
         self.moves_aux_coeff = moves_aux_coeff
         self.win_bce_coeff = win_bce_coeff
+        # Exp 24: search-during-training auxiliary loss weight.
+        # 0.0 disables; recommended start is 0.5 when search is enabled.
+        self.alpha_search = alpha_search
+        # Running stats for the auxiliary loss (averaged across PPO updates).
+        self.recent_search_loss = []
+        self.recent_search_kl = []
+        self.recent_search_coverage = []
 
     def train_on_game(self, trajectories, winner, model_player):
         """Buffer trajectory steps with own_moves_remaining + binary won target."""
@@ -78,7 +86,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         # Own moves remaining for each step
         total_own_moves = len(trajectory)
 
-        # Buffer each step — ADDED: won_target (0/1)
+        # Buffer each step — ADDED: won_target (0/1), pi_search (optional)
         for i, step in enumerate(trajectory):
             own_moves_remaining = float(total_own_moves - (i + 1))
             self._ppo_buffer.append({
@@ -90,6 +98,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 'z': discounted_returns[i],
                 'moves_remaining_target': own_moves_remaining,
                 'won_target': won_target,
+                'pi_search': step.get('pi_search'),  # np.ndarray (4,) or None
             })
         self._ppo_games_buffered += 1
 
@@ -146,6 +155,30 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             dtype=torch.float32, device=self.device
         )
 
+        # Exp 24: stack pi_search targets and a mask of which steps have one.
+        # Steps without a search target store None; those rows are zero-masked
+        # so they contribute nothing to the auxiliary loss.
+        if self.alpha_search > 0.0:
+            pi_search_arrs = []
+            search_mask_list = []
+            for s in self._ppo_buffer:
+                ps = s.get('pi_search')
+                if ps is None:
+                    pi_search_arrs.append(np.zeros(4, dtype=np.float32))
+                    search_mask_list.append(0.0)
+                else:
+                    pi_search_arrs.append(ps.astype(np.float32))
+                    search_mask_list.append(1.0)
+            all_pi_search = torch.from_numpy(np.stack(pi_search_arrs)).to(
+                self.device, dtype=torch.float32,
+            )
+            all_search_mask = torch.tensor(
+                search_mask_list, dtype=torch.float32, device=self.device,
+            )
+        else:
+            all_pi_search = None
+            all_search_mask = None
+
         # Return normalization (identical to base)
         with torch.no_grad():
             batch_mean = all_returns_raw.mean().item()
@@ -167,6 +200,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         total_advantage = 0.0
         total_clip_frac = 0.0
         total_approx_kl = 0.0
+        total_search_loss = 0.0
+        total_search_kl = 0.0  # KL(pi_search || pi_model) on covered states
+        total_search_coverage = 0.0
         n_minibatches = 0
 
         # Precompute advantages using V10's win_prob → value transformation
@@ -196,6 +232,12 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 mb_advantages = all_advantages[mb_idx]
                 mb_moves_targets = all_moves_targets[mb_idx]
                 mb_won_targets = all_won_targets[mb_idx]
+                if all_pi_search is not None:
+                    mb_pi_search = all_pi_search[mb_idx]
+                    mb_search_mask = all_search_mask[mb_idx]
+                else:
+                    mb_pi_search = None
+                    mb_search_mask = None
 
                 # V10: forward returns (policy, win_prob, moves_remaining)
                 policy, win_prob, moves_pred = self.model(mb_states, mb_masks)
@@ -241,9 +283,35 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 # V10: auxiliary moves-remaining loss with SmoothL1.
                 moves_loss = F.smooth_l1_loss(moves_pred, mb_moves_targets)
 
+                # Exp 24: search-during-training auxiliary loss.
+                # Cross-entropy from pi_search (smoothed one-hot at search-
+                # argmax) to the model's policy. Computed only on covered
+                # rows; averaged over those rows so alpha_search has the
+                # nominal "per-covered-state" meaning regardless of fraction.
+                if mb_pi_search is not None and mb_search_mask.sum() > 0:
+                    log_policy = torch.log(policy + 1e-8)
+                    per_row_ce = -(mb_pi_search * log_policy).sum(dim=1)
+                    n_covered = mb_search_mask.sum().clamp_min(1.0)
+                    search_loss = (per_row_ce * mb_search_mask).sum() / n_covered
+                    coverage_frac = (n_covered / float(end - start)).item()
+
+                    # KL diagnostic (search || model) on covered rows only.
+                    with torch.no_grad():
+                        kl_per = (
+                            mb_pi_search * (
+                                torch.log(mb_pi_search + 1e-8) - log_policy
+                            )
+                        ).sum(dim=1)
+                        kl_avg = (kl_per * mb_search_mask).sum() / n_covered
+                else:
+                    search_loss = torch.zeros((), device=self.device)
+                    coverage_frac = 0.0
+                    kl_avg = torch.zeros((), device=self.device)
+
                 loss = (policy_loss
                         + self.win_bce_coeff * win_bce_loss
                         + self.moves_aux_coeff * moves_loss
+                        + self.alpha_search * search_loss
                         - self.entropy_coeff * entropy)
 
                 # Safety net: skip NaN/Inf batches (belt-and-braces for MPS)
@@ -264,6 +332,10 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 total_moves_loss += moves_loss.item()
                 total_entropy += entropy.item()
                 total_advantage += advantage.mean().item()
+                if all_pi_search is not None:
+                    total_search_loss += float(search_loss.item())
+                    total_search_kl += float(kl_avg.item())
+                    total_search_coverage += coverage_frac
 
                 with torch.no_grad():
                     clipped = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
@@ -288,6 +360,18 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         self.recent_clip_fractions.append(avg_clip)
         self.recent_approx_kl.append(avg_kl)
 
+        if all_pi_search is not None and n_minibatches > 0:
+            avg_search_loss = total_search_loss / n_minibatches
+            avg_search_kl = total_search_kl / n_minibatches
+            avg_search_cov = total_search_coverage / n_minibatches
+            self.recent_search_loss.append(avg_search_loss)
+            self.recent_search_kl.append(avg_search_kl)
+            self.recent_search_coverage.append(avg_search_cov)
+        else:
+            avg_search_loss = 0.0
+            avg_search_kl = 0.0
+            avg_search_cov = 0.0
+
         self._ppo_buffer = []
         self._ppo_games_buffered = 0
 
@@ -300,6 +384,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             'advantage': avg_adv,
             'clip_fraction': avg_clip,
             'approx_kl': avg_kl,
+            'search_loss': avg_search_loss,
+            'search_kl': avg_search_kl,
+            'search_coverage': avg_search_cov,
             'n_steps': n_steps,
             'n_minibatches': n_minibatches,
         }

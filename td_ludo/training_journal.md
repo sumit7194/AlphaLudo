@@ -2224,3 +2224,206 @@ The V12 collapse was *unproductive* (overconfident on calls that didn't correlat
 **Dashboard rebuild (`520035a`)**: full v11_dashboard.html structure ported to V12.2 — header status dot, plateau-break gate visualization, big eval chart with reference lines (now showing 85% NEW TARGET, 81% V12 broken, 79% V11.1, 78.8% V6.1), KPI row, split charts (rolling WR + entropy with healthy-band shading), PPO dynamics, bot-WR breakdown, ELO leaderboard. Color palette swapped to purple to distinguish V12.2 from V11 cyan.
 
 **Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://34.143.250.98:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.
+
+---
+
+### Discussion (2026-04-29): why "computed" channels aren't spoon-feeding, and a pivot to search-during-training
+
+V12.2 is mid-run (Exp 23, ~425K games, 80–83% with one 83.1% peak; 85% gate
+0/3). Triggered by the persistent ceiling, a discussion clarified two things
+that change the framing of every architecture experiment so far.
+
+**1. CKA-redundancy in the late ResBlocks is structural, not wasted capacity.**
+Every depth shrink (10→6→5→3) has surfaced "the last two blocks look the same
+in CKA." This is not capacity slack — it is a property of ResNets with skip
+connections on a bounded-complexity task: late blocks drive `f(x) → 0`
+because that is the loss-minimizing solution given the task's intrinsic
+representational depth. The 33-channel encoder front-loads feature
+extraction, leaving the CNN with a roughly 2–3-block job. Continuing to chase
+this with more CKA is unlikely to be informative. The right diagnostics are
+per-block linear probes on `eventual_win` and per-block layer ablation.
+
+**2. The encoder's "computed" channels are mostly the bridge between
+game-rule reality and what a stateless model can see.** The framing "the
+model can derive this from raw inputs" mostly fails because
+`f(state, dice) → policy` has no access to history or future-turn structure.
+A walk through the V11 33-channel set:
+
+| Channel | Encodes | Derivable from raw inputs? |
+|---|---|---|
+| 24 (bonus_turn_flag) | "dice=6 → another action" | No — turn-structure rule, not visible to a single-frame model |
+| 25 (two_roll_capture_map) | spatial bonus-turn rule | No — same reason |
+| 28–31 (idle counters) | per-token multi-turn history | No — history invisible to stateless model |
+| 32 (streak) | consecutive-same-token history | No — same reason |
+| 21 (graded danger map) | 7-square opponent reach | Empirically a blind spot when removed (Exp 22) |
+| 26 (non_home_fraction) | scalar reduction over own positions | Yes (trivially derivable) |
+| 27 (leader_progress) | scalar reduction over all players | Yes (trivially derivable) |
+
+So the channels are not spoon-feeding; they are necessary information
+injection given the architectural constraint. Removing them and expecting
+the model to "internalize the rule" is asking the architecture to reach
+beyond its expressive scope. To remove them, the architecture has to change
+first.
+
+**Architectural classes that could enable rule-learning**
+
+1. History via attention/recurrence — solves history-related defects
+   (T2 slot bias, same-token stickiness, idle channels). Doesn't solve
+   forward planning. Cheapest.
+2. Forward simulation (MuZero-style) — solves rule-learning *and* planning.
+   Most expensive. Stochastic MuZero on backgammon is the closest published
+   analog.
+3. Auxiliary forward-prediction head — cheap intermediate; force the
+   backbone to encode features useful for next-state prediction without
+   doing search. Diagnostic for whether forward modeling is the binding
+   constraint.
+4. Search-during-training (revisit of Exp 9) — AlphaZero-spirit policy
+   improvement via shallow expectimax, with the search output used as an
+   auxiliary policy target rather than as inference-time refinement.
+
+**Re-reading the journal's "value-driven search amplifies noise on Ludo"
+finding.** Four prior search attempts (Exp 9 MCTS-training; Exp 13c V6.1
+inference; V6.3 1-ply; Exp 17b V10 expectimax) all degraded eval WR. The
+common failure mode is **value-head-as-evaluator** at search leaves: value
+noise is amplified by the 6× dice branching factor, so leaf scores become
+dominated by value-head error rather than position quality. The mechanism
+is search-by-value-head, not search-as-such. A training-time setup where
+search outputs a refined policy target — and at inference the model emits
+the searched-into policy without re-searching — bypasses this failure mode
+because (a) per-state noise averages out across many training states, and
+(b) policy targets encode rule-consistent action selection that is not
+itself a value-head estimate. The simulator inside the search is also where
+game rules (notably the bonus-turn rule) enter the model: depth-1 search
+correctly assigns the second action's value to the right player based on
+whether dice=6, even though the bare model has no architectural way to
+represent that.
+
+This motivates Exp 24 (search-during-training with depth-1 expectimax as
+auxiliary policy target).
+
+---
+
+### Experiment 24: Search-during-training (depth-1 expectimax as aux policy target) — PLANNED, code committed (2026-04-29)
+
+**Scope decision (locked):** V12.2 architecture and 33-channel input *unchanged*.
+GCP is mid-run; this experiment is a pure additive — search-search-during-training
+toggled by `--search-enabled` flag, default off. Channel stripping deferred
+to a future experiment paired with architectural changes (e.g., add history
+input + drop ch 28–32 together).
+
+**Algorithm.** Depth-1 expectimax over (first_action × 6 dice values × second_action):
+
+```
+For each legal first action a_i:
+  s' = apply_move(g, a_i)
+  For each d' ∈ {1..6}:
+    s'_d = clone of s' with current_dice_roll = d'
+    if next_player(s'_d) == root_player:        # bonus turn (dice=6, home, cut)
+      v(d') = max over second action a' of value_head(apply_move(s'_d, a'))
+    else:                                        # opponent turn
+      a'_opp = argmax(pi_model(s'_d from opp's perspective))
+      v(d') = value_head(apply_move(s'_d, a'_opp))
+  Q(a_i) = mean over d' of v(d')
+
+pi_search = smoothed_one_hot(argmax_a Q(a))
+```
+
+**Design holes resolved (post-discussion):**
+
+1. **Target shape: argmax-onehot with label smoothing 0.1**, not `softmax(Q/T)`.
+   Sandbox check on V12.2 weights showed value-head outputs sit in
+   roughly `[0.10, 0.50]` — wider than the [0.4, 0.7] worry, but argmax
+   still picked for AlphaZero-form clarity and gradient stability.
+
+2. **Opponent assumption: argmax(pi_model)** on s' from opponent's perspective,
+   not `min`. Bot-mix isn't adversarially perfect; on-policy expectation
+   is the right approximation for self-play training.
+
+3. **Leaf eval: V12.2 value head**, with the leaf state encoded under
+   `current_player = root_player` so win_prob corresponds to P(root wins)
+   regardless of whose turn the leaf actually is.
+
+4. **Bonus-turn decision set deferred** to a follow-up — the original Exp 24
+   plan's set risked circularity (search-derived ground truth tested
+   against search-trained model). Replacement: re-run the eval-lens 141
+   logged human-game decisions on the search-trained model and compare
+   T2 disagreement rate, confident-disagreement Δwin_prob, V12-pick-repeat
+   rate. Independent of search.
+
+5. **Triple-six rule not modeled** at this depth — only matters when
+   `consecutive_sixes_count ≥ 2`, which is rare. Bonus-turn (dice=6, home,
+   cut) IS captured exactly because it lives inside `apply_move`.
+
+**Defaults:**
+- `search_target_fraction = 0.25` — 25% of training-player decisions get a
+  search pass per turn.
+- `alpha_search = 0.5` — auxiliary CE weight, applied to per-covered-row
+  loss so the meaning is independent of the fraction.
+- `search_label_smoothing = 0.1` — argmax gets 0.9, the (n_legal − 1)
+  remaining legal actions share 0.1 uniformly.
+
+**Implementation (commit `3f59b12`):**
+
+| File | Change |
+|---|---|
+| `td_ludo/training/search_policy_target.py` | NEW — `compute_pi_search_batch` (332 lines) |
+| `td_ludo/training/test_search_policy_target.py` | NEW — 5 unit tests (all passing) |
+| `td_ludo/game/players/v11.py` | `VectorACGamePlayer.__init__` accepts search config; `_maybe_run_search` after each play_step batches search across games and back-fills `pi_search` on just-appended trajectory steps |
+| `td_ludo/training/trainer_v10.py` | `alpha_search` param; `pi_search` rides through PPO buffer; `_ppo_update` adds CE loss averaged only over covered rows; logs `search_loss / search_kl / search_coverage` |
+| `train_v12.py` | `--search-enabled / --search-target-fraction / --alpha-search / --search-label-smoothing` flags; defaults preserve V12.2 baseline behaviour |
+
+**Sandbox validation (Claude sandbox CPU, V12.2 weights):**
+
+- 5/5 unit tests pass (no input mutation, shape/legality, sums-to-1,
+  argmax tracks crafted value_fn, label_smoothing=0 → pure one-hot).
+- `compute_pi_search_batch` on 41 mid-game states: 71 ms/state, ~17
+  leaves/state average. L4 should be ~5–10× faster.
+- pi_search vs pi_model on V12.2 weights:
+  - top-1 agreement: 40%
+  - KL(search‖model) mean: 2.5
+  - Surprise: KL on dice≠6 (3.11) > dice=6 (1.38) — likely because
+    ch24 already feeds the bonus-turn signal explicitly; search adds
+    more on non-bonus turns. Worth re-checking once we have logs.
+- TEST-mode 30-game integrated run with `--search-enabled` + fraction=0.5:
+  no crashes, GPM 12 (vs 48 baseline at TEST scale → 4× slowdown,
+  matches expected cost).
+- End-to-end integration test (V12.2 weights, search_fraction=1.0, 4
+  games/buffer): 2 PPO updates fired with `search_loss=4.85→3.44`
+  (decreasing — model learning toward target ✓), `search_kl=4.52→3.13`,
+  coverage=1.0 throughout, 995 searches done across the run.
+
+**Cost projection for L4:**
+- Bare V12.2 RL: ~526 GPM (current journal record).
+- With search at fraction=0.25: expect ~100–150 GPM (3–5× slowdown).
+  Tractable; ~150K games/day.
+
+**Phase 0 control (deferred decision):** Original plan called for an
+inference-time depth-1 expectimax run with V12.2 as a control. Phase 0
+mostly tests "does V12.2's better value head change the verdict from
+the four prior search failures (Exp 9, 13c, 17b, V6.3 1-ply)?" — useful
+but not blocking. **Decision:** skip Phase 0 for now; if the training-time
+run shows improvement we know search-during-training wins; if it doesn't,
+Phase 0 becomes informative (does the model also fail with inference-time
+search?) and can be run as a follow-up.
+
+**Run plan (when GCP is ready to switch):**
+1. Resume V12.2 from `model_latest.pt` with `--search-enabled
+   --search-target-fraction 0.25 --alpha-search 0.5`.
+2. 30–50K games (3–5 evals at 10K cadence, 2000 games each).
+3. Watch `search_loss` (should trend down) and `search_kl` (should drop
+   toward 0 as the model imitates the search policy).
+4. Decision gates after the run:
+   - **Standard eval improves AND eval-lens defects drop:** search wins, scale up.
+   - **Standard eval flat AND eval-lens defects drop:** search fixes the right things,
+     depth-1 isn't enough — try depth-2 with sampled dice.
+   - **Standard eval improves AND eval-lens defects flat:** suspicious, investigate.
+   - **Both flat:** search fails for V12.2 too — value-head capacity is
+     the binding constraint (linear probe ceiling on `eventual_win` was 71%).
+     Pivot to wider/dedicated value head.
+   - **Standard eval drops:** loss balance wrong — reduce alpha_search;
+     if still drops at low alpha, search targets are misleading; investigate
+     pi_search quality on logged states.
+
+**Status:** code on `claude/new-session-83Q8f` at `3f59b12`, pushed.
+Sandbox-validated. Awaiting decision on when to switch GCP run from
+baseline V12.2 to search-during-training V12.2.

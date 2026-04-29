@@ -59,12 +59,27 @@ BOT_CLASSES = {
 class VectorACGamePlayer:
     """V10 batched self-play player. See v6_3.py for the base pattern."""
 
-    def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None):
+    def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None,
+                 search_enabled=False, search_target_fraction=0.25,
+                 search_label_smoothing=0.1):
         self.trainer = trainer
         self.batch_size = batch_size
         self.device = device
         self.model_factory = model_factory
         self.elo_tracker = elo_tracker
+
+        # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
+        # When enabled, a fraction of training-player decisions get an extra
+        # search pass that produces pi_search. The result rides along on each
+        # trajectory step (key 'pi_search', value np.ndarray (4,) or None).
+        # Trainer reads it in PPO update for an auxiliary cross-entropy loss.
+        self.search_enabled = search_enabled
+        self.search_target_fraction = search_target_fraction
+        self.search_label_smoothing = search_label_smoothing
+        self._search_diag_running = {
+            'searches_done': 0, 'leaf_count': 0, 'opp_query_count': 0,
+            'top1_agreement_sum': 0.0, 'top1_agreement_n': 0,
+        }
 
         two_player = (NUM_ACTIVE_PLAYERS == 2)
         self.env = ludo_cpp.VectorGameState(batch_size, two_player)
@@ -331,7 +346,14 @@ class VectorACGamePlayer:
                         'legal_mask': batch_legal_masks[j],
                         'old_log_prob': float(old_lp_np[j]),
                         'temperature': float(sample_temperature),
+                        'pi_search': None,  # filled by _maybe_run_search below
                     })
+
+        # Exp 24: search-during-training. Run depth-1 expectimax on a sampled
+        # fraction of newly-appended training-player steps and back-fill
+        # 'pi_search' into them.
+        if train and self.search_enabled and self.search_target_fraction > 0:
+            self._maybe_run_search(current_players)
 
         # Pre-step state snapshot for reward computation
         pre_step_states = []
@@ -427,6 +449,79 @@ class VectorACGamePlayer:
         if not self.recent_wins:
             return 0.0
         return sum(self.recent_wins) / len(self.recent_wins)
+
+    def _maybe_run_search(self, current_players):
+        """Run depth-1 expectimax on a sampled fraction of just-appended
+        training-player trajectory steps; back-fill 'pi_search' on each.
+
+        Called once per play_step after all model decisions are sampled.
+        Searches across games are batched into ONE forward pass for cost.
+        """
+        # Lazy import — avoids import cycle at module load.
+        from td_ludo.training.search_policy_target import compute_pi_search_batch
+
+        # Identify the most recently appended trajectory step on each game-row
+        # (one per game where the current_player is a train_player and was
+        # routed through Model/SelfPlay/Ghost). Subsample by random fraction.
+        candidate_refs = []  # list of dict (the trajectory step we want to fill)
+        candidate_games = []
+        candidate_roots = []
+        for i in range(self.batch_size):
+            cp = current_players[i]
+            if cp < 0:
+                continue
+            if cp not in self.trajectories[i]:
+                continue
+            traj = self.trajectories[i][cp]
+            if not traj:
+                continue
+            # Only fill the most recent step (the one we just appended).
+            step = traj[-1]
+            if 'pi_search' not in step or step['pi_search'] is not None:
+                continue  # already filled or no search slot
+            if random.random() >= self.search_target_fraction:
+                continue
+            candidate_refs.append(step)
+            candidate_games.append(self.env.get_game(i))
+            candidate_roots.append(cp)
+
+        if not candidate_refs:
+            return
+
+        pi_search, diag = compute_pi_search_batch(
+            candidate_games, candidate_roots,
+            self.trainer.model, self.device,
+            label_smoothing=self.search_label_smoothing,
+        )
+        pi_search_np = pi_search.detach().cpu().numpy()
+
+        for k, step in enumerate(candidate_refs):
+            step['pi_search'] = pi_search_np[k].astype(np.float32)
+
+        # Diagnostics: top-1 agreement between argmax(pi_search) and the
+        # action the model actually sampled.
+        agreement_n = 0
+        agreement_sum = 0.0
+        for k, step in enumerate(candidate_refs):
+            sa = int(np.argmax(pi_search_np[k]))
+            agreement_sum += float(sa == step['action'])
+            agreement_n += 1
+        self._search_diag_running['searches_done'] += len(candidate_refs)
+        self._search_diag_running['leaf_count'] += diag['leaf_count']
+        self._search_diag_running['opp_query_count'] += diag['opp_query_count']
+        self._search_diag_running['top1_agreement_sum'] += agreement_sum
+        self._search_diag_running['top1_agreement_n'] += agreement_n
+
+    def get_search_diagnostics(self):
+        """Return cumulative search diagnostics (since last reset)."""
+        d = dict(self._search_diag_running)
+        if d['top1_agreement_n'] > 0:
+            d['top1_agreement_pct'] = (
+                100.0 * d['top1_agreement_sum'] / d['top1_agreement_n']
+            )
+        else:
+            d['top1_agreement_pct'] = 0.0
+        return d
 
     def get_spectator_state(self, game_idx=0):
         if game_idx < 0 or game_idx >= self.batch_size:

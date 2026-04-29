@@ -393,6 +393,22 @@ def main():
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2.")
 
+    # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
+    parser.add_argument('--search-enabled', action='store_true',
+                        help='Run depth-1 expectimax on a fraction of training '
+                             'states; use the search argmax as auxiliary CE '
+                             'target for the policy head. (Exp 24)')
+    parser.add_argument('--search-target-fraction', type=float, default=0.25,
+                        help='Fraction of training states to search per turn '
+                             '(default 0.25). Cost scales linearly.')
+    parser.add_argument('--alpha-search', type=float, default=0.5,
+                        help='Weight of the search-target CE loss term '
+                             '(default 0.5). Only active with --search-enabled.')
+    parser.add_argument('--search-label-smoothing', type=float, default=0.1,
+                        help='Label smoothing applied to the one-hot target '
+                             '(default 0.1; argmax gets 0.9, rest legal share '
+                             '0.1 uniformly).')
+
     args = parser.parse_args()
 
     # Fresh start: wipe run dir but keep model_sl.pt
@@ -440,7 +456,13 @@ def main():
     model.to(device)
 
     # Trainer (V10 trainer works unchanged — same forward signature)
-    trainer = ActorCriticTrainerV10(model, device, learning_rate=LEARNING_RATE)
+    # Exp 24: pass alpha_search to enable the auxiliary loss term. 0.0 when
+    # --search-enabled is not set, so the loss is identical to V12.2 baseline.
+    alpha_search_eff = args.alpha_search if args.search_enabled else 0.0
+    trainer = ActorCriticTrainerV10(
+        model, device, learning_rate=LEARNING_RATE,
+        alpha_search=alpha_search_eff,
+    )
 
     # Load weights with multi-backup fallback
     if args.resume:
@@ -532,8 +554,20 @@ def main():
         trainer, BATCH_SIZE, device,
         model_factory=model_factory,
         elo_tracker=elo_tracker,
+        search_enabled=args.search_enabled,
+        search_target_fraction=args.search_target_fraction,
+        search_label_smoothing=args.search_label_smoothing,
     )
     _player = player
+
+    if args.search_enabled:
+        print(f"[V12 Train] Exp 24 search-during-training: ENABLED "
+              f"(fraction={args.search_target_fraction}, "
+              f"alpha={alpha_search_eff}, "
+              f"label_smoothing={args.search_label_smoothing})")
+    else:
+        print("[V12 Train] Exp 24 search-during-training: DISABLED "
+              "(use --search-enabled to turn on)")
 
     rolling_win_rate = deque(maxlen=500)
     start_time = time.time()
