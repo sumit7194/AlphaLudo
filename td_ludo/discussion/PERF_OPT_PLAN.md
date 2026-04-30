@@ -138,20 +138,80 @@ Sandbox absolute numbers do NOT predict L4 absolute numbers. Sandbox
 Tier 1c is the exception — pinned memory speedup only manifests on a
 real GPU, so we'll note "expected on L4, not measured here."
 
-## Tracking table (filled in as we go)
+## Tracking table — RESULTS
 
 **Note on methodology:** sandbox 4-core CPU + BATCH_SIZE=512 means games take
 ~80+ turns to complete. With search OFF (~1.2s/step) the 90s window catches
 ~50 game completions; with search ON (~4.6s/step) it catches zero. So we
-track **step_ms** as the primary metric and GPM as secondary.
+track **step_ms** as the primary metric. The search-ON column is also noisy
+because the measure window only catches 17–22 steps (small sample).
 
-| Tier | Description | step_ms (OFF) | step_ms (ON) | GPM (OFF) | Δ step_ms (ON) | Notes |
-|------|-------------|---------------|--------------|-----------|----------------|-------|
-| 0    | Baseline (current code) | **1242** | **4559** | 25.5 | — | top1_agree=64.9%, ~22 leaves/searched state |
-| 1a   | Batched encoder | TBD | TBD | TBD | TBD | |
-| 1b   | + strip pre_step | TBD | TBD | TBD | TBD | |
-| 1c   | + pinned + non_blocking | TBD | TBD | TBD | TBD | sandbox likely shows no benefit |
-| 2d   | + vectorize search enum | TBD | TBD | TBD | TBD | |
+| Tier | Description | step_ms (OFF) | step_ms (ON) | GPM (OFF) | Δ from baseline (OFF) |
+|------|-------------|---------------|--------------|-----------|------------------------|
+| 0    | Baseline | 1242 | 4559 | 25.5 | — |
+| 1a   | Batched player encoder | 1159 | 4248 | 27.8 | **-7%** |
+| 1b   | + strip pre_step | 1132 | 4755 | 27.1 | **-9%** |
+| 1c   | + pinned + non_blocking | 1178 | 4514 | 27.6 | **-5%** (within noise of 1b; CPU=no-op) |
+| 2d   | + batched search leaves | 1139 | 4607 | 29.3 | **-8%** |
+
+The 1c entry shows a slight regression from 1b but is within the run-to-run
+noise band (range 1132–1178 on OFF column across optimized tiers, ~4% spread).
+Real improvement vs baseline is roughly 8% step_ms reduction on the OFF path.
+
+The search-ON column is dominated by noise (small sample). The Tier 2d
+batched leaf encoder almost certainly helps on a real bench (more leaves,
+smaller per-leaf overhead), but the sandbox can't measure it cleanly.
+
+## Decision
+
+**~8% sandbox throughput improvement is real but smaller than my projected
+15–20%.** Reasons:
+- The forward pass dominates more than I expected. On 4-core CPU it's
+  not infinite-fast — ~50% of step time is the per-game model forward.
+- The eliminated cost (small numpy allocations, np.stack memcpy, sparse
+  list copies) was real but bounded. ~80–100 ms saved per turn.
+- Tier 1c is CPU-side no-op. Real benefit only on L4.
+
+**L4 prediction (extrapolating from sandbox CPU patterns):**
+- Tier 1a: same % gain (Python+pybind work happens on CPU regardless).
+  ~7% step_ms reduction.
+- Tier 1b: same % gain. ~3% step_ms reduction.
+- Tier 1c: only place sandbox can't measure benefit. On L4 with V12.2
+  inference, the ~10ms H2D copy overlap is maybe 2–5% of step time.
+- Tier 2d: harder to predict. On sandbox the search-ON column was noisy.
+  On L4 the leaf forward pass is faster (GPU), so the batched encoder
+  saves a bigger % of search overhead. Estimate 5–10% on search-ON.
+
+**Cumulative L4 prediction:** ~10–15% step_ms reduction overall.
+Translates to 333 GPM (current with search) → ~370–385 GPM. Or 526 GPM
+(search OFF) → ~580–605 GPM.
+
+## Worth merging?
+
+**Tier 1a + 1b: yes.** ~10% of code size, ~9% sandbox improvement, no
+device-specific gating. Pure win.
+
+**Tier 1c: yes (small effort, CUDA-only path is gated on `device.type`).**
+Free win on L4. Zero impact on sandbox/CPU.
+
+**Tier 2d: maybe.** Sandbox didn't show a clean win on search-ON
+(within noise). The C++ binding and Python refactor are clean and well-
+tested. The case for merging is "it should help on L4 when search is on,
+and it can't hurt." The case against is "we may pivot away from search
+and never use this path." If we keep search-during-training experiments
+(any depth, any alpha), 2d helps. If we abandon search entirely, 2d is
+dead code.
+
+## Recommendation
+
+Merge Tier 1a + 1b + 1c (commits `0051974`, `97a71c3`, `de6ec5b`) to
+main. Defer Tier 2d (`11785d4`) until we know whether search-during-
+training continues past the alpha=0.25 retry on the L4. If it does,
+merge 2d too. If not, drop 2d.
+
+Either way, the unit tests and bench script (commit `b9...` not shown,
+the initial branch commit) stay valuable for future optimization
+attempts on the same pipeline.
 
 ## Decision after all tiers
 

@@ -1,0 +1,28 @@
+[TD-Ludo Config] Mode: PROD
+[TD-Ludo Config] Run: ac_v12_2_perf_bench | Dir: /home/user/AlphaLudo/td_ludo/checkpoints/ac_v12_2_perf_bench
+[TD-Ludo Config] LR: 1e-05 | Entropy: 0.005 | Temp: 1.1→0.95
+[TD-Ludo Config] Ghosts: every 2000 games | Batch: 512
+
+============================================================
+  baseline / search OFF
+  search=False, BATCH_SIZE=512, device=cpu
+============================================================
+/home/user/AlphaLudo/td_ludo/td_ludo/models/v12.py:127: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.token_attention = nn.TransformerEncoder(
+[warmup 30.1s] 53 steps, 0 game completions
+[measure 100.3s] steps=88 games=49 GPM=29.3 step_ms=1139.3 games/step=0.56
+
+============================================================
+  baseline / search ON
+  search=True, BATCH_SIZE=512, device=cpu
+============================================================
+/home/user/AlphaLudo/td_ludo/td_ludo/models/v12.py:127: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.token_attention = nn.TransformerEncoder(
+[warmup 31.3s] 18 steps, 0 game completions
+[measure 96.7s] steps=21 games=0 GPM=0.0 step_ms=4607.1 games/step=0.00
+[search] searches=2637 leaves=59429 opp_queries=16133 top1_agree=64.4%
+
+
+=== SUMMARY ===
+baseline / search OFF               GPM=  29.3 step_ms=1139.3 g/step=0.56
+baseline / search ON                GPM=   0.0 step_ms=4607.1 g/step=0.00
