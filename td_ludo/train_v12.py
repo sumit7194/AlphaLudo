@@ -393,8 +393,8 @@ def main():
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
                              "'v123' = historical models replace bots: "
-                             "SelfPlay 65 / Hist_V11 10 / Hist_V12 10 / "
-                             "Hist_V10 8 / Hist_V6_3 5 / Random 2.")
+                             "SelfPlay 65 / Hist_V10 18 / Hist_V6_3 8 / "
+                             "Hist_V6_1 4 / Hist_V6_big 3 / Random 2.")
 
     # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
     parser.add_argument('--search-enabled', action='store_true',
@@ -529,14 +529,20 @@ def main():
         # Historical-model opponents replace the saturated bot mix.
         # Each Hist_* tag is dispatched at play_step time through
         # OpponentRegistry, which loads the right architecture + encoder.
+        # Curriculum mix prioritises the strongest historicals (V11, V10)
+        # since those produce competitive games against V12.2; V6.x are
+        # included for *style diversity* (different defect profiles), not
+        # competitive challenge.
         V123_MIX = {
-            "SelfPlay":   0.65,
-            "Hist_V11":   0.10,
-            "Hist_V12":   0.10,
-            "Hist_V10":   0.08,
-            "Hist_V6_3":  0.05,
-            "Random":     0.02,
+            "SelfPlay":    0.65,    # main self-play + ghost (unchanged)
+            "Hist_V10":    0.18,    # strongest available historical
+            "Hist_V6_3":   0.08,    # bonus-turn-aware older model
+            "Hist_V6_1":   0.04,    # base V6 (no bonus-turn channel)
+            "Hist_V6_big": 0.03,    # old V5-era 17ch model
+            "Random":      0.02,    # sanity floor
         }
+        # Note: V11 (token-attention) and V6.2 (temporal transformer)
+        # are intentionally absent — see opponent_registry.py for why.
         import src.config as _cfg
         _cfg.GAME_COMPOSITION = V123_MIX
         import td_ludo.game.players.v11 as _v11mod

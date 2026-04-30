@@ -55,22 +55,56 @@ class _OpponentSpec:
 
 
 def _build_specs() -> Dict[str, _OpponentSpec]:
-    """Lazy import the model classes — keep top-level imports cheap."""
+    """Lazy import the model classes — keep top-level imports cheap.
+
+    Architectures and shapes confirmed via state-dict inspection of the
+    actual historical checkpoints (Apr-2026 backup batch). Notable:
+      - Hist_V6_big uses the 17ch original encoder (V5-era)
+      - Hist_V6_1 uses the 24ch V6 encoder, no attention
+      - V6.2 is intentionally NOT included — temporal transformer
+        (sequence over K=16 past states), needs per-game history
+        tracking outside the registry's stateless interface. Deferred.
+      - V11 is intentionally NOT included — token-attention transformer
+        with non-default attn_dim=64; loading + dispatch are doable but
+        out of scope for this batch. Deferred.
+      - V12 (between V11 and V12.2) is not in the backup set; only V12.2
+        is, and we use that as the active model — no point as opponent.
+    """
+    from td_ludo.models.v5 import AlphaLudoV5
     from td_ludo.models.v6_3 import AlphaLudoV63
     from td_ludo.models.v10 import AlphaLudoV10
-    from td_ludo.models.v11 import AlphaLudoV11
-    from td_ludo.models.v12 import AlphaLudoV12
 
     return {
+        "Hist_V6_big": _OpponentSpec(
+            # V6_big: V5-era 17ch encoder + ResNet-10 × 128, no attention.
+            tag="Hist_V6_big",
+            arch_class=AlphaLudoV5,
+            arch_kwargs=dict(num_res_blocks=10, num_channels=128, in_channels=17),
+            encoder_fn=cpp.encode_state,           # 17ch
+            in_channels=17,
+            needs_consecutive_sixes=False,
+        ),
+        "Hist_V6_1": _OpponentSpec(
+            # V6.1: 24ch V6 encoder + ResNet-10 × 128, no attention.
+            tag="Hist_V6_1",
+            arch_class=AlphaLudoV5,
+            arch_kwargs=dict(num_res_blocks=10, num_channels=128, in_channels=24),
+            encoder_fn=cpp.encode_state_v6,        # 24ch
+            in_channels=24,
+            needs_consecutive_sixes=False,
+        ),
         "Hist_V6_3": _OpponentSpec(
+            # V6.3: 27ch encoder (adds bonus-turn flag + consecutive-sixes
+            # + two-roll capture map) + ResNet-10 × 128, no attention.
             tag="Hist_V6_3",
             arch_class=AlphaLudoV63,
             arch_kwargs=dict(num_res_blocks=10, num_channels=128, in_channels=27),
-            encoder_fn=cpp.encode_state_v6_3,
+            encoder_fn=cpp.encode_state_v6_3,      # 27ch (takes consecutive_sixes)
             in_channels=27,
             needs_consecutive_sixes=True,
         ),
         "Hist_V10": _OpponentSpec(
+            # V10: 28ch encoder + 6 ResBlocks × 96, no attention, 3-head.
             tag="Hist_V10",
             arch_class=AlphaLudoV10,
             arch_kwargs=dict(num_res_blocks=6, num_channels=96, in_channels=28),
@@ -78,45 +112,31 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
             in_channels=28,
             needs_consecutive_sixes=False,
         ),
-        "Hist_V11": _OpponentSpec(
-            tag="Hist_V11",
-            arch_class=AlphaLudoV11,
-            arch_kwargs=dict(
-                num_res_blocks=4, num_channels=96,
-                num_attn_layers=2, num_heads=4, ffn_ratio=4,
-                dropout=0.0, in_channels=33,
-            ),
-            encoder_fn=cpp.encode_state_v11,
-            in_channels=33,
-            needs_consecutive_sixes=False,
-        ),
-        "Hist_V12": _OpponentSpec(
-            tag="Hist_V12",
-            arch_class=AlphaLudoV12,
-            # V12 default shape — NOT V12.2's 3×128.
-            arch_kwargs=dict(
-                num_res_blocks=4, num_channels=96,
-                num_attn_layers=2, num_heads=4, ffn_ratio=4,
-                dropout=0.0, in_channels=33,
-            ),
-            encoder_fn=cpp.encode_state_v11,
-            in_channels=33,
-            needs_consecutive_sixes=False,
-        ),
     }
 
 
 _DEFAULT_CKPTS = {
-    "Hist_V6_3": "play/model_weights/historical/v6_3.pt",
-    "Hist_V10":  "play/model_weights/historical/v10.pt",
-    "Hist_V11":  "play/model_weights/historical/v11.pt",
-    "Hist_V12":  "play/model_weights/historical/v12.pt",
+    "Hist_V6_big": "play/model_weights/historical/v6_big.pt",
+    "Hist_V6_1":   "play/model_weights/historical/v6_1.pt",
+    "Hist_V6_3":   "play/model_weights/historical/v6_3.pt",
+    "Hist_V10":    "play/model_weights/historical/v10.pt",
 }
 
-# Repo-root-relative paths. The runner resolves them against
-# td_ludo/ root (same as how chain_v122.sh resolves).
+# Repo-root-relative paths. The runner resolves them against the
+# td_ludo/ run-dir root (where train_v12.py / chain_v122.sh execute).
+# This file lives at td_ludo/td_ludo/game/players/opponent_registry.py,
+# so we go UP 4 levels (file → players → game → td_ludo pkg → td_ludo
+# run-dir) to reach the same root chain_v122.sh uses.
 def _resolve_ckpt(rel: str) -> str:
-    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    here = os.path.dirname(  # td_ludo/ run-dir
+        os.path.dirname(     # td_ludo/td_ludo (package)
+            os.path.dirname( # td_ludo/td_ludo/game
+                os.path.dirname(  # td_ludo/td_ludo/game/players
+                    os.path.abspath(__file__)
+                )
+            )
+        )
+    )
     return os.path.join(here, rel)
 
 

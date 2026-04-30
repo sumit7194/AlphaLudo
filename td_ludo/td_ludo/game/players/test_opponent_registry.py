@@ -72,10 +72,12 @@ class TestOpponentRegistry(unittest.TestCase):
     def test_available_tags(self):
         reg = opp_reg.OpponentRegistry(device=self.device)
         tags = reg.available_tags()
-        self.assertIn("Hist_V6_3", tags)
-        self.assertIn("Hist_V10", tags)
-        self.assertIn("Hist_V11", tags)
-        self.assertIn("Hist_V12", tags)
+        for expected in ("Hist_V6_big", "Hist_V6_1", "Hist_V6_3", "Hist_V10"):
+            self.assertIn(expected, tags)
+        # V11 (token attention) and V6.2 (temporal) are intentionally
+        # excluded; if either reappears, update this test.
+        self.assertNotIn("Hist_V11", tags)
+        self.assertNotIn("Hist_V6_2", tags)
 
     def test_lazy_load_each_arch(self):
         """Every tag should load and produce a frozen, eval-mode model."""
@@ -117,10 +119,11 @@ class TestOpponentRegistry(unittest.TestCase):
         """Batched call returns same actions as repeated single calls
         when the model is frozen (deterministic argmax)."""
         reg = opp_reg.OpponentRegistry(device=self.device)
+        tags_cycle = ["Hist_V6_big", "Hist_V6_1", "Hist_V6_3", "Hist_V10"]
         items = []
-        for seed in range(8):
+        for seed in range(10):
             g = _mid_game_state(seed=seed)
-            tag = ["Hist_V6_3", "Hist_V10", "Hist_V11", "Hist_V12"][seed % 4]
+            tag = tags_cycle[seed % len(tags_cycle)]
             items.append((tag, g, 0))
 
         batched = reg.select_actions_batched(items)
