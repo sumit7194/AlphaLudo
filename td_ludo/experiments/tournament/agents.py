@@ -194,7 +194,15 @@ class ModelAgent(_AgentBase):
         m = torch.from_numpy(mask).unsqueeze(0).to(self.device, dtype=torch.float32)
 
         with torch.no_grad():
-            logits = self.model.forward_policy_only(x, m)
+            if hasattr(self.model, "forward_policy_only"):
+                logits = self.model.forward_policy_only(x, m)
+            else:
+                # MinimalCNN14 (and other 3-head-only models): forward()
+                # returns (policy, win_prob, moves) where policy is already
+                # masked + softmaxed. argmax of softmax = argmax of logits,
+                # so we use it directly for greedy action selection.
+                policy, _, _ = self.model(x, m)
+                logits = policy
             action = int(logits.argmax(dim=1).item())
         if action not in legal:
             action = legal[0]
