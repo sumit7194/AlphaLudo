@@ -6,10 +6,30 @@
 // ── Constants ───────────────────────────────────────────────
 const HUMAN = 0;
 const AI = 2;
-const CELL_SIZE = 38;
-const BOARD_GAP = 1;
-const BOARD_PAD = 3;
-const TOKEN_SIZE = 26;
+
+const PATH_COORDS_P0 = [
+    [6, 1], [6, 2], [6, 3], [6, 4], [6, 5],
+    [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],
+    [0, 7], [0, 8],
+    [1, 8], [2, 8], [3, 8], [4, 8], [5, 8],
+    [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14],
+    [7, 14], [8, 14],
+    [8, 13], [8, 12], [8, 11], [8, 10], [8, 9],
+    [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8],
+    [14, 7], [14, 6],
+    [13, 6], [12, 6], [11, 6], [10, 6], [9, 6],
+    [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],
+    [7, 0],
+];
+const HOME_RUN_P0 = [[7, 1], [7, 2], [7, 3], [7, 4], [7, 5]];
+const HOME_COORD = [7, 7];
+const BASE_COORDS = {
+    0: [[2, 2], [2, 3], [3, 2], [3, 3]],
+    1: [[2, 11], [2, 12], [3, 11], [3, 12]],
+    2: [[11, 11], [11, 12], [12, 11], [12, 12]],
+    3: [[11, 2], [11, 3], [12, 2], [12, 3]],
+};
+const SAFE_INDICES = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 
 // ── State ───────────────────────────────────────────────────
 let gameState = null;
@@ -17,6 +37,7 @@ let boardLayout = null;
 let legalMoves = [];
 let awaitingMove = false;
 let isProcessing = false;
+let previewMode = false;
 
 // Eval-Lens — track current game_id so we can fetch its review
 // after the game ends (server returns a fresh id from /api/new_game).
@@ -37,6 +58,113 @@ function syncGameId(data) {
 // Cell type lookup (built from layout data)
 const cellTypes = {};  // "r,c" -> type string
 
+function getBoardMetrics() {
+    const styles = getComputedStyle(document.documentElement);
+    const readVar = (name, fallback) => {
+        const value = parseFloat(styles.getPropertyValue(name));
+        return Number.isFinite(value) ? value : fallback;
+    };
+
+    return {
+        cellSize: readVar('--cell-size', 38),
+        boardGap: readVar('--board-gap', 1),
+        boardPad: readVar('--board-pad', 3),
+        tokenSize: readVar('--token-size', 26),
+    };
+}
+
+function rotate90cw([r, c]) {
+    return [c, 14 - r];
+}
+
+function getBoardCoord(player, pos, tokenIndex = 0) {
+    if (pos === -1) {
+        return BASE_COORDS[player][tokenIndex];
+    }
+
+    let local;
+    if (pos === 99) {
+        local = HOME_COORD;
+    } else if (pos > 50) {
+        const idx = pos - 51;
+        local = HOME_RUN_P0[idx] || HOME_COORD;
+    } else {
+        local = PATH_COORDS_P0[pos];
+    }
+
+    let coord = local;
+    for (let i = 0; i < player; i++) {
+        coord = rotate90cw(coord);
+    }
+    return coord;
+}
+
+function generateFallbackLayout() {
+    const allPath = new Set();
+    const safeSquares = [];
+    const homeRuns = {};
+    const spawnSquares = {};
+
+    for (const player of [0, 1, 2, 3]) {
+        spawnSquares[player] = getBoardCoord(player, 0);
+        homeRuns[player] = HOME_RUN_P0.map((_, idx) => getBoardCoord(player, 51 + idx));
+
+        for (let pos = 0; pos < PATH_COORDS_P0.length; pos++) {
+            const coord = getBoardCoord(player, pos);
+            allPath.add(coord.join(','));
+            if (SAFE_INDICES.has(pos)) {
+                safeSquares.push(coord);
+            }
+        }
+    }
+
+    return {
+        path_squares: Array.from(allPath).map(key => key.split(',').map(Number)),
+        safe_squares: safeSquares,
+        home_runs: homeRuns,
+        bases: BASE_COORDS,
+        home_center: HOME_COORD,
+        spawn_squares: spawnSquares,
+    };
+}
+
+function makePreviewToken(player, pos, tokenIndex) {
+    const [row, col] = getBoardCoord(player, pos, tokenIndex);
+    return { row, col, scored: false };
+}
+
+function generatePreviewState() {
+    return {
+        current_player: HUMAN,
+        is_terminal: false,
+        winner: null,
+        ai_win_chance: 0.56,
+        scores: { '0': 0, '2': 0 },
+        token_coords: {
+            '0': [
+                makePreviewToken(0, -1, 0),
+                makePreviewToken(0, 0, 1),
+                makePreviewToken(0, 6, 2),
+                makePreviewToken(0, 44, 3),
+            ],
+            '2': [
+                makePreviewToken(2, -1, 0),
+                makePreviewToken(2, 0, 1),
+                makePreviewToken(2, 8, 2),
+                makePreviewToken(2, 30, 3),
+            ],
+        },
+    };
+}
+
+function getCornerRegion(row, col) {
+    if (row < 6 && col < 6) return { player: 0, name: 'green', yard: row >= 1 && row <= 4 && col >= 1 && col <= 4 };
+    if (row < 6 && col > 8) return { player: 1, name: 'red', yard: row >= 1 && row <= 4 && col >= 10 && col <= 13 };
+    if (row > 8 && col > 8) return { player: 2, name: 'yellow', yard: row >= 10 && row <= 13 && col >= 10 && col <= 13 };
+    if (row > 8 && col < 6) return { player: 3, name: 'blue', yard: row >= 10 && row <= 13 && col >= 1 && col <= 4 };
+    return null;
+}
+
 // ── Initialization ──────────────────────────────────────────
 async function init() {
     // Fetch model info and populate header chip + AI subtitle
@@ -52,10 +180,43 @@ async function init() {
     } catch (e) { console.warn('Could not fetch model info', e); }
 
     // Fetch board layout
-    const res = await fetch('/api/layout');
-    boardLayout = await res.json();
+    try {
+        const res = await fetch('/api/layout');
+        if (!res.ok) throw new Error(`layout status ${res.status}`);
+        boardLayout = await res.json();
+    } catch (e) {
+        console.warn('Falling back to local preview layout', e);
+        boardLayout = generateFallbackLayout();
+        previewMode = true;
+    }
+
     buildBoard();
-    await newGame();
+
+    try {
+        await newGame();
+    } catch (e) {
+        console.warn('Falling back to preview game state', e);
+        previewMode = true;
+        gameState = generatePreviewState();
+        legalMoves = [1, 2];
+        awaitingMove = true;
+        isProcessing = false;
+        modelPick = 2;
+        modelPolicy = [0.08, 0.23, 0.51, 0.18];
+        document.getElementById('diceValue').textContent = '4';
+        document.getElementById('diceHint').textContent = 'Static preview';
+        document.getElementById('aiProbs').innerHTML = `
+            <div class="prob-row illegal"><span class="prob-label">T0</span><span class="prob-bar"><span class="prob-fill" style="width:8%"></span></span><span class="prob-pct">8%</span></div>
+            <div class="prob-row"><span class="prob-label">T1</span><span class="prob-bar"><span class="prob-fill" style="width:23%"></span></span><span class="prob-pct">23%</span></div>
+            <div class="prob-row chosen"><span class="prob-label">T2✓</span><span class="prob-bar"><span class="prob-fill" style="width:51%"></span></span><span class="prob-pct">51%</span></div>
+            <div class="prob-row"><span class="prob-label">T3</span><span class="prob-bar"><span class="prob-fill" style="width:18%"></span></span><span class="prob-pct">18%</span></div>
+        `;
+        renderState();
+        updateTurnIndicator();
+        updateStatusPills();
+        showMessage('Preview mode: board and tokens shown without backend.');
+        addLog('system', 'Preview mode loaded because the live API is unavailable.');
+    }
 }
 
 function buildBoard() {
@@ -72,6 +233,13 @@ function buildBoard() {
     const hrSets = {};
     for (const [player, coords] of Object.entries(boardLayout.home_runs)) {
         hrSets[player] = new Set(coords.map(([r, c]) => `${r},${c}`));
+    }
+
+    const classicHomeRuns = {};
+    for (const player of [0, 1, 2, 3]) {
+        classicHomeRuns[player] = new Set(
+            HOME_RUN_P0.map((_, idx) => getBoardCoord(player, 51 + idx).join(','))
+        );
     }
     
     const baseSets = {};
@@ -94,6 +262,18 @@ function buildBoard() {
             cell.className = 'cell';
             cell.id = `cell-${r}-${c}`;
             const key = `${r},${c}`;
+            const corner = getCornerRegion(r, c);
+
+            if (corner) {
+                cell.classList.add(`corner-${corner.name}`, `corner-player-${corner.player}`);
+                if (corner.yard) cell.classList.add('yard-cell', `yard-${corner.name}`);
+            }
+
+            for (const player of [0, 1, 2, 3]) {
+                if (classicHomeRuns[player].has(key)) {
+                    cell.classList.add(`home-run-${player}`);
+                }
+            }
             
             if (r === hcr && c === hcc) {
                 cell.classList.add('home-center');
@@ -127,10 +307,33 @@ function buildBoard() {
             board.appendChild(cell);
         }
     }
+
 }
 
 // ── API Calls ───────────────────────────────────────────────
 async function newGame() {
+    if (previewMode) {
+        gameState = generatePreviewState();
+        legalMoves = [1, 2];
+        awaitingMove = true;
+        isProcessing = false;
+        modelPick = 2;
+        modelPolicy = [0.08, 0.23, 0.51, 0.18];
+        document.getElementById('winModal').classList.remove('show');
+        document.getElementById('reviewModal').classList.remove('show');
+        document.getElementById('diceValue').textContent = '4';
+        document.getElementById('diceHint').textContent = 'Static preview';
+        document.getElementById('dice').classList.add('disabled');
+        document.getElementById('messageArea').textContent = '';
+        document.getElementById('aiProbs').innerHTML = '';
+        document.getElementById('logEntries').innerHTML = '';
+        renderState();
+        updateTurnIndicator();
+        addLog('system', 'Static preview refreshed.');
+        showMessage('Preview mode: backend unavailable, showing a sample board.');
+        return;
+    }
+
     const res = await fetch('/api/new_game', { method: 'POST' });
     gameState = await res.json();
     syncGameId(gameState);
@@ -162,6 +365,7 @@ async function newGame() {
 }
 
 async function rollDice() {
+    if (previewMode) return;
     if (isProcessing || awaitingMove) return;
     if (gameState.is_terminal) return;
     if (gameState.current_player !== HUMAN) return;
@@ -243,6 +447,10 @@ async function rollDice() {
 }
 
 async function selectToken(tokenIndex) {
+    if (previewMode) {
+        showMessage('Preview mode only: live moves need the backend running.');
+        return;
+    }
     if (isProcessing) return;
     if (!awaitingMove && legalMoves.length !== 1) return;
     
@@ -404,6 +612,7 @@ async function doAITurn() {
 // ── Rendering ───────────────────────────────────────────────
 function renderState() {
     if (!gameState) return;
+    const { cellSize, boardGap, boardPad, tokenSize } = getBoardMetrics();
     
     // Remove old tokens
     document.querySelectorAll('.token').forEach(t => t.remove());
@@ -418,13 +627,13 @@ function renderState() {
             
             const token = document.createElement('div');
             token.className = `token player-${player}`;
-            token.textContent = idx;
+            token.innerHTML = `<span class="token-label">${idx}</span>`;
             token.dataset.player = player;
             token.dataset.token = idx;
             
             // Position based on grid coordinates
-            const left = BOARD_PAD + tok.col * (CELL_SIZE + BOARD_GAP) + (CELL_SIZE - TOKEN_SIZE) / 2;
-            const top = BOARD_PAD + tok.row * (CELL_SIZE + BOARD_GAP) + (CELL_SIZE - TOKEN_SIZE) / 2;
+            const left = boardPad + tok.col * (cellSize + boardGap) + (cellSize - tokenSize) / 2;
+            const top = boardPad + tok.row * (cellSize + boardGap) + (cellSize - tokenSize) / 2;
             token.style.left = `${left}px`;
             token.style.top = `${top}px`;
             
@@ -442,7 +651,9 @@ function renderState() {
             // Legal move highlighting
             if (player === HUMAN && awaitingMove && legalMoves.includes(idx)) {
                 token.classList.add('legal-move');
-                token.onclick = () => selectToken(idx);
+                if (!previewMode) {
+                    token.onclick = () => selectToken(idx);
+                }
             }
 
             // V12's predicted token — shown only while the human is choosing
@@ -514,7 +725,7 @@ function updateStatusPills() {
     if (gameState.is_terminal) {
         const winner = gameState.winner;
         humanText.textContent = winner === HUMAN ? 'Won 🏆' : 'Lost';
-        aiText.textContent = winner === AI_PLAYER ? 'Won 🏆' : 'Lost';
+        aiText.textContent = winner === AI ? 'Won 🏆' : 'Lost';
         return;
     }
 
@@ -764,3 +975,6 @@ function sleep(ms) {
 
 // ── Boot ────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('resize', () => {
+    if (gameState) renderState();
+});

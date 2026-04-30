@@ -75,7 +75,7 @@ DEFAULT_CONFIGS = {
 
         # === Checkpointing ===
         "SAVE_INTERVAL": 300,           # Seconds between checkpoint saves
-        "GHOST_SAVE_INTERVAL": 2000,    # Save ghost snapshot every N games
+        "GHOST_SAVE_INTERVAL": 20000,   # Save ghost snapshot every N games
         "MAX_GHOSTS": 20,               # Keep at most N ghost snapshots
 
         # === Hardware ===
