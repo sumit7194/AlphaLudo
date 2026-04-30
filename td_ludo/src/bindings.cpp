@@ -317,6 +317,14 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
     return result;
   });
 
+  m.def("encode_state_v14_minimal", [](const GameState &state) {
+    // Return shape (14, 15, 15) - V14 Minimal Distillation Stack
+    py::array_t<float> result({14, BOARD_SIZE, BOARD_SIZE});
+    auto buf = result.mutable_data();
+    write_state_tensor_v14_minimal(state, buf);
+    return result;
+  });
+
   m.def("get_winner", &get_winner, "Get winner (-1 if none)");
   m.def("create_initial_state", &create_initial_state,
         "Create initial 4-player game state");

@@ -91,6 +91,9 @@ void write_state_tensor_v11(const GameState &state, float *buffer);
 // Note: V6.3's ch25 (consecutive_sixes) was dropped — mech interp showed it unused.
 void write_state_tensor_v10(const GameState &state, float *buffer);
 
+// V14 Minimal Distillation Encoder (14 channels: 4 own + 4 opp + 6 dice)
+void write_state_tensor_v14_minimal(const GameState &state, float *buffer);
+
 // Helper to reset state
 GameState create_initial_state();    // 4-player
 GameState create_initial_state_2p(); // 2-player (P0 vs P2)

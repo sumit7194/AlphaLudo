@@ -1199,3 +1199,67 @@ void write_state_tensor_v11(const GameState &state, float *buffer) {
     std::fill(ch32, ch32 + spatial_size, sv);
   }
 }
+
+// =============================================================================
+// V14 Minimal Encoder: Distillation architecture (14 channels)
+// =============================================================================
+// 0-3:   My Tokens (Distinct Identity 0,1,2,3)
+// 4-7:   Opponent Tokens (Distinct Identity 0,1,2,3)
+// 8-13:  Dice Roll (6-plane One-Hot)
+
+void write_state_tensor_v14_minimal(const GameState &state, float *buffer) {
+  int num_channels = 14;
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+  clear_buffer(buffer, num_channels * spatial_size);
+
+  int current_p = state.current_player;
+  int k = current_p; // Rotation steps (CCW)
+
+  // --- CHANNELS 0-3: My Tokens (Distinct Identity) ---
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    int r, c;
+    if (pos == BASE_POS)
+      get_board_coords(current_p, pos, r, c, t);
+    else
+      get_board_coords(current_p, pos, r, c);
+
+    if (r >= 0) {
+      write_tensor_val(buffer, t, r, c, 1.0f, k);
+    }
+  }
+
+  // --- CHANNELS 4-7: Opponent Tokens (Distinct Identity) ---
+  int opp_p = -1;
+  for (int offset = 1; offset < 4; ++offset) {
+    int candidate = (current_p + offset) % 4;
+    if (state.active_players[candidate]) {
+      opp_p = candidate;
+      break;
+    }
+  }
+
+  if (opp_p >= 0) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int pos = state.player_positions[opp_p][t];
+      int r, c;
+      if (pos == BASE_POS)
+        get_board_coords(opp_p, pos, r, c, t);
+      else
+        get_board_coords(opp_p, pos, r, c);
+
+      if (r >= 0) {
+        write_tensor_val(buffer, 4 + t, r, c, 1.0f, k);
+      }
+    }
+  }
+
+  // --- CHANNELS 8-13: Dice Roll (One-Hot) ---
+  int roll = state.current_dice_roll;
+  if (roll >= 1 && roll <= 6) {
+    int channel_idx = 8 + (roll - 1);
+    std::fill(buffer + (channel_idx * spatial_size),
+              buffer + ((channel_idx + 1) * spatial_size), 1.0f);
+  }
+}
+
