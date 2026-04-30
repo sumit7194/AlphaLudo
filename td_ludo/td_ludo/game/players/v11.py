@@ -61,7 +61,8 @@ class VectorACGamePlayer:
 
     def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None,
                  search_enabled=False, search_target_fraction=0.25,
-                 search_label_smoothing=0.1):
+                 search_label_smoothing=0.1,
+                 historical_opponents_enabled=False):
         self.trainer = trainer
         self.batch_size = batch_size
         self.device = device
@@ -80,6 +81,19 @@ class VectorACGamePlayer:
             'searches_done': 0, 'leaf_count': 0, 'opp_query_count': 0,
             'top1_agreement_sum': 0.0, 'top1_agreement_n': 0,
         }
+
+        # Phase 2: historical opponent registry. Lazy-loads prior-generation
+        # V-model checkpoints (V6.3 / V10 / V11 / V12) and routes Hist_*
+        # controller turns through them with the right encoder per arch.
+        # When disabled, Hist_* controllers fall through to the bot path
+        # (which would just play random) — safe but pointless. Caller
+        # should set this True iff the game composition includes Hist_* tags.
+        self.historical_opponents_enabled = historical_opponents_enabled
+        if historical_opponents_enabled:
+            from td_ludo.game.players.opponent_registry import OpponentRegistry
+            self.opp_registry = OpponentRegistry(device=device)
+        else:
+            self.opp_registry = None
 
         two_player = (NUM_ACTIVE_PLAYERS == 2)
         self.env = ludo_cpp.VectorGameState(batch_size, two_player)
@@ -202,6 +216,9 @@ class VectorACGamePlayer:
         actions = []
         current_players = []
         decision_groups = {}
+        # Phase 2 (historical opponents): rows pending Hist_* batched
+        # inference. dict: tag → list of game-indices for this turn.
+        hist_pending = {}
 
         for i in range(self.batch_size):
             game = self.env.get_game(i)
@@ -257,6 +274,12 @@ class VectorACGamePlayer:
                 else:
                     group_key = ('Main', None)
                 decision_groups.setdefault(group_key, []).append(i)
+                actions.append(-2)
+            elif controller.startswith('Hist_') and self.opp_registry is not None:
+                # Phase 2: historical opponent. Defer the action; we'll
+                # batch-resolve all Hist_* rows after the main model loop
+                # by tag using the OpponentRegistry.
+                hist_pending.setdefault(controller, []).append(i)
                 actions.append(-2)
             else:
                 bot = self.bots.get(ptype, self.bots['Random'])
@@ -348,6 +371,30 @@ class VectorACGamePlayer:
                         'temperature': float(sample_temperature),
                         'pi_search': None,  # filled by _maybe_run_search below
                     })
+
+        # Phase 2: historical opponent resolution. Each Hist_* tag has its
+        # own architecture and encoder; the registry handles per-tag
+        # dispatch internally. We pass all pending rows in one call —
+        # registry groups by tag and runs one batched forward per group.
+        if hist_pending and self.opp_registry is not None:
+            items = []
+            order = []  # list of (tag, idx) in the order we'll receive actions
+            for tag, idxs in hist_pending.items():
+                for idx in idxs:
+                    game = self.env.get_game(idx)
+                    cp = current_players[idx]
+                    csix = int(self.consecutive_sixes[idx, cp])
+                    items.append((tag, game, csix))
+                    order.append((tag, idx))
+            flat_actions = self.opp_registry.select_actions_batched(items)
+            for k, (_tag, idx) in enumerate(order):
+                a = flat_actions[k]
+                if a < 0:
+                    # No legal moves — fall back to legacy bot-path "no-op"
+                    # (the env handles -1 as a pass).
+                    actions[idx] = -1
+                else:
+                    actions[idx] = a
 
         # Exp 24: search-during-training. Run depth-1 expectimax on a sampled
         # fraction of newly-appended training-player steps and back-fill

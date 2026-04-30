@@ -388,10 +388,13 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122'],
+                        choices=['default', 'v122', 'v123'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
-                             "/ Aggressive 3 / Defensive 2.")
+                             "/ Aggressive 3 / Defensive 2. "
+                             "'v123' = historical models replace bots: "
+                             "SelfPlay 65 / Hist_V11 10 / Hist_V12 10 / "
+                             "Hist_V10 8 / Hist_V6_3 5 / Random 2.")
 
     # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
     parser.add_argument('--search-enabled', action='store_true',
@@ -522,6 +525,23 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V122_MIX
         print(f"[V12 Train] Game composition: V12.2 mix → {V122_MIX}")
+    elif args.game_composition == 'v123':
+        # Historical-model opponents replace the saturated bot mix.
+        # Each Hist_* tag is dispatched at play_step time through
+        # OpponentRegistry, which loads the right architecture + encoder.
+        V123_MIX = {
+            "SelfPlay":   0.65,
+            "Hist_V11":   0.10,
+            "Hist_V12":   0.10,
+            "Hist_V10":   0.08,
+            "Hist_V6_3":  0.05,
+            "Random":     0.02,
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V123_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V123_MIX
+        print(f"[V12 Train] Game composition: V12.3 mix → {V123_MIX}")
     else:
         from src.config import GAME_COMPOSITION as _gc_default
         print(f"[V12 Train] Game composition: PROD default → {_gc_default}")
@@ -550,6 +570,7 @@ def main():
     if not args.no_dashboard:
         start_dashboard_server(port=args.port)
 
+    historical_opponents_enabled = (args.game_composition == 'v123')
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
         model_factory=model_factory,
@@ -557,6 +578,7 @@ def main():
         search_enabled=args.search_enabled,
         search_target_fraction=args.search_target_fraction,
         search_label_smoothing=args.search_label_smoothing,
+        historical_opponents_enabled=historical_opponents_enabled,
     )
     _player = player
 
@@ -568,6 +590,13 @@ def main():
     else:
         print("[V12 Train] Exp 24 search-during-training: DISABLED "
               "(use --search-enabled to turn on)")
+
+    if historical_opponents_enabled:
+        print(f"[V12 Train] Historical opponents: ENABLED "
+              f"(tags: {player.opp_registry.available_tags()})")
+    else:
+        print("[V12 Train] Historical opponents: DISABLED "
+              "(use --game-composition v123 to turn on)")
 
     rolling_win_rate = deque(maxlen=500)
     start_time = time.time()
