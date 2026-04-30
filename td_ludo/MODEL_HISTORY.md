@@ -264,3 +264,179 @@ This was the opposite direction from V6.3 (slimming, not expanding).
 The V10 line eventually went back to expanding.
 
 ---
+
+## V10 — slim CNN, 28ch encoder, 3-head output (`td_ludo/td_ludo/models/v10.py`)
+
+The V6.x line evolved further: drops V6.3's dead `consecutive_sixes`
+channel, promotes the `two_roll_capture_map` into the main slot, and
+adds two new "macro-state" broadcasts.
+
+- **Input:** `(28, 15, 15)`.
+- **Backbone:** `AlphaLudoV10` — 6 ResBlocks × 96 channels (~640K
+  params).
+- **Heads:** **three heads** — policy (4 logits), `win_prob` (sigmoid
+  scalar trained with BCE), and `moves_remaining` (softplus scalar
+  trained with SmoothL1).
+
+**Input channels (`write_state_tensor_v10`):**
+
+| Ch | Encodes |
+|---|---|
+| 0–23 | Identical to V6.1 |
+| 24 | `bonus_turn_flag` (was V6.3 ch24) |
+| 25 | `two_roll_capture_map` (was V6.3 ch26 — promoted; V6.3 ch25 `consecutive_sixes` was dropped because mech-interp said it was unused) |
+| 26 | `non_home_tokens_frac` — broadcast `(non-home own tokens) / 4`, in {0, 0.25, 0.5, 0.75, 1.0}. 0.25 = "forced mode" (only one own token left to score) |
+| 27 | `my_leader_progress` — broadcast `most_advanced_own_token / 56`, in `[0, 1]`; 1.0 iff at least one token already home |
+
+**What changed vs V6.3:** Kept the bonus-turn flag and two-roll capture
+map; dropped the dead `consecutive_sixes` channel. Added two macro-
+state scalars (how much work is left, how far ahead is your leader).
+Three-head output replaces V5/V6's policy+value+aux pattern.
+
+---
+
+## V11 — `AlphaLudoV11` (CNN + Transformer, same 28ch initially)
+
+V11 added a token-attention transformer on top of the V10 CNN.
+Initially used the V10 28ch encoder.
+
+- **Input:** `(28, 15, 15)` initially; later upgraded to `(33, 15, 15)`
+  with the V11 encoder (see below).
+- **Backbone:** 4 ResBlocks × 96 channels (V11 default; smaller than
+  V10) → token-attention transformer (default 2 layers, 4 heads,
+  ffn_ratio 4) → 3 heads.
+- **Token attention:** picks 4 cells corresponding to own tokens,
+  attends across them with full (4 + 4 board-summary) context.
+- **File:** `td_ludo/td_ludo/models/v11.py`.
+
+The V11 encoder upgrade (33ch) below was the channel-side change.
+
+---
+
+## V11 encoder = V12.x encoder (33ch, `write_state_tensor_v11`)
+
+Added in V12.1 to fix the same-token-stickiness pattern observed in
+eval-lens analysis: V12 picked the same token across consecutive turns
+at ~60% rate (vs 33% baseline). Per-token idle counters and a streak
+broadcast give the model an explicit "this token has been ignored" /
+"you've moved the same token N times in a row" signal.
+
+- **Input:** `(33, 15, 15)`.
+
+**Input channels:**
+
+| Ch | Encodes |
+|---|---|
+| 0–27 | Identical to V10 |
+| 28 | Idle counter for own token 0 — `idle_counter[me][0] / 20`, capped at 1.0, broadcast |
+| 29 | Idle counter for own token 1 (same scaling) |
+| 30 | Idle counter for own token 2 |
+| 31 | Idle counter for own token 3 |
+| 32 | Same-token streak — `streak[me] / 10`, capped at 1.0, broadcast |
+
+`idle_counter[p][t]` increments each time `p` plays a turn but doesn't
+move token `t`; resets to 0 on the moved token. `streak[p]` counts
+consecutive turns `p` moved the same token (resets to 1 on a different
+token).
+
+---
+
+## V12 — Token-entity attention model (`td_ludo/td_ludo/models/v12.py`)
+
+V12 cleaned up V11's attention layout — own tokens are looked up at
+their actual board cells (not at fixed slots), and the policy head is
+per-token (Linear over the attended `(B, 4, C)` tensor) rather than
+pooled.
+
+- **Input:** `(33, 15, 15)` (V11 encoder).
+- **Backbone:** 4 ResBlocks × 96 channels (V12 default).
+- **Token attention:** `concat(GAP(CNN), mean(post-attn tokens)) → 192-dim`,
+  feeds three heads.
+- **Heads:** policy (per-token via `Linear(C, 64) → Linear(64, 1)` then
+  squeeze), `win_prob` (sigmoid), `moves_remaining` (softplus).
+- **Params:** ~951K.
+
+V12 broke the V11.1 79.05% single-eval ceiling, peaking at 81.0% but
+plateaued.
+
+---
+
+## V12.1 — V12 + eval-lens-driven surgery (cancelled at G=10K)
+
+Built from the V12 checkpoint via parameter-surgery: drop the
+`token_idx_emb` (was driving slot bias), rebuild the policy head into
+a per-token form. Same V11 encoder (33ch) input.
+
+- **Input:** `(33, 15, 15)`.
+- **Backbone:** 4 ResBlocks × 96 channels (same shape as V12).
+- **Heads:** per-token policy via `Linear(C, 64) → Linear(64, 1)`.
+- **Params:** ~945K.
+
+Cancelled mid-RL at G=10K because the eval-lens evidence and CKA
+findings pointed at architecture redundancy beyond what the surgery
+could fix. Pivoted to V12.2.
+
+---
+
+## V12.2 — fresh wider+shallower (current production)
+
+Fresh-init from a V12-trained teacher. CKA on V12 showed >0.95
+similarity across all 4 ResBlocks → most depth was wasted. So V12.2
+goes shallower but wider.
+
+- **Input:** `(33, 15, 15)` (V11 encoder).
+- **Backbone:** **3 ResBlocks × 128 channels** (vs V12's 4×96).
+- **Token attention:** 2 layers × 4 heads, attention dim 128
+  (matches CNN width — V12 had 96).
+- **Heads:** same 3-head shape as V12, per-token policy.
+- **Params:** ~1.36M (about 1.4× V12).
+
+V12.2 broke the V12 ceiling (81.0% → 82.65% at G=40K) and met the
+plateau-break gate (≥80% for 3 consecutive evals at G=40-50-60K) for
+the first time in project history.
+
+Also paired with new training elements:
+- Token-permutation augmentation (own tokens relabelled in the
+  encoder) during SL warm-up.
+- More self-play in the RL mix: 75% self-play / 15% Expert / 5%
+  Heuristic / 3% Aggressive / 2% Defensive (vs V10's 40/25/15/10/10).
+
+V12.2 is the current production model. Ongoing experiments use it
+unchanged as the architecture; recent direction tries
+**search-during-training** as an auxiliary policy target (Exp 24, see
+`training_journal.md`).
+
+---
+
+## Encoder progression at a glance
+
+```
+V1     →  8ch  raw board + dice scalar + turn scalar
+V1.5   → 18ch  (mastery branch — short-lived)
+V3 td_v2  → 11ch (per-token identity, score diff, locked frac)
+V3/V4/V5 → 17ch (added 6-plane dice one-hot)
+V6.1   → 24ch (per-token opponent + danger/capture/safe-landing maps)
+V6.3   → 27ch (added bonus-turn flag + consecutive-sixes + two-roll-capture)
+V7     → 18-dim 1D (transformer, no spatial encoding)
+V8     → 17ch + temporal transformer over K=16 past turns
+V9     → 14ch slim re-design (drops dice one-hot, opp density)
+V10    → 28ch (V6.1 + bonus-turn + two-roll-capture + non_home_frac + leader_progress; V6.3 ch25 dropped)
+V11+   → 33ch (V10 + per-token idle + streak — current)
+```
+
+## CNN vs hybrid timeline
+
+```
+V1, V1.5, V3-V6.3   pure CNN
+V7                  pure 1D transformer
+V8                  V5 CNN + temporal transformer (multi-turn)
+V9                  slim CNN + temporal transformer
+V10                 pure CNN, 3-head output
+V11                 CNN + token-attention transformer (single turn)
+V12, V12.1, V12.2   CNN + token-attention transformer, per-token policy
+```
+
+The current line (V12.2) is the synthesis: V10's 3-head training, V11's
+token attention, V12's per-token policy, plus V12.2's shallower-but-
+wider CNN informed by V12 mech-interp. The V11 33-channel encoder is
+shared across the whole V11/V12 family.
