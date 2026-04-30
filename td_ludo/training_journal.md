@@ -2668,3 +2668,109 @@ head matrix, optional JSON dump.
 **First sandbox run launched (2026-04-30 21:40):** 6 competitors
 (V6_big, V6_1, V6_3, V10, Expert, V12_2), 1000 games/pair, 15K games
 total. Estimated runtime ~3h on sandbox CPU. Results pending.
+
+---
+
+### Experiment 25 (results): mech-interp confirms input-richness depth-collapse (2026-05-01)
+
+V12.2 self-play distillation of `MinimalCNN14` (10×128 pure CNN on 14ch
+raw inputs) finished at 5M states. Two mech-interp passes on the
+trained student vs production V12.2 — both consistent and pointed at
+the same conclusion.
+
+**Method.** 1000 mid-game 2P-Ludo states encoded with each model's
+native encoder; per-ResBlock activations captured via forward hooks;
+two analyses:
+
+1. **CKA** (`experiments/distillation_14ch/cka_analysis.py`,
+   commit `d36de0f`) — pairwise linear CKA between every block's
+   flattened activations.
+2. **Linear probes** (`probe_analysis.py`, commit `fa5d370`) — train
+   a linear classifier (logistic for binary, Ridge dual for continuous)
+   on each block's standardised activations to predict three target
+   features computable directly from the GameState:
+   - `can_capture` — does the current player have any legal move that
+     captures an opponent token this turn? (binary)
+   - `in_danger` — is at least one own token within 1–6 squares of an
+     opponent on the main track? (binary; mirrors V6 ch21)
+   - `leader_progress` — max own-token progress in `[0, 1]`. (continuous)
+
+**CKA: V12.2's 3 blocks are functionally one; MinimalCNN14's 10 blocks span depth.**
+
+| Model | min CKA off-diag | mean | max-min spread | Pairs > 0.95 |
+|---|---:|---:|---:|---:|
+| V12.2 (3×128 + attn, 33ch) | 0.943 | 0.969 | **0.057** | 2 / 3 |
+| MinimalCNN14 (10×128, 14ch) | 0.652 | 0.910 | **0.348** | 20 / 45 |
+
+V12.2's block-pair CKA spread is **6× narrower** than MinimalCNN14's.
+Adjacent blocks of MinimalCNN14 still have CKA ~0.97 (skip connections
+guarantee that), but blk0 vs blk9 CKA drops to **0.652** — the network
+is making small cumulative changes that compound to a substantial
+transformation across 10 blocks. V12.2's blk0 vs blk2 CKA is **0.943**
+— even the most-distant pair barely differs.
+
+**Probes: V12.2 reads features off; MinimalCNN14 builds them up.**
+
+```
+                       block:   0     1     2     3     4     5     6     7     8     9
+can_capture (AUC):
+  V12.2 (3 blocks)            0.983 0.986 0.985        [flat near-ceiling]
+  MinimalCNN14 (10 blocks)    0.923 0.923 0.930 0.935 0.937 0.944 0.949 0.963 0.960 0.964   [+4pp asc.]
+
+in_danger (AUC):
+  V12.2                       0.847 0.829 0.824        [flat, slightly DOWN]
+  MinimalCNN14                0.767 0.798 0.845 0.839 0.874 0.881 0.899 0.906 0.918 0.926   [+16pp asc.]
+
+leader_progress (R²):
+  V12.2                       0.995 0.993 0.990        [flat near-perfect]
+  MinimalCNN14                0.790 0.771 0.815 0.813 0.884 0.904 0.906 0.932 0.938 0.936   [+15pp asc.]
+```
+
+V12.2's block 0 already reads each concept off near-perfectly because
+the 33ch encoder injects them directly: ch21 = graded danger, ch22 =
+capture-opportunity map, ch26-27 = leader progress / non-home fraction.
+Later blocks inherit the signal and gradually lose fidelity to noise —
+in_danger AUC actually trends *down* across V12.2's 3 blocks (0.847 →
+0.824). Pure redundancy.
+
+MinimalCNN14 starts much lower at block 0 (in_danger 0.767, leader
+0.790, can_capture 0.923) and **gains 15–16pp on the harder geometric
+concepts across 10 blocks**. By block 9, the student computes a
+sharper binary in_danger signal (AUC 0.926) than V12.2 reads off its
+pre-baked graded plane (max 0.847). Depth used productively.
+
+**Conclusion.** The Exp 23 mech-interp finding "CKA > 0.95 across all
+V12 ResBlocks" is **input-driven, not task-intrinsic.** With minimal
+14ch inputs the network re-engages depth across all 10 blocks; with
+33ch rich inputs the same architecture pattern produces a
+near-1-block effective depth.
+
+**Implications:**
+
+1. The push to lean encoders earlier in the project history (V9 14ch
+   slim, V10 trim of V6.3 channels) was directionally right — those
+   models DID engage their depth. The push back to richer encoders
+   (V10 → 28ch, V11 → 33ch) traded depth utilization for direct
+   feature access. Neither is wrong; they're different points on a
+   capacity/computation tradeoff.
+
+2. For **future architectures aiming to break the 85% gate**, two
+   paths are now visible:
+   - **Less rich input + deeper backbone**, leveraging the depth
+     re-engagement we just demonstrated. Risks: missing the
+     architecturally-unrecoverable signals (idle counters, streak,
+     consecutive_sixes — these need history).
+   - **Same V12.2 input + dedicated/wider value head**, addressing the
+     value-head capacity ceiling diagnosed at 71% on `eventual_win`
+     linear probe (see Exp 23/24). The 3 ResBlocks aren't the
+     bottleneck — the value head is.
+
+3. The Mac-side distillation worked end-to-end and produced clean
+   research signal in <8 hours total wall-clock (5M states × ~530 FPS
+   distillation + ~10 minutes mech-interp on sandbox CPU). The
+   experimental loop "minimal-input distill + CKA + probes" is
+   reusable for any future architecture comparison.
+
+**Headline metric:** CKA spread 0.057 (V12.2) vs 0.348 (MinimalCNN14),
+in_danger probe AUC delta blk0→blk9 = +0.16 (MinimalCNN14) vs −0.02
+(V12.2). Two independent measurements, same conclusion.

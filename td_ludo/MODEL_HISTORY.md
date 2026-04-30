@@ -408,11 +408,12 @@ unchanged as the architecture; recent direction tries
 
 ---
 
-## MinimalCNN14 — distillation experiment (Exp 25, in progress)
+## MinimalCNN14 — distillation experiment (Exp 25, COMPLETE — hypothesis confirmed)
 
 A deliberately-stripped student trained from V12.2 to test the
 "input richness explains depth collapse" hypothesis (see Exp 25 in
-`training_journal.md`).
+`training_journal.md`). **Mech-interp results confirm the hypothesis
+on two independent measures.**
 
 - **Input:** `(14, 15, 15)` — minimal raw inputs only.
 - **Backbone:** Pure CNN, 10 ResBlocks × 128 channels. **No attention.**
@@ -446,6 +447,24 @@ diverge in CKA — proving the depth-collapse pattern is input-driven,
 not task-intrinsic. Final pol_acc projected at 76-82% (below V12.2's
 88.4% due to genuine information loss). The headline result is the
 per-block CKA matrix, not the eval skill.
+
+**Result (mech-interp, 2026-05-01):**
+
+| Measure | V12.2 (3×128, 33ch) | MinimalCNN14 (10×128, 14ch) |
+|---|---|---|
+| CKA spread (max-min off-diag) | 0.057 | **0.348** (6× wider) |
+| Pairs with CKA > 0.95 | 2 / 3 | 20 / 45 |
+| in_danger probe AUC, blk0 → last | 0.847 → 0.824 (down) | 0.767 → 0.926 (**+0.16**) |
+| leader_progress probe R², blk0 → last | 0.995 → 0.990 | 0.79 → 0.94 (**+0.15**) |
+| can_capture probe AUC, blk0 → last | 0.983 → 0.985 | 0.923 → 0.964 (+0.04) |
+
+V12.2's blocks all read concepts off the input near-perfectly at block
+0; later blocks add nothing or slightly degrade. MinimalCNN14 builds
+those same concepts up across depth — by block 9 it computes a sharper
+binary danger signal than V12.2 reads off its pre-baked graded plane.
+
+See `training_journal.md` Exp 25 (results) and the analysis scripts at
+`td_ludo/experiments/distillation_14ch/{cka_analysis.py, probe_analysis.py}`.
 
 ---
 
