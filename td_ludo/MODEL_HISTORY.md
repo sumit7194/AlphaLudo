@@ -34,3 +34,48 @@ where," forcing the policy head to break the tie purely from the legal-
 move mask.
 
 ---
+
+## V1.5 — `AlphaLudoTopNet` ("mastery", first commit `759f05b`)
+
+A sibling to V1, lived in `src/model_mastery.py`. Wider encoder (18
+channels), otherwise the same ResNet-10 × 128ch CNN. Channel layout
+isn't documented in the source — this branch was experimental and
+short-lived. Mentioned here for completeness.
+
+- **Input:** `(18, 15, 15)`.
+- **Backbone:** ResNet-10 × 128ch (same as V1).
+- **File:** `src/model_mastery.py`.
+
+---
+
+## V3 — `td_v2_11ch` (commit `2ba5514`, Feb 2026)
+
+First model where the encoder was overhauled. The one-hot dice planes
+weren't here yet; this was the lean "physical state only" run.
+
+- **Input:** `(11, 15, 15)`.
+- **Backbone:** `AlphaLudoV3` — ResNet-10 × 128ch, `in_channels=11`.
+- **Heads:** policy → 4 token logits, value → scalar, optional aux safety head.
+- **File:** `td_ludo/src/model.py` (this commit set `in_channels=11`).
+
+**Input channels (`write_state_tensor` 11ch variant):**
+
+| Ch | Encodes |
+|---|---|
+| 0–3 | My tokens, **per-token identity** (one channel per own token; 1.0 at the token's cell) |
+| 4 | Opponent tokens, single density plane (0.25 per token, summed; inactive players skipped) |
+| 5 | Safe zones (0.5) |
+| 6 | My home path |
+| 7 | Opponent home path (skip inactive) |
+| 8 | Score diff `(my_score − max_opp_score) / 4` (broadcast) |
+| 9 | My locked fraction `count_in_base / 4` (broadcast) |
+| 10 | Opp locked fraction (broadcast) |
+
+**What changed vs V1:** per-token identity for own tokens (the model can
+finally tell its four tokens apart), opponent rolled into a single
+density plane, dice/turn dropped (held outside the encoder for now),
+two scalar broadcasts capturing relative game state.
+
+Checkpoint: `td_ludo/checkpoints/td_v2_11ch/model_latest.pt`.
+
+---
