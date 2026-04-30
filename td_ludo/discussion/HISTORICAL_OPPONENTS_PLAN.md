@@ -1,7 +1,9 @@
 # Historical Models as RL Opponents — Design
 
 **Branch:** `claude/historical-opponents` (off `main`)
-**Status:** Design + registry stub. Player-loop wiring not yet written.
+**Status:** Phases 1 + 2 done. Phase 3 (ELO + dashboard) and Phase 4
+(L4 deploy) still ahead. Roster reduced from 6 planned to 4 active —
+see "Roster outcome" below.
 
 ## Motivation
 
@@ -148,13 +150,86 @@ Modify `td_ludo/td_ludo/game/players/v11.py`:
    against the strengthening main. Acceptable: their "strength relative
    to current main" is the metric we care about.
 
-## Phase 1 deliverable
+## Phase 1 deliverable (DONE — `40dd1f2`)
 
 `td_ludo/td_ludo/game/players/opponent_registry.py` — registry +
 on-demand loading + batched `select_action`. Plus a unit test verifying
-all four historical tags load cleanly and produce legal moves on a few
+all historical tags load cleanly and produce legal moves on a few
 sample states.
 
-This branch ships exactly that — no player-loop wiring yet, no config
-changes. Approval gate: confirm the registry interface looks right, then
-Phase 2 wires it into the player.
+## Phase 2 deliverable (DONE — `de55f4b`)
+
+Player-loop wiring (`td_ludo/td_ludo/game/players/v11.py`):
+- `VectorACGamePlayer.__init__` takes `historical_opponents_enabled`,
+  instantiates the registry on first use.
+- `play_step` adds a `hist_pending` dict alongside `decision_groups`.
+  Routing: `Hist_*` controllers go to `hist_pending`, get resolved in
+  one `registry.select_actions_batched()` call after the model loop.
+
+CLI flag `--game-composition v123` in `train_v12.py` activates the new
+mix and enables historical opponents.
+
+End-to-end TEST-mode 30-game smoke: 126 PPO updates, no crashes,
+44 GPM (vs 22 GPM bot-mix smoke at same scale).
+
+## Roster outcome (real checkpoints inspected — `6e505b3`)
+
+Cherry-picked the user's backup batch (commit `83c5298` from
+`claude/perf-opt-exp24`) and inspected each `.pt` file's state-dict
+shape. Several discrepancies vs the Phase 1 plan:
+
+| Tag | Status | Notes |
+|---|---|---|
+| `Hist_V6_big` | ✓ Active | NEW — V5-era 17ch encoder, 10×128, no attn |
+| `Hist_V6_1` | ✓ Active | NEW — 24ch encoder, AlphaLudoV5 10×128 |
+| `Hist_V6_3` | ✓ Active | As planned |
+| `Hist_V10` | ✓ Active | As planned |
+| `Hist_V11` | ✗ Deferred | Checkpoint uses `attn_dim=64` (V11.1 era), not the default 96. Loading is solvable (single line in spec) but per user direction: deferred. |
+| `Hist_V12` | ✗ Skipped | Not in the backup batch. V12.2 lives in the main slot via SelfPlay/Ghost mechanism — no need as opponent. |
+| `Hist_V6_2` | ✗ Deferred | Temporal transformer over K=16 past states. Needs per-game history tracking outside the registry's stateless interface. Separate effort. |
+
+Path resolution bug fixed: `_resolve_ckpt` was off by one dirname,
+landed inside the inner `td_ludo` package instead of the run-dir root.
+All 4 active paths now resolve correctly.
+
+## Final v123 mix (no Random — `d401551`)
+
+```
+SelfPlay 67%  (main + ghost-of-current-run, unchanged mechanism)
+Hist_V10 18%  (strongest available historical)
+Hist_V6_3 8%
+Hist_V6_1 4%
+Hist_V6_big 3%
+```
+
+Random is intentionally absent. Trained models all crush Random ~95%,
+so games against it carry zero gradient signal. The historical-opponent
+WRs (especially Hist_V10) act as the real collapse-detector if the
+policy ever degrades — Random as a "sanity floor" is redundant.
+
+## Tournament infrastructure (paired addition — `62a0c94`)
+
+Added `td_ludo/experiments/tournament/`. Round-robin tournament between
+arbitrary mix of historical V-models (via `--hist`), bots (via
+`--bots`), and custom checkpoints (via `--add-model NAME:ARCH:PATH`).
+Seven architecture presets supported; first 15K-game sandbox run
+launched 2026-04-30 21:40.
+
+Used to:
+1. Anchor relative strength of historicals (informs v123 weighting).
+2. Benchmark new architectures (e.g., MinimalCNN14 distill student)
+   against a calibrated reference set.
+
+## What's next
+
+- **Phase 3** — ELO tracker + dashboard wiring. Each `Hist_*` registers
+  as a named entity in the ELO tracker; main-model ELO trajectory
+  becomes meaningful relative to fixed historical reference points.
+  Dashboard adds per-historical-opponent WR display.
+- **Phase 4** — L4 deploy. Graceful-kill current run; pull this branch
+  (or merge first); rebuild C++ extension; restart with
+  `--game-composition v123`.
+- **Optional: V11 re-enable.** Add `attn_dim=64` to the registry spec.
+  Single-line fix; deferred per user.
+- **Optional: V6.2 support.** Temporal-context wrapper that maintains
+  per-game history. Larger lift; not currently planned.
