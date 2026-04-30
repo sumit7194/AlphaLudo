@@ -105,6 +105,28 @@ public:
     return result;
   }
 
+  // Tier 1a optimization: encode a SUBSET of games in one shot. Replaces
+  // a Python loop of 384+ individual encode_state_v11 calls (each
+  // py::array_t allocation + return) with a single contiguous output
+  // buffer and one pybind crossing.
+  py::array_t<float> encode_states_v11_subset(
+      const std::vector<int> &indices) {
+    const size_t channel_size = BOARD_SIZE * BOARD_SIZE;
+    const size_t sample_size = 33 * channel_size;
+    const int n = (int)indices.size();
+    auto result = py::array_t<float>({n, 33, BOARD_SIZE, BOARD_SIZE});
+    auto buffer = result.mutable_data();
+    for (int k = 0; k < n; ++k) {
+      int idx = indices[k];
+      if (idx < 0 || idx >= batch_size) {
+        throw std::runtime_error(
+            "encode_states_v11_subset: index out of range");
+      }
+      write_state_tensor_v11(games[idx], buffer + k * sample_size);
+    }
+    return result;
+  }
+
   // Returns list of lists
   std::vector<std::vector<int>> get_legal_moves() {
     std::vector<std::vector<int>> batch_moves;
@@ -283,6 +305,12 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
       .def("step", &VectorGameState::step, py::arg("actions"))
       .def("get_state_tensor", &VectorGameState::get_state_tensor)
       .def("get_legal_moves", &VectorGameState::get_legal_moves)
+      .def("encode_states_v11_subset",
+           &VectorGameState::encode_states_v11_subset,
+           py::arg("indices"),
+           "Encode a subset of games (V11 33ch) into a single contiguous "
+           "(N, 33, 15, 15) array. Avoids per-call py::array allocation "
+           "and the np.stack copy in the Python player loop.")
       .def("get_game", &VectorGameState::get_game,
            py::return_value_policy::reference);
 

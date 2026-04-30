@@ -140,13 +140,18 @@ real GPU, so we'll note "expected on L4, not measured here."
 
 ## Tracking table (filled in as we go)
 
-| Tier | Description | Sandbox GPM (search OFF) | GPM (search ON) | Δ vs baseline | Notes |
-|------|-------------|--------------------------|-----------------|---------------|-------|
-| 0    | Baseline (current code) | TBD | TBD | — | |
-| 1a   | Batched encoder | TBD | TBD | TBD | |
-| 1b   | + strip pre_step | TBD | TBD | TBD | |
-| 1c   | + pinned + non_blocking | TBD | TBD | TBD | sandbox CPU likely shows no benefit |
-| 2d   | + vectorize search enum | TBD | TBD | TBD | |
+**Note on methodology:** sandbox 4-core CPU + BATCH_SIZE=512 means games take
+~80+ turns to complete. With search OFF (~1.2s/step) the 90s window catches
+~50 game completions; with search ON (~4.6s/step) it catches zero. So we
+track **step_ms** as the primary metric and GPM as secondary.
+
+| Tier | Description | step_ms (OFF) | step_ms (ON) | GPM (OFF) | Δ step_ms (ON) | Notes |
+|------|-------------|---------------|--------------|-----------|----------------|-------|
+| 0    | Baseline (current code) | **1242** | **4559** | 25.5 | — | top1_agree=64.9%, ~22 leaves/searched state |
+| 1a   | Batched encoder | TBD | TBD | TBD | TBD | |
+| 1b   | + strip pre_step | TBD | TBD | TBD | TBD | |
+| 1c   | + pinned + non_blocking | TBD | TBD | TBD | TBD | sandbox likely shows no benefit |
+| 2d   | + vectorize search enum | TBD | TBD | TBD | TBD | |
 
 ## Decision after all tiers
 

@@ -268,25 +268,26 @@ class VectorACGamePlayer:
             main_temperature = self.get_temperature(self.trainer.total_games)
 
             for (controller, controller_id), indices in decision_groups.items():
-                batch_states = []
                 batch_legal_masks = []
                 batch_legal_moves = []
+
+                # Tier 1a: batched encoder. One pybind call writes all states
+                # for this controller-group's indices into a contiguous
+                # (N, 33, 15, 15) buffer — replaces N small encode_state_v11
+                # calls + np.stack copy.
+                states_np = self.env.encode_states_v11_subset(indices)
 
                 for idx in indices:
                     game = self.env.get_game(idx)
                     lmoves = ludo_cpp.get_legal_moves(game)
                     batch_legal_moves.append(lmoves)
 
-                    # V12.1: encode_state_v11 = V10 (28ch) + idle (4) + streak (1) = 33ch
-                    state_tensor = ludo_cpp.encode_state_v11(game)
-                    batch_states.append(state_tensor)
-
                     legal_mask = np.zeros(4, dtype=np.float32)
                     for move in lmoves:
                         legal_mask[move] = 1.0
                     batch_legal_masks.append(legal_mask)
 
-                states_t = torch.from_numpy(np.stack(batch_states)).to(self.device, dtype=torch.float32)
+                states_t = torch.from_numpy(states_np).to(self.device, dtype=torch.float32)
                 masks_t = torch.from_numpy(np.stack(batch_legal_masks)).to(self.device, dtype=torch.float32)
 
                 if controller == 'Ghost':
@@ -340,8 +341,13 @@ class VectorACGamePlayer:
 
                     if cp not in self.trajectories[idx]:
                         self.trajectories[idx][cp] = []
+                    # `states_np[j]` is a view into the contiguous batched
+                    # buffer; copy into an independent array because the
+                    # trajectory step outlives the buffer (next play_step
+                    # allocates a fresh buffer, but the trajectory must hold
+                    # an immutable snapshot).
                     self.trajectories[idx][cp].append({
-                        'state': batch_states[j],
+                        'state': states_np[j].copy(),
                         'action': action,
                         'legal_mask': batch_legal_masks[j],
                         'old_log_prob': float(old_lp_np[j]),
