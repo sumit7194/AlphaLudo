@@ -2427,3 +2427,244 @@ search?) and can be run as a follow-up.
 **Status:** code on `claude/new-session-83Q8f` at `3f59b12`, pushed.
 Sandbox-validated. Awaiting decision on when to switch GCP run from
 baseline V12.2 to search-during-training V12.2.
+
+---
+
+### Experiment 24 (continued): alpha=0.5 stall at ~80% + alpha=0.25 retry unlocks gain (2026-04-30 / 05-01)
+
+**Deployment.** Search-during-training switched on at G=556K, resuming
+from baseline V12.2 weights. Same config as planned: depth-1 expectimax,
+search_target_fraction=0.25, alpha_search=0.5, label_smoothing=0.1.
+
+**Initial transient (G=556K → G=600K):**
+- Policy entropy spiked from baseline 0.17 → 0.696 in <5K games as the
+  search target pulled the policy hard. ELO dropped from ~1620 to a
+  minimum of 1369 at G=566K. Per-opponent WRs all collapsed
+  (Expert 46.7%, Heuristic 45.8%).
+- Throughput held at 343 GPM (vs ~526 baseline; ~35% slowdown — much
+  better than the 3-5× slowdown projected from sandbox CPU).
+
+**alpha=0.5 trajectory under search (G=600K → G=900K):**
+
+| G | eval_wr | entropy | Δ from prev |
+|---:|---:|---:|---:|
+| 600K | 76.30% | 0.618 | -3.92pp (vs pre-search 80.22% at G=500K) |
+| 700K | 78.32% | 0.581 | +2.02 |
+| 800K | 79.20% | 0.549 | +0.88 |
+| 900K | 79.48% | 0.548 | +0.28 |
+
+**Decelerating-slope geometric extrapolation puts the asymptote at ~80.0%
+— a wash relative to the pre-search baseline (80.7 → 80.3 → 80.2 trend
+just before search activation).** Entropy stalled at 0.55 by G=900K (3×
+baseline 0.17), no further movement → reshape complete; this was the
+steady state under alpha=0.5.
+
+**Diagnosis at G=967K:** alpha=0.5 has converged to roughly equivalent
+eval WR at higher entropy and slightly lower ELO. By the journal's
+prescribed gate ("Eval drops: loss balance wrong, reduce alpha_search,
+retry"), drop alpha to 0.25.
+
+**alpha=0.25 retry from G=967K (resumed in-place, not from pre-search):**
+
+| G | eval_wr | entropy | Δ |
+|---:|---:|---:|---:|
+| 1000K | **81.30%** | 0.539 | **+1.82pp in 27K games** |
+
+That's a **6× faster slope** than alpha=0.5 was producing in the same
+state-distribution regime. Other metrics confirm it's not noise:
+
+- ELO: 1577 → **1681** (highest ever; pre-search V12.2 peak was ~1622)
+- Per-opponent WR (recent ~500 games):
+  Expert 77.9%, Heuristic 75.0%, Defensive 72.7%, Aggressive 70.6% —
+  **all above pre-search V12.2 baselines for the first time**
+- SelfPlay 48.4% (50% baseline; on track)
+
+**Verdict:**
+1. **Search-during-training works.** Diagnosis B (loss-balance issue)
+   confirmed; diagnosis A (value-head capacity ceiling) refuted.
+   Lower alpha unlocks the gain that was being over-corrected.
+2. **alpha=0.5 was over-aggressive.** The smoothed-one-hot target with
+   ~0.32 entropy was pulling V12.2's ~0.17-entropy policy too hard,
+   creating an entropy-elevated equilibrium that lost games against
+   opponents who exploit indecision. alpha=0.25 = same direction, half
+   the magnitude, productive convergence.
+3. **Most promising search result in project history.** First time a
+   search-based augmentation produced a positive eval signal at any
+   depth or value-head config (the four prior search attempts — Exp 9
+   MCTS-training, Exp 13c V6.1, Exp 17b V10 expectimax, V6.3 1-ply —
+   all degraded eval).
+
+**Open questions:**
+- Will the alpha=0.25 trajectory stabilize at ~83-85% (search wins,
+  cracks 85% gate) or asymptote at ~81-82% (bounded by some other
+  constraint we haven't identified)? Need 2 more eval points (G=1100K,
+  G=1200K) for a confident answer.
+- The ~1pp gap between current 81.3% and prior best 83.1% suggests the
+  search reshape isn't fully complete yet — entropy is still 3× baseline.
+  Continue at alpha=0.25 to G=1200K before deciding next step.
+
+---
+
+### Experiment 25: Minimal-input deep CNN via distillation (PLANNED, branch `claude/perf-opt-exp24`, 2026-04-30)
+
+**Hypothesis (mech-interp framing).** V12.2's CKA collapse across all
+ResBlocks (>0.95 similarity) is *input-driven*, not task-intrinsic.
+With rich 33-channel inputs (per-token danger maps, capture maps,
+bonus-turn flag, idle counters, leader progress, …), the network only
+needs to combine and select pre-computed features — late layers drive
+`f(x) → 0` because there's nothing left to compute. Earlier shallow-
+input architectures (V3-V5 17ch) showed per-block specialization across
+~7 layers because the network HAD to derive tactical features
+internally.
+
+If correct: a deep CNN trained on truly minimal inputs should re-engage
+its full depth and show CKA divergence across blocks 1-7.
+
+**Setup.**
+- **Student:** `MinimalCNN14`, pure CNN, 10 ResBlocks × 128 channels,
+  3-head output (policy / win_prob / moves_remaining). No attention.
+  ~3M params (vs V12.2's 1.36M — gains depth at the cost of width).
+- **Input encoder:** `encode_state_v14_minimal` (4 own + 4 opp tokens
+  per-token identity + 6-plane dice one-hot = 14 channels). NO derived
+  features (no danger map, no capture map, no bonus-turn flag, no idle
+  counters, no safe zones, no home paths). The student has to derive
+  whatever it needs from raw board + dice.
+- **Teacher:** V12.2 production model (33ch input).
+- **Loss:** soft-target cross-entropy from teacher policy + BCE from
+  teacher win_prob + SmoothL1 from teacher moves_remaining (same
+  weights as V12.2 SL warm-up).
+- **Data:** on-the-fly (V12.2 self-plays, student trains on the live
+  state-action stream). Target 5M states.
+- **Hardware:** Mac MPS, ~530 FPS, ~2.6h projected for 5M states.
+
+**Predictions (calibrated against V12.2's 88.4% SL pol_acc):**
+- Final val pol_acc: **76-82%** (~6-12pp below V12.2 due to information
+  loss — the student literally cannot derive history-based channels
+  like `idle_counter` or `streak` from a single frame).
+- Top-1 agreement with teacher: 65-75%.
+- **Per-block CKA matrix should show clear divergence across blocks 1-7
+  with possible collapse only in 8-10.** This is the headline result.
+- Per-block linear probes for `{can_capture, in_danger,
+  leader_progress}` should peak in blocks 4-7 (where features get
+  derived) rather than block 1 (where rich inputs already carry them).
+
+**What this won't tell us:**
+- It tests "can deep CNN recover features when starved of inputs?" but
+  not the reverse — "does V12.2 architecture re-engage depth when given
+  minimal inputs?" That's a separate experiment (apply the v14_minimal
+  encoder to V12.2's 3×128 architecture and see if attention layers
+  start carrying weight that they didn't before).
+- The student's RL ceiling will likely be 70-75% — much worse than
+  V12.2's 80%+ — because it can't access history-derived signals.
+  Don't compare; this experiment is about mech-interp, not eval skill.
+
+**Status (2026-04-30 21:30):** training in progress at step 210 / ~4.9M.
+Loss curves show fast moves-loss collapse (70 → 8 in 50 steps), low
+win-loss (~0.02-0.06 BCE — V12.2 win_prob is calibrated and easy to
+fit), policy loss oscillating 0.10-0.33 (likely on-the-fly distribution
+shift across game phases). Awaiting completion + CKA matrix.
+
+---
+
+### Experiment 26: Historical V-models as RL opponents (v123 game composition) — PLANNED, branch `claude/historical-opponents`
+
+**Motivation.** The current bot mix is saturated against V12.2:
+
+| Bot | V12.2 recent WR (G≈1M) |
+|---|---:|
+| Expert | 77.9% |
+| Heuristic | 75.0% |
+| Defensive | 72.7% |
+| Aggressive | 70.6% |
+
+Every game won against these adds ~zero gradient signal. Replace them
+with prior-generation V-model checkpoints — meaningful curriculum of
+strategically diverse defect profiles (V6.3 token-stickiness, V10
+no-attention, V6_big tactical-blind etc.).
+
+**Architecture.** `OpponentRegistry` lazy-loads each historical with its
+correct architecture + encoder. Per-tag dispatch handles V6.3's
+27-channel encoder, V10's 28ch, V6_big's 17ch, etc. Frozen weights, eval
+mode, batched inference (one forward per tag per turn).
+
+**Active roster (4 historicals):**
+
+| Tag | Encoder | Architecture | File |
+|---|---|---|---|
+| `Hist_V6_big` | 17ch | AlphaLudoV5, 10×128 | v6_big.pt |
+| `Hist_V6_1` | 24ch | AlphaLudoV5, 10×128 | v6_1.pt |
+| `Hist_V6_3` | 27ch | AlphaLudoV63, 10×128 | v6_3.pt |
+| `Hist_V10` | 28ch | AlphaLudoV10, 6×96 | v10.pt |
+
+**Deferred:**
+- V11 (token attention with `attn_dim=64`) — checkpoint loadable but
+  the attn-dim mismatch needs spec adjustment; deferred per user.
+- V6.2 (temporal transformer over K=16 past states) — needs per-game
+  history outside the registry's stateless interface.
+
+**v123 game composition** (replaces v122's bot-heavy mix):
+
+```
+SelfPlay 67%  (main + ghost-of-current-run, unchanged mechanism)
+Hist_V10 18%  (strongest available historical)
+Hist_V6_3 8%
+Hist_V6_1 4%
+Hist_V6_big 3%
+```
+
+NO Random in the mix — trained models all crush Random ~95%, so games
+against it carry zero gradient signal. The historical-opponent WRs
+(especially Hist_V10) act as the real collapse-detector if the policy
+ever degrades.
+
+**Code status:** Phase 1 (registry) + Phase 2 (player-loop wiring +
+v123 mix) committed on `claude/historical-opponents`. End-to-end TEST-
+mode 30-game smoke runs cleanly. Phase 3 (ELO + dashboard wiring) and
+Phase 4 (L4 deploy) still ahead.
+
+---
+
+### Tournament infrastructure (foundational, 2026-04-30, branch `claude/historical-opponents`)
+
+**Purpose.** Round-robin tournament between any combination of
+historical V-models, hand-coded bots, and arbitrary checkpoints. Used
+to:
+1. Anchor the historical opponents' relative strength (e.g., is V10
+   stronger than V6.3? By how much?). Needed for sensible v123
+   curriculum weighting.
+2. Benchmark new architectures (e.g., the v14_minimal distilled
+   student) against the historical roster as a calibrated reference
+   set.
+3. Generate Bradley-Terry ELO from observed pair-WRs, future-proofing
+   for bigger rosters.
+
+**Code at `td_ludo/experiments/tournament/`:**
+
+```
+agents.py     ~190 lines  HistAgent / ModelAgent / BotAgent
+                          + 7 architecture presets
+run.py        ~290 lines  CLI runner, round-robin loop, output
+README.md      ~75 lines
+```
+
+**Architecture presets supported:**
+v122, v12_default, v10, v6_3, v6_1, v6_big, v14_minimal.
+
+**CLI shape:**
+
+```
+python -m experiments.tournament.run \
+  --hist V6_big,V6_1,V6_3,V10 \
+  --bots Expert \
+  --add-model V12_2:v122:play/model_weights/v12_2/model_latest.pt \
+  --add-model Distill14:v14_minimal:experiments/distillation_14ch/student_14ch_final.pt \
+  --games-per-pair 2000 \
+  --output runs/tournament_full.json
+```
+
+Output: live per-pair progress, leaderboard (aggregate WR), head-to-
+head matrix, optional JSON dump.
+
+**First sandbox run launched (2026-04-30 21:40):** 6 competitors
+(V6_big, V6_1, V6_3, V10, Expert, V12_2), 1000 games/pair, 15K games
+total. Estimated runtime ~3h on sandbox CPU. Results pending.
