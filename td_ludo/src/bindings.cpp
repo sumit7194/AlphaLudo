@@ -282,6 +282,33 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
     return result;
   });
 
+  // Tier 2d optimization: batched leaf encoder for free-standing GameState
+  // refs (used by the search-during-training path, where leaves come from
+  // apply_move and are NOT in any VectorGameState). Replaces a Python list
+  // comprehension of N small encode_state_v11 calls + np.stack with one
+  // pybind crossing and one contiguous output buffer.
+  m.def(
+      "encode_states_v11_batch",
+      [](const std::vector<GameState *> &states) {
+        const size_t channel_size = BOARD_SIZE * BOARD_SIZE;
+        const size_t sample_size = 33 * channel_size;
+        const int n = (int)states.size();
+        py::array_t<float> result({n, 33, BOARD_SIZE, BOARD_SIZE});
+        auto buf = result.mutable_data();
+        for (int k = 0; k < n; ++k) {
+          if (states[k] == nullptr) {
+            throw std::runtime_error(
+                "encode_states_v11_batch: null GameState pointer");
+          }
+          write_state_tensor_v11(*states[k], buf + k * sample_size);
+        }
+        return result;
+      },
+      py::arg("states"),
+      "Encode a list of free-standing GameState refs (V11 33ch) into a "
+      "contiguous (N, 33, 15, 15) array. Used by the depth-1 search to "
+      "encode all leaves in one shot.");
+
   m.def("encode_state_v9", [](const GameState &state) {
     // Return shape (14, 15, 15) - V9 14 Channel Stack
     py::array_t<float> result({14, BOARD_SIZE, BOARD_SIZE});

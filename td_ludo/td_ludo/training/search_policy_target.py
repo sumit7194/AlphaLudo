@@ -240,9 +240,9 @@ def compute_pi_search_batch(
 
     # ── Phase 2: resolve opponent-policy queries with one batched forward.
     if opp_queries:
-        opp_states = np.stack([
-            cpp.encode_state_v11(q.s_prime) for q in opp_queries
-        ])
+        # Tier 2d: batched encoder for the opp-policy state list. Replaces
+        # N small encode_state_v11 calls + np.stack with one pybind crossing.
+        opp_states = cpp.encode_states_v11_batch([q.s_prime for q in opp_queries])
         opp_masks = np.stack([
             _make_legal_mask(q.legal_seconds) for q in opp_queries
         ])
@@ -266,12 +266,23 @@ def compute_pi_search_batch(
             bucket[(q.game_idx, q.first_idx, q.dice)]['leaf_idxs'] = [leaf_idx]
 
     # ── Phase 3: one batched forward pass over all leaves for win_prob.
+    # Tier 2d: batched leaf encoder. Override current_player to root_player
+    # before encoding so win_prob is from root's perspective (the encoder
+    # uses state.current_player to decide which channels are "own"). We
+    # restore current_player after encoding so the GameState refs remain
+    # in their original state for any post-encoding inspection.
     leaf_values: np.ndarray
     if leaf_specs:
-        leaf_states = np.stack([
-            _encode_with_perspective(spec.leaf_state, spec.root_player)
-            for spec in leaf_specs
-        ])
+        leaf_states_list = []
+        saved_players = []
+        for spec in leaf_specs:
+            saved_players.append(spec.leaf_state.current_player)
+            spec.leaf_state.current_player = spec.root_player
+            leaf_states_list.append(spec.leaf_state)
+        leaf_states = cpp.encode_states_v11_batch(leaf_states_list)
+        for spec, sp in zip(leaf_specs, saved_players):
+            spec.leaf_state.current_player = sp
+
         leaf_states_t = torch.from_numpy(leaf_states).to(device, dtype=torch.float32)
         # No legal_mask needed for value-only forward; pass None.
         with torch.no_grad():
