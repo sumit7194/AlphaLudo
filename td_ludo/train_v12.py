@@ -393,8 +393,9 @@ def main():
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
                              "'v123' = historical models replace bots: "
-                             "SelfPlay 65 / Hist_V10 18 / Hist_V6_3 8 / "
-                             "Hist_V6_1 4 / Hist_V6_big 3 / Random 2.")
+                             "SelfPlay 67 / Hist_V10 18 / Hist_V6_3 8 / "
+                             "Hist_V6_1 4 / Hist_V6_big 3 (no Random — "
+                             "trained models all crush it, no signal).")
 
     # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
     parser.add_argument('--search-enabled', action='store_true',
@@ -534,13 +535,17 @@ def main():
         # included for *style diversity* (different defect profiles), not
         # competitive challenge.
         V123_MIX = {
-            "SelfPlay":    0.65,    # main self-play + ghost (unchanged)
+            "SelfPlay":    0.67,    # main self-play + ghost (unchanged)
             "Hist_V10":    0.18,    # strongest available historical
             "Hist_V6_3":   0.08,    # bonus-turn-aware older model
             "Hist_V6_1":   0.04,    # base V6 (no bonus-turn channel)
             "Hist_V6_big": 0.03,    # old V5-era 17ch model
-            "Random":      0.02,    # sanity floor
         }
+        # Note: NO Random in the mix — trained models all crush Random
+        # ~95%, so games against it carry zero gradient signal and
+        # 2% × any meaningful run = thousands of wasted games. The
+        # historical-opponent WRs (especially Hist_V10) act as the real
+        # collapse-detector if the policy ever degrades.
         # Note: V11 (token-attention) and V6.2 (temporal transformer)
         # are intentionally absent — see opponent_registry.py for why.
         import src.config as _cfg

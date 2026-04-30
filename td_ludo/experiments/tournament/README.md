@@ -41,12 +41,19 @@ python -m experiments.tournament.run \
 # Full roster including the distilled student (when available)
 python -m experiments.tournament.run \
   --hist all \
-  --bots Expert,Random \
+  --bots Expert \
   --add-model V12_2:v122:play/model_weights/v12_2/model_latest.pt \
   --add-model Distill14:v14_minimal:experiments/distillation_14ch/student_14ch_final.pt \
   --games-per-pair 2000 \
   --output runs/tournament_full.json
 ```
+
+**Note on bots:** Expert is the strongest hand-coded bot and the only
+one worth including in a serious tournament. Heuristic / Aggressive /
+Defensive are weaker; Random is essentially noise (trained models beat
+it ~95%, so 2000 games of that is just measurement waste). Including
+weak bots only inflates aggregate WR for the strong models; the
+head-to-head matrix between trained models is what carries information.
 
 ## Output
 
