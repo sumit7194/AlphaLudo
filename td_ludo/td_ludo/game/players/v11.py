@@ -361,16 +361,25 @@ class VectorACGamePlayer:
         if train and self.search_enabled and self.search_target_fraction > 0:
             self._maybe_run_search(current_players)
 
-        # Pre-step state snapshot for reward computation
-        pre_step_states = []
-        pre_step_scores = []
-        pre_step_active = []
-        for i in range(self.batch_size):
-            game = self.env.get_game(i)
-            old_pos = {p: list(game.player_positions[p]) for p in range(4)}
-            pre_step_states.append(old_pos)
-            pre_step_scores.append(list(game.scores))
-            pre_step_active.append(list(game.active_players))
+        # Tier 1b: pre_step snapshot only for game-rows that will need it
+        # (train mode + just had a model decision routed into a trajectory).
+        # Old code snapshotted ALL 512 rows, of which most never get used.
+        pre_step_states = {}
+        pre_step_scores = {}
+        pre_step_active = {}
+        if train:
+            for i in range(self.batch_size):
+                cp = current_players[i]
+                if cp < 0:
+                    continue
+                if cp not in self.trajectories[i]:
+                    continue
+                game = self.env.get_game(i)
+                pre_step_states[i] = {
+                    p: list(game.player_positions[p]) for p in range(4)
+                }
+                pre_step_scores[i] = list(game.scores)
+                pre_step_active[i] = list(game.active_players)
 
         # Step environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -384,7 +393,9 @@ class VectorACGamePlayer:
         results = []
         for i in range(self.batch_size):
             cp = current_players[i]
-            if train and cp >= 0 and self.trajectories[i] and cp in self.trajectories[i]:
+            if train and i in pre_step_states:
+                # Tier 1b: pre_step_states is now a dict, key = game index;
+                # presence in dict is equivalent to the old long boolean.
                 next_game = self.env.get_game(i)
 
                 class DummyState:
