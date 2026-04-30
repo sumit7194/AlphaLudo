@@ -79,3 +79,100 @@ two scalar broadcasts capturing relative game state.
 Checkpoint: `td_ludo/checkpoints/td_v2_11ch/model_latest.pt`.
 
 ---
+
+## V3 / V4 / V5 — 17ch encoder family (`td_ludo/td_ludo/models/v5.py`)
+
+Reused the 11ch core but added a **6-plane dice one-hot** (one channel
+per dice value 1–6). All three architectures share the same encoder;
+they differ only in CNN depth/width and head shape.
+
+- **Input:** `(17, 15, 15)`.
+- **Encoder:** original `write_state_tensor` (17ch).
+
+| Variant | ResBlocks | Channels | Heads | Notes |
+|---|---|---|---|---|
+| V3 (`AlphaLudoV3`) | 10 | 128 | policy(4) + value(1) + aux safety(4) | Direct token selection — policy outputs 4 logits with legal-move mask before softmax |
+| V4 (`AlphaLudoV4`) | 3 | 32 | same as V3 | Slim experiment to test capacity sensitivity |
+| V5 (`AlphaLudoV5`) | 5 | 64 | same as V3 | Goldilocks midpoint between V3 and V4 |
+
+**Input channels (17ch):**
+
+| Ch | Encodes |
+|---|---|
+| 0–10 | Same as 11ch encoder above |
+| 11–16 | Dice one-hot — 6 broadcast planes, exactly one is all-1.0 |
+
+**What changed vs 11ch:** Dice as 6 disjoint spatial planes. CNNs can
+form per-dice strategy filters cleanly.
+
+Caveat: very early commits had `in_channels=21` floating around in
+`model_v3.py` defaults; the encoder that produced 21 channels was
+short-lived and pre-dates the 11ch cleanup. The "real" V3/V4/V5 line
+is 17ch.
+
+---
+
+## V6.1 — 24ch strategic encoder (`write_state_tensor_v6`)
+
+Encoder gets significantly richer. First time we add **per-token
+opponent identity** and **derived "tactical maps"** computed from the
+current dice.
+
+- **Input:** `(24, 15, 15)`.
+- **Backbone:** ResNet × 128ch, depth 5–10 (configurable).
+- **File:** `td_ludo/src/game.cpp` `write_state_tensor_v6`.
+
+**Input channels:**
+
+| Ch | Encodes |
+|---|---|
+| 0–16 | Same as V5 17ch encoder |
+| 17–20 | Opponent tokens, **per-token identity** (replaces ch 4's density plane — ch 4 still exists but is now overshadowed by these distinct-identity opponents) |
+| 21 | **Danger map** — 1.0 at own tokens that have an opponent within 1–6 squares behind |
+| 22 | **Capture-opportunity map** — 1.0 at opponent positions reachable with the current dice |
+| 23 | **Safe-landing map** — 1.0 at safe positions reachable with the current dice |
+
+**What changed vs V5:** Opponent finally has per-token identity (so the
+model can target a specific opponent piece). Three derived planes
+(21–23) act as pre-computed "tactical hints" that the model would
+otherwise need extra depth to extract.
+
+---
+
+## V6.2 — `AlphaLudoV62` (model only, encoder unchanged)
+
+Architecture refactor over V6.1 — same 24ch input. Lives in
+`td_ludo/td_ludo/models/v6_2.py`.
+
+- **Input:** `(24, 15, 15)` — V6.1 encoder, no change.
+- **Backbone:** ResNet × 128ch (default `num_res_blocks` configurable).
+- **Heads:** Same 3-head shape as V5/V6 (policy/value/aux).
+
+Used as a stepping stone to V6.3.
+
+---
+
+## V6.3 — 27ch encoder (`write_state_tensor_v6_3`)
+
+Adds three "bonus-turn awareness" channels. This was the first attempt
+to inject Ludo-specific rule knowledge directly into the input.
+
+- **Input:** `(27, 15, 15)`.
+- **Backbone:** `AlphaLudoV63` — ResNet × 128ch, `in_channels=27`,
+  default 10 ResBlocks.
+
+**Input channels:**
+
+| Ch | Encodes |
+|---|---|
+| 0–23 | Identical to V6.1 |
+| 24 | `bonus_turn_flag` — broadcast 1.0 if `dice == 6` |
+| 25 | `consecutive_sixes` — broadcast `0 / 0.5 / 1.0` for 0/1/2 prior 6s |
+| 26 | `two_roll_capture_map` — 1.0 at opponent positions capturable in a 6-then-X two-roll sequence (target offsets 7–12 ahead) |
+
+**What changed vs V6.1:** Explicit signals for the bonus-turn rule
+(dice==6 → another action). The CNN no longer has to derive this from
+the dice one-hot alone; it gets a single broadcast flag plus a
+spatial map of who could be captured if a second roll happens.
+
+---
