@@ -287,8 +287,25 @@ class VectorACGamePlayer:
                         legal_mask[move] = 1.0
                     batch_legal_masks.append(legal_mask)
 
-                states_t = torch.from_numpy(states_np).to(self.device, dtype=torch.float32)
-                masks_t = torch.from_numpy(np.stack(batch_legal_masks)).to(self.device, dtype=torch.float32)
+                # Tier 1c: pin source buffers + non_blocking H2D when on CUDA.
+                # Lets the host->device copy overlap with the next CPU work.
+                # On CPU (sandbox) pin_memory() is a no-op-ish copy and gives
+                # nothing, so we skip it.
+                masks_np_stacked = np.stack(batch_legal_masks)
+                if self.device.type == 'cuda':
+                    states_t = torch.from_numpy(states_np).pin_memory().to(
+                        self.device, dtype=torch.float32, non_blocking=True,
+                    )
+                    masks_t = torch.from_numpy(masks_np_stacked).pin_memory().to(
+                        self.device, dtype=torch.float32, non_blocking=True,
+                    )
+                else:
+                    states_t = torch.from_numpy(states_np).to(
+                        self.device, dtype=torch.float32,
+                    )
+                    masks_t = torch.from_numpy(masks_np_stacked).to(
+                        self.device, dtype=torch.float32,
+                    )
 
                 if controller == 'Ghost':
                     model = self._load_ghost_model(controller_id)
