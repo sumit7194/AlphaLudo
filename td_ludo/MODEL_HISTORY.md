@@ -408,6 +408,47 @@ unchanged as the architecture; recent direction tries
 
 ---
 
+## MinimalCNN14 — distillation experiment (Exp 25, in progress)
+
+A deliberately-stripped student trained from V12.2 to test the
+"input richness explains depth collapse" hypothesis (see Exp 25 in
+`training_journal.md`).
+
+- **Input:** `(14, 15, 15)` — minimal raw inputs only.
+- **Backbone:** Pure CNN, 10 ResBlocks × 128 channels. **No attention.**
+  Deep-and-wide deliberately, to see whether depth re-engages when the
+  model has to derive features that V12.2's encoder hands over.
+- **Heads:** 3-head (policy 4-logits + win_prob sigmoid + moves_remaining
+  softplus) — matches V12.2 for direct distillation.
+- **Files:** `td_ludo/experiments/distillation_14ch/model_14ch.py`
+  (`MinimalCNN14`), `td_ludo/experiments/distillation_14ch/train_distillation.py`.
+
+**Input channels (`write_state_tensor_v14_minimal`, NEW C++ encoder):**
+
+| Ch | Encodes |
+|---|---|
+| 0–3 | My tokens (per-token identity) |
+| 4–7 | Opponent tokens (per-token identity, single-opponent 2P mode) |
+| 8–13 | Dice 6-plane one-hot |
+
+**Critically absent vs V12.2's 33ch:**
+- No safe zones, no home paths (CNN must learn board geometry).
+- No danger map, no capture map, no two-roll-capture map (must derive
+  threats from raw token positions + dice).
+- No bonus-turn flag (must learn dice=6 → bonus-turn from training games).
+- No idle counters, no streak (history-derived; **architecturally
+  unrecoverable** in a stateless single-frame model).
+- No score broadcasts, no leader progress, no locked-fraction.
+
+**Hypothesis:** with rich V12.2 inputs, layers 8-10 are redundant
+(CKA > 0.95). With minimal inputs, layers 1-7 should specialize and
+diverge in CKA — proving the depth-collapse pattern is input-driven,
+not task-intrinsic. Final pol_acc projected at 76-82% (below V12.2's
+88.4% due to genuine information loss). The headline result is the
+per-block CKA matrix, not the eval skill.
+
+---
+
 ## Encoder progression at a glance
 
 ```
@@ -422,6 +463,7 @@ V8     → 17ch + temporal transformer over K=16 past turns
 V9     → 14ch slim re-design (drops dice one-hot, opp density)
 V10    → 28ch (V6.1 + bonus-turn + two-roll-capture + non_home_frac + leader_progress; V6.3 ch25 dropped)
 V11+   → 33ch (V10 + per-token idle + streak — current)
+v14_minimal → 14ch (4 own + 4 opp + 6 dice one-hot, NO derived features — Exp 25 distillation)
 ```
 
 ## CNN vs hybrid timeline
