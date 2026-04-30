@@ -176,3 +176,91 @@ the dice one-hot alone; it gets a single broadcast flag plus a
 spatial map of who could be captured if a second roll happens.
 
 ---
+
+## V7 — 1D transformer (`src/state_encoder_1d.py`, `src/model_v7.py`)
+
+A complete pivot away from the spatial CNN encoder. Treats the game as
+a 1D sequence designed for transformer input.
+
+- **Input:** **18-dim 1D vector per turn** (no spatial structure):
+  - 8 token positions: 4 self + 4 opponent, each in `[0, 58]` —
+    `0` = locked in base, `1–51` = main track (player-relative),
+    `53–57` = home stretch, `58` = scored.
+  - 3 globals: `opp_locked_frac`, `my_locked_frac`, `score_diff`.
+  - 6 dice one-hot for the current roll.
+  - 1 historical action token: last action taken (`0–3` = token,
+    `4` = pass/none).
+- **Backbone:** Transformer encoder over a sequence of past turns.
+- **File:** `td_ludo/src/model_v7.py` (commit `ec44058`,
+  `td_ludo/V7_ARCHITECTURE.md`).
+
+**What changed:** Drops the spatial board entirely. Token positions
+become integers in a learned embedding. Designed to test whether
+transformers can recover spatial structure from sequence-level signal
+alone, and to give the model explicit access to multi-turn history.
+
+V7 didn't beat the V6.x line and was eventually retired.
+
+---
+
+## V8 — V6 CNN + temporal transformer (`src/model_v8.py`)
+
+Hybrid: keeps the V5 17ch spatial encoder but adds a temporal
+transformer that attends over `K=16` past turns. Each turn's CNN
+features get summed with a previous-action embedding before going
+into the transformer.
+
+- **Input per turn:** `(17, 15, 15)` — same encoder as V5.
+- **Backbone per turn:** V5 CNN (128ch ResNet-10, frozen or trainable)
+  → `(128,)` GAP feature → add action embedding `(128,)` → LayerNorm.
+- **Temporal stack:** `K × (128,)` + temporal positional embeddings,
+  4-layer transformer encoder with causal masking, 4 heads.
+- **Heads:** policy `Linear(128, 128) → ReLU → Linear(128, 4)`,
+  value `Linear(128, 128) → ReLU → Linear(128, 1)`.
+
+**What changed:** First model with proper multi-turn history. The CNN
+is reused as a per-frame feature extractor; the transformer composes
+those features across time.
+
+---
+
+## V9 — slim CNN + temporal transformer, 14ch encoder
+
+Designed informed by mech-interp on V6:
+- Layer knockout showed all 10 V6 ResBlocks were individually
+  removable → over-parameterised.
+- CKA showed blocks 5–9 were nearly identical (>0.99).
+- Channel ablation: score-diff plane lowest impact; the 6-plane dice
+  one-hot was wasteful.
+
+So V9 slimmed both the encoder and the backbone.
+
+- **Input:** `(14, 15, 15)`.
+- **CNN backbone:** Stem `Conv2d(14 → 80) + BN + ReLU`, 5 ResBlocks of
+  80 channels each. ~750K params.
+- **Temporal transformer:** 4 layers, 80-dim, 4 heads, FFN 320, GELU,
+  norm-first, causal + padding mask. ~400K params.
+- **Heads:** policy + value.
+
+**Input channels (14ch encoder, `write_state_tensor_v9`):**
+
+| Ch | Encodes |
+|---|---|
+| 0–3 | My tokens (per-token identity) |
+| 4–7 | Opponent tokens (per-token identity, single primary opponent in 2P mode) |
+| 8 | Safe zones (0.5) |
+| 9 | My home path |
+| 10 | Opponent home path (skip inactive) |
+| 11 | My locked % (broadcast) |
+| 12 | Opp locked % (broadcast) |
+| 13 | Dice roll, single broadcast plane (`roll / 6.0`) |
+
+**What changed vs V6:** Drops the 6-plane dice one-hot for a single
+broadcast plane. Drops the opponent density plane (kept per-token
+identity only). Drops the score-diff broadcast. Smaller backbone (80ch
+× 5 blocks vs 128ch × 10).
+
+This was the opposite direction from V6.3 (slimming, not expanding).
+The V10 line eventually went back to expanding.
+
+---
