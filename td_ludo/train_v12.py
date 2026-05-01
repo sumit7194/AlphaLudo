@@ -192,10 +192,9 @@ _player = None
 def start_dashboard_server(port=8789):
     """Dashboard on port 8789 (8787=V10, 8788=exploiter, 8789=V11, 8790=V12 default)."""
     dashboard_dir = os.path.dirname(os.path.abspath(__file__))
-    # V12.2: prefer v12_dashboard.html if present (chain-aware + plateau gate),
-    # fall back to v11_dashboard.html, then index.html.
+    # V13/V12: check for specific dashboard HTML files
     landing = None
-    for cand in ('v12_dashboard.html', 'v11_dashboard.html', 'index.html'):
+    for cand in ('v13_dashboard.html', 'v12_dashboard.html', 'v11_dashboard.html', 'index.html'):
         if os.path.exists(os.path.join(dashboard_dir, cand)):
             landing = cand
             break
