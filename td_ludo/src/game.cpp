@@ -26,11 +26,23 @@ const int8_t HOME_RUN_P0[5][2] = {{7, 1}, {7, 2}, {7, 3}, {7, 4}, {7, 5}};
 
 const int8_t HOME_COORD_P0[2] = {7, 6};
 
+// Base-corner coordinates per (player, token).
+// Assigned so that AFTER the per-player rotation (k = current_player, k×90° CCW)
+// applied by write_tensor_val, slot t lands at the SAME canonical cell for every
+// player. Concretely: post-rotation T0→(2,2), T1→(2,3), T2→(3,2), T3→(3,3).
+//
+// History: prior to the encoder-symmetry fix, BASE_COORDS was assigned in
+// "natural reading order" within each player's base (TL,TR,BL,BR). That made
+// the same logical state encode differently depending on current_player, since
+// after rotation the slot↔cell mapping was mirror-flipped. See V12.2 mech-interp:
+// pre-search picked T0 89% as P0 but T3 47% as P2 — same spatial preference,
+// flipped slot identity. Fixed coords below — derived by applying the inverse
+// rotation per player to the canonical {(2,2),(2,3),(3,2),(3,3)}.
 const int8_t BASE_COORDS[4][4][2] = {
-    {{2, 2}, {2, 3}, {3, 2}, {3, 3}},         // P0 (Top Left) - Red
-    {{2, 11}, {2, 12}, {3, 11}, {3, 12}},     // P1 (Top Right) - Green
-    {{11, 11}, {11, 12}, {12, 11}, {12, 12}}, // P2 (Bottom Right) - Yellow
-    {{11, 2}, {11, 3}, {12, 2}, {12, 3}}      // P3 (Bottom Left) - Blue
+    {{2, 2},  {2, 3},  {3, 2},  {3, 3}},      // P0 (k=0, identity)         - Red
+    {{2, 12}, {3, 12}, {2, 11}, {3, 11}},     // P1 (k=1, 90° CCW inverse)  - Green
+    {{12, 12},{12, 11},{11, 12},{11, 11}},    // P2 (k=2, 180° inverse)     - Yellow
+    {{12, 2}, {11, 2}, {12, 3}, {11, 3}}      // P3 (k=3, 270° CCW inverse) - Blue
 };
 
 // Safe squares (indices on 52-track, P0 view)
