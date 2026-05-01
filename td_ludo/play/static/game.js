@@ -64,12 +64,30 @@ function getBoardMetrics() {
         const value = parseFloat(styles.getPropertyValue(name));
         return Number.isFinite(value) ? value : fallback;
     };
+    const tokenScaleVar = parseFloat(styles.getPropertyValue('--token-scale'));
+    const tokenScale = Number.isFinite(tokenScaleVar) ? tokenScaleVar : 0.68;
 
+    // Some CSS values use min()/clamp() — parseFloat gives NaN. Fall back to
+    // the *measured* size of a real cell so positioning matches the rendered grid.
+    let cellSize = readVar('--cell-size', NaN);
+    if (!Number.isFinite(cellSize)) {
+        const sample = document.querySelector('.cell');
+        if (sample) {
+            cellSize = sample.getBoundingClientRect().width;
+        } else {
+            cellSize = 38;
+        }
+    }
+    let tokenSize = readVar('--token-size', NaN);
+    if (!Number.isFinite(tokenSize)) {
+        // Token defaults to ~68% of cell — matches root :root setting (26/40 ≈ 0.65)
+        tokenSize = Math.max(8, Math.round(cellSize * tokenScale));
+    }
     return {
-        cellSize: readVar('--cell-size', 38),
+        cellSize,
         boardGap: readVar('--board-gap', 1),
         boardPad: readVar('--board-pad', 3),
-        tokenSize: readVar('--token-size', 26),
+        tokenSize,
     };
 }
 

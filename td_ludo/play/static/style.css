@@ -1578,50 +1578,289 @@ body::before {
     }
 }
 
+/* ============================================================
+   MOBILE-OPTIMIZED LAYOUT (≤760px)
+   - Board front-and-center
+   - Dice + score as sticky bars (always visible, no scrolling away)
+   - Player cards / log / AI probs collapse below board
+   - Desktop layout (>760px) is fully preserved
+   ============================================================ */
 @media (max-width: 760px) {
     :root {
-        --cell-size: 20px;
-        --token-size: 14px;
+        --cell-size: min(5.6vw, 28px);
+        --token-size: min(3.8vw, 19px);
+    }
+
+    body {
+        /* leave space at bottom for sticky dice bar */
+        padding-bottom: 96px;
     }
 
     .app {
-        padding: 14px;
+        padding: 8px;
+        gap: 8px;
     }
 
+    /* Header: compact, single line, sticky */
     .header {
-        padding: 16px;
-        flex-direction: column;
-        align-items: stretch;
+        padding: 8px 12px;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        margin-bottom: 8px;
+        background:
+            linear-gradient(180deg, rgba(64, 211, 225, 0.18), rgba(232, 71, 166, 0.08)),
+            rgba(7, 21, 38, 0.92);
+        backdrop-filter: blur(14px);
     }
 
     .logo {
-        align-items: flex-start;
-        flex-wrap: wrap;
+        flex: 1;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: nowrap;
+        min-width: 0;
+    }
+
+    .logo-mark {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+    }
+
+    .logo-copy h1 {
+        font-size: 16px;
+        line-height: 1;
+    }
+
+    .logo-copy .eyebrow {
+        display: none;
     }
 
     .model-chip {
-        margin-left: 68px;
+        margin-left: 0;
+        font-size: 10px;
+        padding: 4px 8px;
+        white-space: nowrap;
     }
 
-    .left-column,
-    .right-column {
-        grid-template-columns: 1fr;
+    .header-actions .btn {
+        padding: 8px 12px;
+        font-size: 13px;
     }
 
-    .player-card,
-    .control-panel,
-    .game-log,
+    .btn-icon {
+        font-size: 14px;
+    }
+
+    /* Reorganize game layout: board first, side panels stacked below */
+    .game-container {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
     .board-stage {
-        padding: 16px;
+        order: 2;
+        padding: 8px;
+        gap: 8px;
+    }
+
+    .board-stage-header {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 0;
+    }
+
+    .round-status {
+        font-size: 12px;
+        gap: 4px;
+    }
+
+    .turn-indicator {
+        min-width: 0;
+        width: auto;
+        padding: 6px 12px;
+        font-size: 13px;
+    }
+
+    .board-shell {
+        padding: 0;
     }
 
     .board-frame {
-        padding: 10px;
+        padding: 4px;
     }
 
     .board {
         margin: 0 auto;
         max-width: 100%;
+    }
+
+    /* Compact score strip combining both players, sticky just under header */
+    .left-column,
+    .right-column {
+        display: contents;       /* let children participate in parent flex order */
+    }
+
+    .player-card {
+        order: 1;                /* score cards above board */
+        padding: 8px 12px;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .player-card.human { order: 1; }
+    .player-card.ai    { order: 3; padding: 8px 12px; }
+
+    .player-header {
+        gap: 8px;
+        margin: 0;
+    }
+
+    .player-avatar {
+        width: 32px;
+        height: 32px;
+        font-size: 16px;
+    }
+
+    .player-name-block .card-kicker,
+    .player-name-block .player-subtitle {
+        display: none;
+    }
+
+    .player-name-block h3 {
+        font-size: 14px;
+        line-height: 1;
+        margin: 0;
+    }
+
+    .score-display {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        border: none;
+    }
+
+    .score-label-row {
+        display: none;        /* dot-tokens are enough */
+    }
+
+    .score-tokens {
+        gap: 4px;
+        padding: 0;
+    }
+
+    .scored-token {
+        width: 12px;
+        height: 12px;
+    }
+
+    .status-pill {
+        font-size: 10px;
+        padding: 4px 8px;
+    }
+
+    /* Sticky dice action bar at bottom of viewport */
+    .control-panel {
+        order: 4;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 40;
+        margin: 0;
+        padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+        border-radius: 0;
+        border-top: 1px solid rgba(89, 218, 224, 0.28);
+        background:
+            linear-gradient(180deg, rgba(64, 211, 225, 0.15), rgba(232, 71, 166, 0.06)),
+            rgba(7, 21, 38, 0.94);
+        backdrop-filter: blur(14px);
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    .control-panel .card-kicker {
+        display: none;
+    }
+
+    .dice-area {
+        flex-direction: row;
+        align-items: center;
+        gap: 14px;
+        margin: 0;
+    }
+
+    .dice {
+        width: 56px;
+        height: 56px;
+        font-size: 28px;
+    }
+
+    .dice-hint {
+        font-size: 12px;
+        margin: 0;
+    }
+
+    /* AI win-chance & probs: always visible, compact, below board */
+    .ai-thinking {
+        font-size: 12px;
+        padding: 6px 8px;
+    }
+
+    .win-chance {
+        margin-top: 6px;
+        padding: 8px 10px;
+    }
+
+    .win-chance-label {
+        font-size: 11px;
+    }
+
+    .win-chance-text {
+        font-size: 12px;
+    }
+
+    .ai-probs-wrapper {
+        margin-top: 6px;
+    }
+
+    .ai-probs-label {
+        font-size: 11px;
+    }
+
+    /* Game log goes last, collapsible could be added later */
+    .game-log {
+        order: 5;
+        margin-bottom: 0;
+        padding: 8px 12px;
+    }
+
+    .game-log .section-heading h4 {
+        font-size: 14px;
+    }
+
+    .log-entries {
+        max-height: 160px;
+        font-size: 12px;
+    }
+
+    .message-area {
+        min-height: 32px;
+        font-size: 12px;
+        padding: 6px 10px;
     }
 
     .review-actions {
@@ -1630,50 +1869,26 @@ body::before {
 
     .modal,
     .review-modal {
-        padding: 22px;
+        padding: 16px;
+        max-height: 90vh;
+        overflow-y: auto;
     }
 }
 
-@media (max-width: 540px) {
+/* Even smaller phones: keep dice bar usable, tighten further */
+@media (max-width: 420px) {
     :root {
-        --cell-size: 16px;
-        --token-size: 11px;
+        --cell-size: min(5.5vw, 24px);
+        --token-size: min(3.6vw, 16px);
     }
 
-    .app {
-        padding: 10px;
-    }
-
-    .header,
-    .player-card,
-    .control-panel,
-    .game-log,
-    .board-stage {
-        padding: 12px;
-    }
-
-    .logo-mark {
-        width: 46px;
-        height: 46px;
-        font-size: 24px;
-    }
-
-    .logo-copy h1 {
-        font-size: 24px;
-    }
-
-    .model-chip {
-        margin-left: 58px;
-        font-size: 11px;
-        padding: 7px 10px;
-    }
-
-    .board-frame {
-        padding: 8px;
-    }
-
-    .message-area {
-        min-height: 44px;
-        font-size: 13px;
-    }
+    .logo-copy h1 { font-size: 14px; }
+    .model-chip { font-size: 9px; padding: 3px 6px; }
+    .turn-indicator { font-size: 12px; padding: 5px 10px; }
+    .player-card { padding: 6px 10px; }
+    .player-name-block h3 { font-size: 12px; }
+    .scored-token { width: 10px; height: 10px; }
+    .dice { width: 50px; height: 50px; font-size: 24px; }
+    .dice-hint { font-size: 11px; }
+    .log-entries { max-height: 120px; }
 }

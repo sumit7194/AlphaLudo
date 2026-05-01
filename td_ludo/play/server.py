@@ -8,7 +8,8 @@ Select via env var:
     LUDO_MODEL=v6_1                  (loads model_weights/model.pt)
     LUDO_MODEL=v6_3                  (loads model_weights/model_v6_3.pt)
     LUDO_MODEL=v11                   (loads model_weights/model_v11.pt)
-    LUDO_MODEL=v12   (default)       (loads model_weights/model_v12.pt)
+    LUDO_MODEL=v12                   (loads model_weights/model_v12.pt)
+    LUDO_MODEL=v12_2 (default)       (loads model_weights/v12_2/model_latest.pt)
 """
 
 import math
@@ -30,15 +31,16 @@ from flask import Flask, jsonify, request, send_from_directory
 from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11, AlphaLudoV12
 
 # ── Configuration ──────────────────────────────────────────────
-MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12'):
-    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', 'v11', or 'v12'.")
+MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12_2').lower()
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2'):
+    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', 'v11', 'v12', or 'v12_2'.")
 
 MODEL_FILES = {
-    'v6_1': os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
-    'v6_3': os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
-    'v11':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
-    'v12':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
+    'v6_1':  os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
+    'v6_3':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
+    'v11':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
+    'v12':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
+    'v12_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v12_2', 'model_latest.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
 
@@ -157,7 +159,15 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v12':
+    if MODEL_VERSION == 'v12_2':
+        # V12.2: fresh-init wider+shallower (3×128 + 2 attn × 4 heads),
+        # V11 encoder (33 channels). 1.36M params.
+        model = AlphaLudoV12(
+            num_res_blocks=3, num_channels=128,
+            num_attn_layers=2, num_heads=4,
+            ffn_ratio=4, dropout=0.0, in_channels=33,
+        )
+    elif MODEL_VERSION == 'v12':
         # V12: same CNN backbone as V11.1, but attention over 8 game-piece
         # tokens (not 225 cells). 4 ResBlocks × 96ch + 2 attn × 4 heads.
         model = AlphaLudoV12(
@@ -449,7 +459,10 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION in ('v11', 'v12'):
+            if MODEL_VERSION == 'v12_2':
+                # V12.2 uses V11 encoder (33 channels — adds idle/streak/danger).
+                state_tensor = ludo_cpp.encode_state_v11(self.state)
+            elif MODEL_VERSION in ('v11', 'v12'):
                 # V11 and V12 both use the V10 encoder (28 channels).
                 state_tensor = ludo_cpp.encode_state_v10(self.state)
             elif MODEL_VERSION == 'v6_3':
@@ -484,9 +497,9 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        if MODEL_VERSION in ('v11', 'v12'):
-            # V11/V12 win_prob head is sigmoid-output, BCE-trained on actual
-            # outcomes — already a calibrated probability in [0, 1].
+        if MODEL_VERSION in ('v11', 'v12', 'v12_2'):
+            # V11/V12/V12.2 win_prob head is sigmoid-output, BCE-trained on
+            # actual outcomes — already a calibrated probability in [0, 1].
             ai_win_prob = v
         else:
             # V6.x value head is unbounded; squash for display.
@@ -631,7 +644,7 @@ class GameManager:
         """Run the loaded V11/V12 model on the current state and return a
         dict with policy / argmax / win_prob / moves_remaining. Returns
         None for older models (different encoder, not supported)."""
-        if MODEL_VERSION not in ('v11', 'v12'):
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2'):
             return None
 
         legal_mask = np.zeros(4, dtype=np.float32)
@@ -639,7 +652,10 @@ class GameManager:
             legal_mask[int(m)] = 1.0
 
         try:
-            state_tensor = ludo_cpp.encode_state_v10(self.state)
+            if MODEL_VERSION == 'v12_2':
+                state_tensor = ludo_cpp.encode_state_v11(self.state)
+            else:
+                state_tensor = ludo_cpp.encode_state_v10(self.state)
             with torch.no_grad():
                 s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
                     self.device, dtype=torch.float32
@@ -759,10 +775,9 @@ class GameManager:
         (interest_score, kl, agree) are precomputed at log time so the
         review endpoint can sort without re-deriving them.
         """
-        # Only V11/V12 share the 28-channel encoder we rely on. Older
-        # models use a different encoder + value-head semantics; just
-        # skip Level 1 for them.
-        if MODEL_VERSION not in ('v11', 'v12'):
+        # V11/V12/V12.2 all expose (policy, win_prob, ...) outputs we can log.
+        # Older models use a different encoder + value-head semantics; skip them.
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2'):
             return
 
         cp = int(self.state.current_player)
@@ -862,7 +877,9 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': rolled_for_ai}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION in ('v11', 'v12'):
+        if MODEL_VERSION == 'v12_2':
+            state_tensor = ludo_cpp.encode_state_v11(self.state)
+        elif MODEL_VERSION in ('v11', 'v12'):
             state_tensor = ludo_cpp.encode_state_v10(self.state)
         elif MODEL_VERSION == 'v6_3':
             state_tensor = ludo_cpp.encode_state_v6_3(
