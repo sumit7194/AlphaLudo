@@ -115,6 +115,12 @@ class VectorACGamePlayer:
 
         self.game_compositions = [self._random_composition() for _ in range(batch_size)]
         self.trajectories = [{} for _ in range(batch_size)]
+        # Aux trajectories collect opponent-turn states (bot/hist controllers)
+        # for value-head training. Safe post encoder-fix because the canonical
+        # rotated view is now consistent across players. Per game: list of
+        # {'state': tensor, 'cp': int} dicts. NOT used for PPO policy loss
+        # (off-policy actions). Consumed by trainer for value-only loss.
+        self.aux_trajectories = [[] for _ in range(batch_size)]
 
         self.total_games = 0
         self.total_model_wins = 0
@@ -294,6 +300,17 @@ class VectorACGamePlayer:
                 bot = self.bots.get(ptype, self.bots['Random'])
                 action = bot.select_move(game, legal_moves)
                 actions.append(action)
+                # AUX: capture opp-turn state for value-head training.
+                # Only relevant when training is on AND this game has a model_player
+                # (otherwise the eventual outcome target won't be meaningful).
+                # Skip if cp is itself a train_player (already recorded normally).
+                if (train and cp not in composition['train_players']
+                        and len(legal_moves) >= 1):
+                    state_tensor_aux = self.encoder_fn(game)
+                    self.aux_trajectories[i].append({
+                        'state': state_tensor_aux,
+                        'cp': cp,
+                    })
 
         # Batched model inference (V10 encoding)
         if decision_groups:
@@ -405,6 +422,17 @@ class VectorACGamePlayer:
                     actions[idx] = -1
                 else:
                     actions[idx] = a
+                # AUX: capture hist-opp turn state for value-head training.
+                if train and a >= 0:
+                    cp = current_players[idx]
+                    composition = self.game_compositions[idx]
+                    if cp not in composition['train_players']:
+                        game = self.env.get_game(idx)
+                        state_tensor_aux = self.encoder_fn(game)
+                        self.aux_trajectories[idx].append({
+                            'state': state_tensor_aux,
+                            'cp': cp,
+                        })
 
         # Exp 24: search-during-training. Run depth-1 expectimax on a sampled
         # fraction of newly-appended training-player steps and back-fill
@@ -472,7 +500,8 @@ class VectorACGamePlayer:
                             self.trainer.train_on_game(
                                 self.trajectories[i],
                                 winner,
-                                train_player
+                                train_player,
+                                aux_trajectory=self.aux_trajectories[i],
                             )
                     self.trainer.total_games += 1
 
@@ -489,6 +518,7 @@ class VectorACGamePlayer:
                 self.game_compositions[i] = self._random_composition()
                 self.consecutive_sixes[i] = 0
                 self.trajectories[i] = {}
+                self.aux_trajectories[i] = []
 
                 results.append({
                     'winner': winner,

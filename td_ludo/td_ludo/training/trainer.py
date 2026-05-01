@@ -77,6 +77,11 @@ class ActorCriticTrainer:
         # PPO buffer (accumulates steps across games, trains in batches)
         self._ppo_buffer = []
         self._ppo_games_buffered = 0
+        # Aux buffer for opp-turn states (value-head training only).
+        # Off-policy actions, so cannot be used for PPO policy gradient.
+        # See trainer._ppo_update for how aux buffer feeds value loss.
+        self._aux_buffer = []
+        self.aux_value_loss_coeff = 0.5  # weight for opp-turn value loss
 
         # Running return normalization (fixes value head positive bias)
         # Without this, returns are always positive (+1 to +7) due to dense rewards,
@@ -104,23 +109,39 @@ class ActorCriticTrainer:
         # Metrics history (appended to file)
         self.metrics_history = []
 
-    def train_on_game(self, trajectories, winner, model_player):
+    def train_on_game(self, trajectories, winner, model_player, aux_trajectory=None):
         """
         Buffer a completed game's trajectory for the next PPO update.
-        
+
         Training only happens when the buffer reaches PPO_BUFFER_GAMES.
-        
+
         Args:
             trajectories: dict mapping player_id → list of step dicts
             winner: int, the player_id who won (or -1 for draw)
             model_player: int, which player was controlled by the model
-            
+            aux_trajectory: optional list of {'state': tensor, 'cp': int}
+                opp-turn states encoded post-fix in canonical view. Used for
+                value-head training only (off-policy actions, so no PPO grad).
+
         Returns:
             dict with training stats (only when PPO update fires)
         """
         if winner == -1:
             return {}  # Skip draws
-        
+
+        # Buffer aux states with their value targets (current_player's POV).
+        # Encoder is per-current_player rotation, so value head is trained to
+        # predict win-prob for the active player. cp == winner → 1.0, else penalty.
+        if aux_trajectory:
+            loss_penalty_aux = -1.0 / max(1, (NUM_ACTIVE_PLAYERS - 1))
+            for step in aux_trajectory:
+                cp_aux = step['cp']
+                z_aux = 1.0 if cp_aux == winner else loss_penalty_aux
+                self._aux_buffer.append({
+                    'state': step['state'],
+                    'z': z_aux,
+                })
+
         # Only use the model player's trajectory
         trajectory = trajectories.get(model_player, [])
         if not trajectory:
@@ -299,11 +320,37 @@ class ActorCriticTrainer:
                 # Entropy bonus: -Σ π·log(π)
                 entropy = -(policy * torch.log(policy + 1e-8)).sum(dim=1).mean()
                 
+                # AUX value loss: opp-turn states (off-policy actions, value-only).
+                # Sampled per minibatch from the same _aux_buffer, with the same
+                # batch size. This adds extra value-head signal from a broader
+                # state distribution (states the model wouldn't visit naturally).
+                aux_value_loss_val = 0.0
+                if self._aux_buffer:
+                    n_aux = len(self._aux_buffer)
+                    aux_mb = min(n_aux, mb_states.shape[0])
+                    aux_idx = torch.randint(0, n_aux, (aux_mb,), device=self.device)
+                    aux_states = torch.from_numpy(
+                        np.stack([self._aux_buffer[i.item()]['state'] for i in aux_idx])
+                    ).to(self.device, dtype=torch.float32)
+                    aux_returns = torch.tensor(
+                        [self._aux_buffer[i.item()]['z'] for i in aux_idx],
+                        dtype=torch.float32, device=self.device
+                    )
+                    # Permissive mask (value head ignores it but model API needs one).
+                    aux_masks = torch.ones((aux_mb, 4), dtype=torch.float32, device=self.device)
+                    _, aux_value = self.model(aux_states, aux_masks)
+                    aux_value = aux_value.squeeze(-1)
+                    aux_value_loss = F.smooth_l1_loss(aux_value, aux_returns)
+                    aux_value_loss_val = aux_value_loss.item()
+                else:
+                    aux_value_loss = torch.tensor(0.0, device=self.device)
+
                 # Combined loss
-                loss = (policy_loss 
-                        + self.value_loss_coeff * value_loss 
+                loss = (policy_loss
+                        + self.value_loss_coeff * value_loss
+                        + self.aux_value_loss_coeff * aux_value_loss
                         - self.entropy_coeff * entropy)
-                
+
                 # Gradient step
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -342,11 +389,13 @@ class ActorCriticTrainer:
             self.recent_clip_fractions.append(avg_clip)
             self.recent_approx_kl.append(avg_kl)
         
-        # Clear the buffer
+        # Clear the buffers (both PPO and aux)
         games_trained = self._ppo_games_buffered
+        n_aux_used = len(self._aux_buffer)
         self._ppo_buffer.clear()
+        self._aux_buffer.clear()
         self._ppo_games_buffered = 0
-        
+
         return {
             'policy_loss': avg_pl if n_minibatches > 0 else 0,
             'value_loss': avg_vl if n_minibatches > 0 else 0,
@@ -354,6 +403,7 @@ class ActorCriticTrainer:
             'total_steps': n_steps,
             'ppo_games': games_trained,
             'ppo_minibatches': n_minibatches,
+            'aux_states_used': n_aux_used,
         }
     
     def flush_buffer(self):
