@@ -1,0 +1,247 @@
+{
+  "meta": {
+    "games_per_pair": 200,
+    "seed": 42,
+    "competitors": [
+      "Expert",
+      "Heuristic",
+      "Aggressive",
+      "Defensive",
+      "Distill14"
+    ],
+    "elapsed_min": 5.46,
+    "total_games": 2000
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Heuristic",
+      "n_games": 200,
+      "a_wins": 107,
+      "b_wins": 93,
+      "draws": 0,
+      "a_wr_pct": 53.5,
+      "b_wr_pct": 46.5,
+      "avg_length": 168.135,
+      "seat_a_p0": [
+        53,
+        100
+      ],
+      "seat_a_p2": [
+        54,
+        100
+      ],
+      "pair": [
+        "Expert",
+        "Heuristic"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "Aggressive",
+      "n_games": 200,
+      "a_wins": 97,
+      "b_wins": 103,
+      "draws": 0,
+      "a_wr_pct": 48.5,
+      "b_wr_pct": 51.5,
+      "avg_length": 164.175,
+      "seat_a_p0": [
+        52,
+        100
+      ],
+      "seat_a_p2": [
+        45,
+        100
+      ],
+      "pair": [
+        "Expert",
+        "Aggressive"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "Defensive",
+      "n_games": 200,
+      "a_wins": 100,
+      "b_wins": 100,
+      "draws": 0,
+      "a_wr_pct": 50.0,
+      "b_wr_pct": 50.0,
+      "avg_length": 163.795,
+      "seat_a_p0": [
+        54,
+        100
+      ],
+      "seat_a_p2": [
+        46,
+        100
+      ],
+      "pair": [
+        "Expert",
+        "Defensive"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "Distill14",
+      "n_games": 200,
+      "a_wins": 49,
+      "b_wins": 151,
+      "draws": 0,
+      "a_wr_pct": 24.5,
+      "b_wr_pct": 75.5,
+      "avg_length": 163.49,
+      "seat_a_p0": [
+        26,
+        100
+      ],
+      "seat_a_p2": [
+        23,
+        100
+      ],
+      "pair": [
+        "Expert",
+        "Distill14"
+      ]
+    },
+    {
+      "a": "Heuristic",
+      "b": "Aggressive",
+      "n_games": 200,
+      "a_wins": 105,
+      "b_wins": 95,
+      "draws": 0,
+      "a_wr_pct": 52.5,
+      "b_wr_pct": 47.5,
+      "avg_length": 166.34,
+      "seat_a_p0": [
+        51,
+        100
+      ],
+      "seat_a_p2": [
+        54,
+        100
+      ],
+      "pair": [
+        "Heuristic",
+        "Aggressive"
+      ]
+    },
+    {
+      "a": "Heuristic",
+      "b": "Defensive",
+      "n_games": 200,
+      "a_wins": 108,
+      "b_wins": 92,
+      "draws": 0,
+      "a_wr_pct": 54.0,
+      "b_wr_pct": 46.0,
+      "avg_length": 163.655,
+      "seat_a_p0": [
+        49,
+        100
+      ],
+      "seat_a_p2": [
+        59,
+        100
+      ],
+      "pair": [
+        "Heuristic",
+        "Defensive"
+      ]
+    },
+    {
+      "a": "Heuristic",
+      "b": "Distill14",
+      "n_games": 200,
+      "a_wins": 41,
+      "b_wins": 159,
+      "draws": 0,
+      "a_wr_pct": 20.5,
+      "b_wr_pct": 79.5,
+      "avg_length": 162.43,
+      "seat_a_p0": [
+        21,
+        100
+      ],
+      "seat_a_p2": [
+        20,
+        100
+      ],
+      "pair": [
+        "Heuristic",
+        "Distill14"
+      ]
+    },
+    {
+      "a": "Aggressive",
+      "b": "Defensive",
+      "n_games": 200,
+      "a_wins": 93,
+      "b_wins": 107,
+      "draws": 0,
+      "a_wr_pct": 46.5,
+      "b_wr_pct": 53.5,
+      "avg_length": 166.66,
+      "seat_a_p0": [
+        49,
+        100
+      ],
+      "seat_a_p2": [
+        44,
+        100
+      ],
+      "pair": [
+        "Aggressive",
+        "Defensive"
+      ]
+    },
+    {
+      "a": "Aggressive",
+      "b": "Distill14",
+      "n_games": 200,
+      "a_wins": 55,
+      "b_wins": 145,
+      "draws": 0,
+      "a_wr_pct": 27.500000000000004,
+      "b_wr_pct": 72.5,
+      "avg_length": 159.95,
+      "seat_a_p0": [
+        29,
+        100
+      ],
+      "seat_a_p2": [
+        26,
+        100
+      ],
+      "pair": [
+        "Aggressive",
+        "Distill14"
+      ]
+    },
+    {
+      "a": "Defensive",
+      "b": "Distill14",
+      "n_games": 200,
+      "a_wins": 45,
+      "b_wins": 155,
+      "draws": 0,
+      "a_wr_pct": 22.5,
+      "b_wr_pct": 77.5,
+      "avg_length": 162.075,
+      "seat_a_p0": [
+        30,
+        100
+      ],
+      "seat_a_p2": [
+        15,
+        100
+      ],
+      "pair": [
+        "Defensive",
+        "Distill14"
+      ]
+    }
+  ]
+}
