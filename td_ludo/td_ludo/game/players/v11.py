@@ -62,7 +62,11 @@ class VectorACGamePlayer:
     def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None,
                  search_enabled=False, search_target_fraction=0.25,
                  search_label_smoothing=0.1,
-                 historical_opponents_enabled=False):
+                 historical_opponents_enabled=False,
+                 encoder_fn=None):
+        # encoder_fn: ludo_cpp.encode_state_* callable for the main model's
+        # input. Defaults to encode_state_v11 (33ch) for V11/V12 family;
+        # V13 (MinimalCNN14) passes encode_state_v14_minimal (14ch).
         self.trainer = trainer
         self.batch_size = batch_size
         self.device = device
@@ -81,6 +85,11 @@ class VectorACGamePlayer:
             'searches_done': 0, 'leaf_count': 0, 'opp_query_count': 0,
             'top1_agreement_sum': 0.0, 'top1_agreement_n': 0,
         }
+
+        # Main-model encoder. Default = V11 (33ch) for V11/V12 line; V13
+        # passes encode_state_v14_minimal (14ch) for the MinimalCNN14
+        # student architecture.
+        self.encoder_fn = encoder_fn if encoder_fn is not None else ludo_cpp.encode_state_v11
 
         # Phase 2: historical opponent registry. Lazy-loads prior-generation
         # V-model checkpoints (V6.3 / V10 / V11 / V12) and routes Hist_*
@@ -300,8 +309,9 @@ class VectorACGamePlayer:
                     lmoves = ludo_cpp.get_legal_moves(game)
                     batch_legal_moves.append(lmoves)
 
-                    # V12.1: encode_state_v11 = V10 (28ch) + idle (4) + streak (1) = 33ch
-                    state_tensor = ludo_cpp.encode_state_v11(game)
+                    # Encoder dispatch via self.encoder_fn — V11/V12: 33ch
+                    # encode_state_v11; V13: 14ch encode_state_v14_minimal.
+                    state_tensor = self.encoder_fn(game)
                     batch_states.append(state_tensor)
 
                     legal_mask = np.zeros(4, dtype=np.float32)

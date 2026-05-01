@@ -73,6 +73,7 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
     from td_ludo.models.v5 import AlphaLudoV5
     from td_ludo.models.v6_3 import AlphaLudoV63
     from td_ludo.models.v10 import AlphaLudoV10
+    from td_ludo.models.v12 import AlphaLudoV12
 
     return {
         "Hist_V6_big": _OpponentSpec(
@@ -112,6 +113,21 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
             in_channels=28,
             needs_consecutive_sixes=False,
         ),
+        "Hist_V12_2": _OpponentSpec(
+            # V12.2 production: 33ch V11 encoder + 3 ResBlocks × 128 +
+            # 2 attn layers (4 heads). Used as a strong external opponent
+            # for V13 RL training (v13 game composition).
+            tag="Hist_V12_2",
+            arch_class=AlphaLudoV12,
+            arch_kwargs=dict(
+                num_res_blocks=3, num_channels=128,
+                num_attn_layers=2, num_heads=4, ffn_ratio=4,
+                dropout=0.0, in_channels=33,
+            ),
+            encoder_fn=cpp.encode_state_v11,
+            in_channels=33,
+            needs_consecutive_sixes=False,
+        ),
     }
 
 
@@ -120,6 +136,9 @@ _DEFAULT_CKPTS = {
     "Hist_V6_1":   "play/model_weights/historical/v6_1.pt",
     "Hist_V6_3":   "play/model_weights/historical/v6_3.pt",
     "Hist_V10":    "play/model_weights/historical/v10.pt",
+    # V12.2: lives at the production path it was trained into; the user
+    # snapshots a final V12.2 checkpoint here when starting a V13 run.
+    "Hist_V12_2":  "play/model_weights/v12_2/model_latest.pt",
 }
 
 # Repo-root-relative paths. The runner resolves them against the

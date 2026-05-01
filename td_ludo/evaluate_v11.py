@@ -30,16 +30,22 @@ from src.config import MAX_MOVES_PER_GAME
 
 
 def evaluate_model(model, device, num_games=200, verbose=False,
-                   bot_types=None):
+                   bot_types=None, encoder_fn=None):
     """
     Evaluate model against a mix of heuristic bots.
-    
+
     The model plays as one player (random seat), the other seat
     is filled with a random bot type.
-    
+
     Move selection: argmax π(a|s) — greedy policy (no exploration).
     This is much faster than the old V(s') approach (1 forward pass vs N).
+
+    encoder_fn: ludo_cpp.encode_state_* callable. Defaults to
+    encode_state_v11 (33ch V11/V12 line). V13 passes
+    encode_state_v14_minimal (14ch).
     """
+    if encoder_fn is None:
+        encoder_fn = ludo_cpp.encode_state_v11
     model.eval()
     available_types = bot_types or list(BOT_REGISTRY.keys())
     
@@ -112,7 +118,7 @@ def evaluate_model(model, device, num_games=200, verbose=False,
                     action = legal_moves[0]
                 else:
                     # Encode state and create legal mask
-                    state_tensor = ludo_cpp.encode_state_v11(state)
+                    state_tensor = encoder_fn(state)
                     legal_mask = np.zeros(4, dtype=np.float32)
                     for m in legal_moves:
                         legal_mask[m] = 1.0

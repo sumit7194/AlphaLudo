@@ -106,7 +106,6 @@ class MinimalCNN14(nn.Module):
         policy_logits = self.policy_fc2(p).squeeze(-1) # (B, 4)
         policy_logits = self._apply_legal_mask(policy_logits, legal_mask)
         policy = F.softmax(policy_logits, dim=1)
-
         # Value & Moves Head (Global Average Pooling)
         pooled = F.adaptive_avg_pool2d(cnn_features, 1).flatten(1) # (B, C)
 
@@ -117,6 +116,19 @@ class MinimalCNN14(nn.Module):
         moves_remaining = F.softplus(self.moves_fc2(m)).squeeze(-1)
 
         return policy, win_prob, moves_remaining
+
+    def forward_policy_only(
+        self, x: torch.Tensor, legal_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """V13 RL path: PPO sampler reads logits (pre-softmax), applies its
+        own temperature, then samples. Matches AlphaLudoV12's interface so
+        the V11 player can drive both architectures with no per-model
+        branching."""
+        cnn_features = self._cnn_backbone(x)
+        own_features = self._extract_own_token_features(x, cnn_features)
+        p = F.relu(self.policy_fc1(own_features))
+        policy_logits = self.policy_fc2(p).squeeze(-1)
+        return self._apply_legal_mask(policy_logits, legal_mask)
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

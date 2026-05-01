@@ -347,6 +347,17 @@ def main():
     parser.add_argument('--alarm', action='store_true')
 
     # V11 architecture (defaults match SL training)
+    # V13: switch model architecture from V12 (CNN+attn, 33ch) to
+    # MinimalCNN14 (10×128 deep CNN, 14ch raw input). When model-arch is
+    # 'v13_minimal', V12-specific args (num-attn-layers, num-heads,
+    # ffn-ratio, attn-dim) are ignored; defaults for num-res-blocks /
+    # num-channels are overridden to 10/128. Use --game-composition v13
+    # together with this flag to get the V13-tuned opponent mix.
+    parser.add_argument('--model-arch', default='v12',
+                        choices=['v12', 'v13_minimal'],
+                        help="Model architecture. 'v12' = AlphaLudoV12 "
+                             "(CNN+attn, 33ch encoder). 'v13_minimal' = "
+                             "MinimalCNN14 (10×128 pure CNN, 14ch raw).")
     parser.add_argument('--num-res-blocks', type=int, default=4)
     parser.add_argument('--num-channels', type=int, default=96)
     parser.add_argument('--num-attn-layers', type=int, default=2)
@@ -388,14 +399,16 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122', 'v123'],
+                        choices=['default', 'v122', 'v123', 'v13'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
                              "'v123' = historical models replace bots: "
                              "SelfPlay 67 / Hist_V10 18 / Hist_V6_3 8 / "
-                             "Hist_V6_1 4 / Hist_V6_big 3 (no Random — "
-                             "trained models all crush it, no signal).")
+                             "Hist_V6_1 4 / Hist_V6_big 3 (no Random). "
+                             "'v13' = V13-tuned mix with V12.2 as strong "
+                             "external opponent: SelfPlay 55 / Hist_V12_2 "
+                             "20 / Hist_V10 15 / Hist_V6_3 10. No bots.")
 
     # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
     parser.add_argument('--search-enabled', action='store_true',
@@ -442,21 +455,42 @@ def main():
     print(f"[V12 Train] Device: {device}")
     print(f"[V12 Train] Mode:   {MODE}")
 
-    # Build model — V12.1 architecture (V11 encoder, 33ch input)
-    model_factory = lambda: AlphaLudoV12(
-        num_res_blocks=args.num_res_blocks,
-        num_channels=args.num_channels,
-        num_attn_layers=args.num_attn_layers,
-        num_heads=args.num_heads,
-        ffn_ratio=args.ffn_ratio,
-        dropout=args.dropout,  # 0.0 for RL
-        in_channels=33,  # V12.1: V10 (28) + idle (4) + streak (1)
-    )
-    model = model_factory()
-    print(f"[V12 Train] Model: AlphaLudoV12 ({model.count_parameters():,} params)")
-    print(f"[V12 Train]   {args.num_res_blocks} ResBlocks × {args.num_channels}ch + "
-          f"{args.num_attn_layers} Attn layers × {args.num_heads} heads")
-    print(f"[V12 Train]   dropout={args.dropout} (RL must be 0.0)")
+    # Build model — V12 (CNN+attn, 33ch) or V13 (MinimalCNN14, 14ch).
+    if args.model_arch == 'v13_minimal':
+        from experiments.distillation_14ch.model_14ch import MinimalCNN14
+        # V13 defaults: 10×128 deep CNN, 14ch raw input.
+        v13_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 10
+        v13_channels = args.num_channels if args.num_channels != 96 else 128
+        model_factory = lambda: MinimalCNN14(
+            num_res_blocks=v13_blocks,
+            num_channels=v13_channels,
+            in_channels=14,
+        )
+        model = model_factory()
+        print(f"[V12 Train] Model: MinimalCNN14 (V13) "
+              f"({model.count_parameters():,} params)")
+        print(f"[V12 Train]   {v13_blocks} ResBlocks × {v13_channels}ch, "
+              f"pure CNN, 14ch raw input")
+        # Encoder for player loop + eval — 14ch raw.
+        import td_ludo_cpp as _ludo
+        encoder_fn = _ludo.encode_state_v14_minimal
+    else:
+        # V12.1 / V12.2: V11 encoder (33ch), CNN + token attention.
+        model_factory = lambda: AlphaLudoV12(
+            num_res_blocks=args.num_res_blocks,
+            num_channels=args.num_channels,
+            num_attn_layers=args.num_attn_layers,
+            num_heads=args.num_heads,
+            ffn_ratio=args.ffn_ratio,
+            dropout=args.dropout,  # 0.0 for RL
+            in_channels=33,  # V12.1: V10 (28) + idle (4) + streak (1)
+        )
+        model = model_factory()
+        print(f"[V12 Train] Model: AlphaLudoV12 ({model.count_parameters():,} params)")
+        print(f"[V12 Train]   {args.num_res_blocks} ResBlocks × {args.num_channels}ch + "
+              f"{args.num_attn_layers} Attn layers × {args.num_heads} heads")
+        print(f"[V12 Train]   dropout={args.dropout} (RL must be 0.0)")
+        encoder_fn = None  # use player default (encode_state_v11)
     model.to(device)
 
     # Trainer (V10 trainer works unchanged — same forward signature)
@@ -553,6 +587,23 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V123_MIX
         print(f"[V12 Train] Game composition: V12.3 mix → {V123_MIX}")
+    elif args.game_composition == 'v13':
+        # V13-tuned mix: V12.2 added as strong external opponent
+        # (Distill14-vs-V12.2 plays ~50/50, every game is a real test).
+        # Self-play reduced from v123's 67% → 55% to limit the
+        # over-fit-to-self failure mode V12.2 hit late in training.
+        # Bots dropped entirely (saturated, all ~50% vs each other).
+        V13_MIX = {
+            "SelfPlay":    0.55,    # main self-play + ghost
+            "Hist_V12_2":  0.20,    # strongest external (V12.2 final)
+            "Hist_V10":    0.15,    # 2nd strongest external
+            "Hist_V6_3":   0.10,    # diversity / older bonus-turn model
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V13_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V13_MIX
+        print(f"[V12 Train] Game composition: V13 mix → {V13_MIX}")
     else:
         from src.config import GAME_COMPOSITION as _gc_default
         print(f"[V12 Train] Game composition: PROD default → {_gc_default}")
@@ -574,14 +625,14 @@ def main():
 
     if args.eval_only:
         from evaluate_v11 import evaluate_model  # V12.1+: 33ch V11 encoder
-        results = evaluate_model(model, device, num_games=500, verbose=True)
+        results = evaluate_model(model, device, num_games=500, verbose=True, encoder_fn=encoder_fn)
         print(f"\nWin Rate: {results['win_rate_percent']}%")
         return
 
     if not args.no_dashboard:
         start_dashboard_server(port=args.port)
 
-    historical_opponents_enabled = (args.game_composition == 'v123')
+    historical_opponents_enabled = args.game_composition in ('v123', 'v13')
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
         model_factory=model_factory,
@@ -590,6 +641,7 @@ def main():
         search_target_fraction=args.search_target_fraction,
         search_label_smoothing=args.search_label_smoothing,
         historical_opponents_enabled=historical_opponents_enabled,
+        encoder_fn=encoder_fn,
     )
     _player = player
 
@@ -752,7 +804,7 @@ def main():
                 print(f"\n--- Evaluation ({EVAL_GAMES} games) ---")
                 from evaluate_v11 import evaluate_model  # V12.1+: 33ch V11 encoder
 
-                eval_results = evaluate_model(model, device, num_games=EVAL_GAMES, verbose=False)
+                eval_results = evaluate_model(model, device, num_games=EVAL_GAMES, verbose=False, encoder_fn=encoder_fn)
                 eval_wr = eval_results['win_rate']
                 print(f"--- Eval Win Rate: {eval_results['win_rate_percent']}% ---\n")
 
