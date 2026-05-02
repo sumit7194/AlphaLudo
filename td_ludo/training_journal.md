@@ -2427,3 +2427,137 @@ search?) and can be run as a follow-up.
 **Status:** code on `claude/new-session-83Q8f` at `3f59b12`, pushed.
 Sandbox-validated. Awaiting decision on when to switch GCP run from
 baseline V12.2 to search-during-training V12.2.
+
+---
+
+## Exp 27 — Encoder Symmetry Bug Discovery + Distill14 v2 + Aux Trajectory (2026-05-01/02)
+
+### Discovery: BASE_COORDS mirror-flip bug (silent since V6)
+
+Caught while playing V12.2 on the play server: AI as P2 always picked T3
+first when rolling 6 with all tokens at base. Pre-search V12.2 was
+expected to prefer T0 (which it does as P0). Investigation traced through
+behavioral test → encoder tensor diff → `BASE_COORDS` in `src/game.cpp`.
+
+`BASE_COORDS[player][token][r,c]` was assigned in natural reading order
+within each player's base (TL, TR, BL, BR). After the per-player rotation
+`k = current_player` applied by `write_tensor_val`, the slot↔cell mapping
+within the base region was mirror-flipped between players:
+
+| Player | T0 lands at canonical | T1 | T2 | T3 |
+|---|---|---|---|---|
+| P0 | (2,2) TL | (2,3) TR | (3,2) BL | (3,3) BR |
+| P2 | (3,3) BR | (3,2) BL | (2,3) TR | **(2,2) TL** |
+
+Model learned a spatial-cell preference (e.g. "spawn TL token first") which
+manifested as **T0 for P0, T3 for P2**. Same learned policy, flipped slot
+labels by seat.
+
+**Affects every model since V6** that shares `BASE_COORDS` (V6.x, V10, V11,
+V12, V12.2, Distill14/V13). Each model effectively saw two mirror-flipped
+representations of every state — ~halving training capacity for state
+patterns that depend on base.
+
+### Validation (87/87 tests post-fix)
+
+`/tmp/encoder_symmetry_validation.py`: 87 tests covering all-at-base,
+single-on-track, home-stretch, opp-on-track, capture, danger, mixed states,
+edge cases. All 87 fail pre-fix (sum_diff > 7.0 each). All 87 pass post-fix
+(sum_diff exactly 0). See `encoder_symmetry_bug_discovery.md` for the
+complete write-up.
+
+### Fix (commit `1ff249f`)
+
+Reorder `BASE_COORDS` for P1/P2/P3 so post-rotation slot t lands at the
+same canonical cell as P0's slot t. One source-file change, all encoders
+fixed in one shot via shared constant.
+
+### Inference impact (V12.2 weights, fixed encoder, NOT retrained)
+
+| | Buggy enc native | Fixed enc | Δ |
+|---|---|---|---|
+| V12.2 vs deterministic-5 bot avg | 79.1% | 77.7% | −1.4 |
+| V12.2 vs all-6 bot avg | 81.5% | 80.7% | −0.8 |
+
+Mild degradation as expected — weights were tuned for the buggy input
+distribution. Per-bot variance is large (±5pp), the avg shift is small.
+**The fix is structural correctness, not a free inference unlock.**
+
+### Distill14 v2: re-distill from PRE-search V12.2 + fixed encoder
+
+New script: `experiments/distillation_14ch/train_distillation_v2.py`.
+
+Differences from v1:
+- Teacher: pre-search V12.2 (pre-Exp24, hash `08847742...`) instead of
+  post-search teacher
+- Encoder: post-fix (each pattern learned once instead of two flipped reps)
+- Output: `experiments/distillation_14ch/v2/`
+- Initial random-init checkpoint saved before training so we never lose a run
+
+5M state target, 1024 batch, lr 1e-3, ~2.5 hours on Mac MPS.
+
+### v2 vs v1 results (vs bots, 500 games each, seat-balanced)
+
+Apples-to-apples comparison (both measured on FIXED encoder):
+
+| Bot | v1 buggy enc | v1 fixed enc | v2 fixed enc | Δ buggy→fixed | Δ v2−v1 (both fixed) |
+|---|---|---|---|---|---|
+| Expert | 76.2% | 75.8% | 74.6% | −0.4 | −1.2 |
+| Heuristic | 74.2% | 77.2% | 71.8% | +3.0 | −5.4 |
+| Aggressive | 77.8% | 76.6% | 75.6% | −1.2 | −1.0 |
+| Defensive | 76.0% | 72.6% | 76.8% | −3.4 | +4.2 |
+| Racing | 79.6% | 78.0% | 77.2% | −1.6 | −0.8 |
+| Random | 93.0% | 95.6% | 92.6% | +2.6 | −3.0 |
+| **Avg det-5** | **76.8%** | **76.0%** | **75.2%** | **−0.7** | **−0.8** |
+
+**v1 vs v2 H2H, 1000 games seat-balanced:** Distill14 v1 = 49.9%,
+Distill14 v2 = 50.1%. **Statistically tied** (95% CI 46.8–53.0%).
+
+### Findings
+
+1. **Encoder fix is correct but doesn't unlock SL improvement.** v1 weights
+   robust to encoder swap (~1pp degradation). v2 trained from scratch with
+   fixed encoder = same strength as v1.
+2. **Pre-search vs post-search teacher: identical at SL level.** The
+   T2/T3 search artifact bias in post-search V12.2 transferred to v1's
+   policy distribution but didn't measurably affect WR.
+3. **The promised "free training-capacity unlock" did NOT materialize at
+   SL distillation.** The duplicate-pattern hypothesis (each pattern
+   learned twice) appears irrelevant for SL — the redundant work just
+   produces the same answer twice, not interfering.
+4. **Per-seat behavioral consistency IS now perfect.** Trace tests show
+   V12.2 picks T0 with 0.981 prob both as P0 and as P2 (was T0 0.475 / T3
+   0.466 pre-fix). This is the structural correctness benefit.
+
+### Aux trajectory: opp-turn states for value-head training (commit `afc8aa0`)
+
+Post encoder-fix, opp-turn states are safely usable for the value head
+(canonical view is consistent across players). PPO policy gradient still
+gated to model_player turns (off-policy actions from bots break IS ratio).
+
+Implementation:
+- `VectorACGamePlayer.aux_trajectories` per game; captured in bot/hist
+  branches when `cp ∉ train_players`
+- Plumbed to `trainer.train_on_game(...aux_trajectory=...)` at game-end
+- `_aux_buffer` + `aux_value_loss_coeff=0.5` in trainer
+- In `_ppo_update`, additional value-only loss term:
+  - Base trainer: `smooth_L1(V(s), z)` where z is discounted return from
+    cp's POV
+  - V10 trainer: `BCE(win_prob, won_target)` using same head as main BCE
+
+Patched both `trainer.py` and `trainer_v10.py` (used by V13 RL via
+train_v12.py). One bugfix on top: `view(-1)` instead of `squeeze(-1)`
+on aux_value to handle batch=1 case where squeeze produces a 0-dim
+scalar that mismatches the 1-element target.
+
+### V13 RL relaunch (in progress)
+
+Run: `ac_v13_v2`. Seeded from Distill14 v2 final ckpt. Composition:
+`v122` mix (75/15/5/3/2 SelfPlay/Expert/Heuristic/Aggressive/Defensive).
+LR 1e-5. EVAL_INTERVAL 10K, EVAL_GAMES 2K. Aux trajectory ON.
+Search OFF. Local Mac MPS for now (~30 GPM warm-up); will move to VM.
+
+First eval lands at G=10K. Test hypothesis: does the encoder fix +
+aux trajectory help V13 stay near its SL strength under PPO drift?
+v1 dropped from 79% → 43% greedy in 35K games on the buggy encoder
+without aux loss; v2 with fixes will be the test.

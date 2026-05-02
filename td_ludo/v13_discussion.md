@@ -232,3 +232,182 @@ Three outcome scenarios after 200K games:
 3. **V12.2 plateau at 83%:** if V13 distills from V12.2, it inherits this ceiling. Unrelated to V13's defects but bounds the experiment.
 4. **Danger blindness (linear probe at baseline):** V12.2 still has it despite Ch 21 graded danger fix in V11. Not encoder-related — architectural.
 5. **Value head miscalibration on real states:** V12.2's `eventual_win` probe drops from 78% (random states) to 68% (self-play states). The value head is least accurate exactly when it matters most.
+
+---
+
+## Update — Encoder fix discovered + Distill14 v2 trained (2026-05-02)
+
+**The user-noticed "T3 fixation when V12.2 plays as P2" turned out to be an
+encoder bug, not a learned policy bias.** `BASE_COORDS` in `src/game.cpp`
+assigned slot↔cell mappings within each player's base in natural reading
+order, but after the per-player rotation the mapping was mirror-flipped
+between P0 and P2. The model learned a spatial-cell preference that
+manifested as different slot indices per seat. Fix: reorder `BASE_COORDS`
+for P1/P2/P3 so post-rotation slot t lands at canonical cell t for all
+players. 87/87 symmetry tests pass post-fix. See
+`encoder_symmetry_bug_discovery.md`.
+
+This affects all models since V6 — every model trained learned each
+state pattern twice (in two mirror-flipped representations). At SL it
+turns out this didn't measurably hurt performance. At RL it might be
+more impactful (PPO drift compounds).
+
+**Distill14 v2** was trained from PRE-search V12.2 + fixed encoder. v2 vs
+v1 head-to-head 1000 games seat-balanced: **49.9% vs 50.1%** — statistically
+tied. v2's main benefit is per-seat behavioral consistency (V12.2 now
+picks T0 with 0.981 prob both as P0 and as P2 — verified) and clean
+foundation for downstream RL.
+
+**Aux trajectory** added in commit `afc8aa0`: opp-turn states are now
+captured for value-head training (PPO policy gradient still gated to
+model_player to preserve on-policy assumption). Should help V13's value
+head differentiate states better — main hypothesis for why V13 RL drifts.
+
+### Updated V13.1 plan
+
+Revised in light of the above:
+
+1. Use Distill14 v2 as starting weights (not v1) — same strength, cleaner
+   per-seat behavior, lives in `experiments/distillation_14ch/v2/`
+2. Encoder fix is in place automatically
+3. Aux trajectory is on by default
+4. Per-token shared MLP policy head — STILL planned. V13's MinimalCNN14
+   uses a different policy-head structure; need to verify what symmetry
+   properties it has post-encoder-fix.
+5. Auxiliary `can_capture`/`leading_token_in_danger` side-task losses —
+   STILL planned, helps maintain dynamic-feature derivations under RL.
+6. Currently launched: `ac_v13_v2` run with v2 weights + v122 mix + aux
+   trajectory. Per-token head NOT yet added.
+
+### Hypothesis being tested by `ac_v13_v2`
+
+If the encoder fix + aux trajectory alone are enough to keep V13 from
+collapsing under PPO, we'll see eval WR stay ≥75% over the first ~50K
+games. If it still drops as before (35K games to ~43%), then the
+remaining V13.1 ingredients (per-token head, side-task aux losses) become
+necessary.
+
+---
+
+## Path forward — early-signal observations + 3-pronged plan (2026-05-02 evening)
+
+### Early signal from local `ac_v13_v2` training (G≈6K)
+
+After the encoder fix + aux trajectory + LR=1e-5 + Distill14 v2 SL prior:
+
+| Metric | v1 RL run (pre-fixes) | v2 RL run (current) | Verdict |
+|---|---|---|---|
+| `clip_fraction` at G=5K | 0.30 | **0.07** | 4-5× healthier — PPO no longer fighting itself |
+| `approx_kl` at G=5K | 0.08 | **0.009** | ~9× healthier — updates within trust region |
+| `avg_advantage` | ≈ 0 | small but non-zero | value head differentiating states |
+| `policy_entropy` | collapsing 0.49 | stable 0.33 | exploration preserved |
+
+**The structural fixes are working.** First eval at G=10K will be the
+first real bot-WR signal. If v2 holds ≥75% there (matches Distill14 SL),
+we have empirical evidence the encoder-fix + aux-trajectory hypothesis
+was correct and minimal-architecture RL is viable. **We're shifting to VM
+GPU when free.**
+
+### Live-play disagreement archive
+
+Aggregated 406 decisions across 8 sessions (script:
+`scripts/analyze_disagreements.py`). 111 raw disagreements → **101 real**
+after dropping 10 same-cell-stack interchangeables. Top-30 sorted by
+`interest_score = max(v12_policy) × KL(v12 ‖ human)` are in
+`play/decision_logs/disagreements_summary.md`. Striking patterns:
+
+- Most top disagreements have V12.2 at 100% confidence, human at ~0% —
+  V12.2's policy is highly peaked, so disagreements are stark
+- Spawn-order (dice=6 with multiple at base) shows up frequently
+- End-game closure with 3+ advanced tokens — V12.2 favors latest-spawned
+  progress; could be sub-optimal closure
+- Capture-vs-strategic disagreements consistent with the
+  capture-obsession hypothesis from mech-interp (Ch 22 KL=1.67 in capture
+  states)
+
+These 101 disagreements are the **gold mine** for next-stage training
+data (see plan #2 below).
+
+---
+
+### Three forward-looking directions
+
+#### 1. V12.3 = V12.2 + targeted engineered channels, then redistill V13
+
+Mech-interp identified specific defects V12.2 still has despite Ch 21
+graded-danger fix:
+- `leading_token_in_danger` linear probe at baseline (97.1% = majority class)
+- `closest_token_to_home` probe at 60% (vs 28% baseline — only marginal)
+
+Add 1-2 engineered channels that directly encode these:
+- **Ch 33 candidate**: `is_leading_in_danger` (1.0 if any opp can
+  capture the most-advanced own token next turn)
+- **Ch 34 candidate**: `closest_to_home_marker` (1.0 at the cell of
+  whichever own token is furthest along)
+
+Hypothesis: V12.3 should marginally beat V12.2 (maybe 84-86% vs the 83%
+plateau). Then redistill V13 v3 from V12.3. The engineered-bot framing
+remains, but the resulting V13 student inherits cleaner labels for these
+specific failure modes.
+
+#### 2. Synthetic RLHF data from gameplay-disagreement archive
+
+The 101 real disagreements in `disagreements_real.jsonl` each capture:
+- A specific game state
+- V12.2's policy distribution
+- The human's pick (which differs from V12.2's argmax)
+- Implicit preference signal: human believes V12.2's pick is wrong
+  in this state
+
+Idea: use these as preference pairs for RLHF-style fine-tuning. Generate
+synthetic similar states with controlled perturbations, attach desired
+probability distributions (shifted toward human's pick or some target
+distribution), and fine-tune V13 against those targets. The "desired mix
+to achieve desired probability" framing means we're not just imitating
+the human pick — we're targeting a specific policy shape that captures
+the user's strategic intuition.
+
+Practical pipeline sketch:
+- Take each disagreement as seed
+- Generate N variants (small token-position perturbations,
+  slot-permutations) that preserve the strategic situation
+- For each, compute a target policy: blend of human's preference (peak
+  at human pick) and V12.2's confidence on the genuinely-good moves
+- Add these as auxiliary supervised signal during V13 RL or as a
+  separate fine-tune pass
+
+Risk: 101 disagreements isn't a lot. Need to verify the synthetic
+expansion actually generalizes and doesn't just memorize the seed states.
+
+#### 3. Smarter search
+
+Current Exp 24 search is naive depth-1 expectimax with uniform dice
+prior, no pruning, fixed sample count. Improvements available:
+- **Variable depth** based on state criticality (deeper search when
+  near-capture or near-home)
+- **Better dice priors** that account for opponent's likely next roll
+  outcomes
+- **Pruning** of obviously dominated moves before search dispatch
+- **Caching** repeated subtree evaluations across the batch
+- **Selective deepening** on the most-uncertain decisions (high-entropy
+  policy outputs trigger deeper search)
+- **Async search** that runs in parallel to inference rather than blocking
+
+Pushing search efficiency 3-5× would let us run search-augmented training
+without the throughput cliff (V12.2 search cut GPM 244→70). Might also
+enable stronger play in the live game server.
+
+Defer concrete plan until V13.1 RL results are in — search is most
+valuable when policy is good enough to act on richer search signal.
+
+---
+
+### Immediate next steps
+
+1. Wait for VM to free, shift `ac_v13_v2` training there (10× speedup)
+2. Watch first eval at G=10K — does v2 hold ≥75%?
+3. If yes → continue, target G=100K for plateau-or-improve verdict
+4. If no → diagnose which of the structural assumptions failed
+5. In parallel: design V12.3 channel additions (~2 channels max, focused
+   on the danger-blindness probe failure)
+6. After V12.3 done: redistill V13 v3 from V12.3 → second round of RL test
