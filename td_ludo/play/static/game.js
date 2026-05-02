@@ -370,6 +370,7 @@ async function newGame() {
     document.getElementById('dice').classList.remove('disabled');
     document.getElementById('messageArea').textContent = '';
     document.getElementById('aiProbs').textContent = '';
+    renderHumanProbsPanel(null);
     document.getElementById('logEntries').innerHTML = '';
     
     renderState();
@@ -413,6 +414,7 @@ async function rollDice() {
     // token. Cleared whenever the human commits a move.
     modelPick = (typeof data.model_pick === 'number') ? data.model_pick : null;
     modelPolicy = Array.isArray(data.model_policy) ? data.model_policy : null;
+    renderHumanProbsPanel(data.model_policy, data.model_pick, data.legal_moves);
     
     // Wait for animation
     await sleep(500);
@@ -481,6 +483,7 @@ async function selectToken(tokenIndex) {
     const v12Pick = modelPick;
     modelPick = null;
     modelPolicy = null;
+    renderHumanProbsPanel(null);   // hide the panel after the human commits
 
     const res = await fetch('/api/move', {
         method: 'POST',
@@ -689,6 +692,32 @@ function renderState() {
     updateTurnIndicator();
     updateStatusPills();
     updateWinChance();
+}
+
+function renderHumanProbsPanel(policy, pick, legal) {
+    // Render V12.2's predicted distribution for the HUMAN's current decision.
+    // Mirrors aiProbs styling so it reads the same. Pass null/undefined to hide.
+    const wrapper = document.getElementById('humanProbsWrapper');
+    const div = document.getElementById('humanProbs');
+    if (!wrapper || !div) return;
+    if (!Array.isArray(policy)) {
+        wrapper.style.display = 'none';
+        div.innerHTML = '';
+        return;
+    }
+    const legalSet = new Set(Array.isArray(legal) ? legal : [0, 1, 2, 3]);
+    div.innerHTML = policy.map((p, i) => {
+        const pct = (p * 100).toFixed(1);
+        const isPick = (i === pick);
+        const isIllegal = !legalSet.has(i);
+        const cls = isPick ? 'chosen' : (isIllegal ? 'illegal' : '');
+        return `<div class="prob-row ${cls}">
+            <span class="prob-label">T${i}${isPick ? '✓' : ''}</span>
+            <span class="prob-bar"><span class="prob-fill" style="width:${pct}%"></span></span>
+            <span class="prob-pct">${pct}%</span>
+        </div>`;
+    }).join('');
+    wrapper.style.display = '';
 }
 
 function updateWinChance() {
