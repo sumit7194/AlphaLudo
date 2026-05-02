@@ -658,7 +658,7 @@ def main():
     if not args.no_dashboard:
         start_dashboard_server(port=args.port)
 
-    historical_opponents_enabled = args.game_composition in ('v123', 'v13')
+    historical_opponents_enabled = args.game_composition in ('v123', 'v13', 'v122_hist')
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
         model_factory=model_factory,
