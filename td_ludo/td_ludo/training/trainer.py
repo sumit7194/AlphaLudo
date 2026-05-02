@@ -339,7 +339,9 @@ class ActorCriticTrainer:
                     # Permissive mask (value head ignores it but model API needs one).
                     aux_masks = torch.ones((aux_mb, 4), dtype=torch.float32, device=self.device)
                     _, aux_value = self.model(aux_states, aux_masks)
-                    aux_value = aux_value.squeeze(-1)
+                    # view(-1) instead of squeeze(-1) to handle batch=1 case
+                    # without collapsing to scalar (would mismatch returns shape).
+                    aux_value = aux_value.view(-1)
                     aux_value_loss = F.smooth_l1_loss(aux_value, aux_returns)
                     aux_value_loss_val = aux_value_loss.item()
                 else:
