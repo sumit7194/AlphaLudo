@@ -398,10 +398,14 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122', 'v123', 'v13'],
+                        choices=['default', 'v122', 'v122_hist', 'v123', 'v13'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
+                             "'v122_hist' = v122 + 15% historical mix: "
+                             "SelfPlay 60 / Expert 15 / Heuristic 5 / "
+                             "Aggressive 3 / Defensive 2 / Hist_V12_2 5 / "
+                             "Hist_V10 5 / Hist_V6_3 3 / Hist_V6_1 2. "
                              "'v123' = historical models replace bots: "
                              "SelfPlay 67 / Hist_V10 18 / Hist_V6_3 8 / "
                              "Hist_V6_1 4 / Hist_V6_big 3 (no Random). "
@@ -586,6 +590,29 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V123_MIX
         print(f"[V12 Train] Game composition: V12.3 mix → {V123_MIX}")
+    elif args.game_composition == 'v122_hist':
+        # v122 mix + small dose of historical opponents.
+        # Bots stay (V13 trains well against them), small hist exposure
+        # gives "stronger-than-bot" gradient signal. Hist_V12_2 included
+        # for ceiling reference (~peer to V13). Hist_V10/V6_3/V6_1 give
+        # "should-be-winning" gradient (V13 ≥ V10 ≥ V6_3 ≥ V6_1 in
+        # tournament data: 56.9 / 49.0 / 44.5 / 40.9 % aggregate WR).
+        V122_HIST_MIX = {
+            "SelfPlay":    0.60,
+            "Expert":      0.15,
+            "Heuristic":   0.05,
+            "Aggressive":  0.03,
+            "Defensive":   0.02,
+            "Hist_V12_2":  0.05,
+            "Hist_V10":    0.05,
+            "Hist_V6_3":   0.03,
+            "Hist_V6_1":   0.02,
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V122_HIST_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V122_HIST_MIX
+        print(f"[V12 Train] Game composition: V12.2 + hist mix → {V122_HIST_MIX}")
     elif args.game_composition == 'v13':
         # V13-tuned mix: V12.2 added as strong external opponent
         # (Distill14-vs-V12.2 plays ~50/50, every game is a real test).
