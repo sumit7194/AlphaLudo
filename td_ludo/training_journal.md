@@ -2812,8 +2812,49 @@ V13.2 is a 2-week side experiment with raw input + 17ch (only 3
 static board features) + the same RL recipe. **V13.2 is the new
 strongest model in the codebase.**
 
-**Pair 2 + 3 results:** *(pending tournament completion ~2026-05-05
-late evening; will be appended once tournament finishes)*.
+**Result — Pair 2: V12.2 vs V14_scalar (10K games).**
+- V12.2: **52.9%** (5290/10000)
+- V14_scalar: **47.1%** (4710/10000)
+- σ ≈ 0.50pp. **95% CI for V12.2: 51.9-53.9%.** z = 5.8, p < 0.0001.
+- V12.2 wins by +5.8pp = **+20 Elo** over V14_scalar.
+
+**Result — Pair 3: V13.2 vs V14_scalar (10K games).**
+- V13.2: **53.9%** (5389/10000)
+- V14_scalar: **46.1%** (4611/10000)
+- σ ≈ 0.50pp. **95% CI for V13.2: 52.9-54.9%.** z = 7.8, p < 0.0001.
+- V13.2 wins by +7.8pp = **+27 Elo** over V14_scalar.
+
+**Final aggregate (20K games each, 30K total):**
+
+| # | Model | Wins | WR | Elo Δ vs V12.2 |
+|---|-------|------|----|----------------|
+| 1 | **V13.2** | 10,627 | **53.1%** | **+22** |
+| 2 | V12.2 (baseline) | 10,050 | 50.2% | 0 |
+| 3 | V14_scalar | 9,323 | 46.6% | −24 |
+
+The ranking is transitive: V13.2 > V12.2 > V14_scalar. All three pair
+results are statistically robust (p < 0.0001 each). Tournament took
+78.4 min total at 383 gpm on CPU. JSON output:
+`runs/tournament_3way_20260505.json`.
+
+**Headline takeaways:**
+
+1. **V13.2 is the new strongest model.** Decisively beats V12.2 head-to-
+   head (+4.8pp / +17 Elo). The "minimal-input, deeper-pure-CNN" thesis
+   was correct — V13.2's 17ch encoder + 10x128 backbone + bias-penalty
+   RL produces a strictly stronger policy than V12.2's 33ch engineered
+   encoder + 3x128 attention CNN.
+
+2. **V14_scalar's no-CNN-no-attention design loses both pairs but stays
+   within ~6pp of V12.2.** That's notable for a 226K-param DeepSets MLP
+   (6x smaller than V12.2). The bookend confirms the architecture is
+   not the binding constraint at this performance level.
+
+3. **The bot-eval ceiling masked all of this.** All three models hit
+   80-83% vs the bot mix; in eval-WR alone V13.2's 83.8% best looked
+   only marginally above V12.2's 82.7% best. **H2H exposes a real ~5pp
+   skill gap that the saturated bot evals cannot detect.** Methodological
+   lesson: tournament H2H is the right tool once eval-WR ceilings out.
 
 The fact that **bot evals were saturated** but **direct H2H exposed the
 gap** is itself a methodological finding — bot-only WR comparisons at

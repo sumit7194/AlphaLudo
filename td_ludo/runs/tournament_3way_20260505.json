@@ -1,0 +1,84 @@
+{
+  "meta": {
+    "games_per_pair": 10000,
+    "seed": 42,
+    "competitors": [
+      "V12_2",
+      "V13_2",
+      "V14_scalar"
+    ],
+    "elapsed_min": 78.39,
+    "total_games": 30000
+  },
+  "pairs": [
+    {
+      "a": "V12_2",
+      "b": "V13_2",
+      "n_games": 10000,
+      "a_wins": 4762,
+      "b_wins": 5238,
+      "draws": 0,
+      "a_wr_pct": 47.620000000000005,
+      "b_wr_pct": 52.38,
+      "avg_length": 158.6897,
+      "seat_a_p0": [
+        2407,
+        5000
+      ],
+      "seat_a_p2": [
+        2355,
+        5000
+      ],
+      "pair": [
+        "V12_2",
+        "V13_2"
+      ]
+    },
+    {
+      "a": "V12_2",
+      "b": "V14_scalar",
+      "n_games": 10000,
+      "a_wins": 5288,
+      "b_wins": 4712,
+      "draws": 0,
+      "a_wr_pct": 52.88,
+      "b_wr_pct": 47.12,
+      "avg_length": 158.6047,
+      "seat_a_p0": [
+        2681,
+        5000
+      ],
+      "seat_a_p2": [
+        2607,
+        5000
+      ],
+      "pair": [
+        "V12_2",
+        "V14_scalar"
+      ]
+    },
+    {
+      "a": "V13_2",
+      "b": "V14_scalar",
+      "n_games": 10000,
+      "a_wins": 5389,
+      "b_wins": 4611,
+      "draws": 0,
+      "a_wr_pct": 53.89000000000001,
+      "b_wr_pct": 46.11,
+      "avg_length": 158.1224,
+      "seat_a_p0": [
+        2711,
+        5000
+      ],
+      "seat_a_p2": [
+        2678,
+        5000
+      ],
+      "pair": [
+        "V13_2",
+        "V14_scalar"
+      ]
+    }
+  ]
+}
