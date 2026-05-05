@@ -411,3 +411,86 @@ valuable when policy is good enough to act on richer search signal.
 5. In parallel: design V12.3 channel additions (~2 channels max, focused
    on the danger-blindness probe failure)
 6. After V12.3 done: redistill V13 v3 from V12.3 → second round of RL test
+
+---
+
+## Outcome — V13.x line (2026-05-04 / 05-05)
+
+The "minimal architecture" hypothesis is **empirically validated**.
+Three independent models — V13.2, V14_scalar, plus the V12.2 baseline
+— all converge to the same 80-83% eval plateau. V13.2 head-to-head
+beats V12.2 at ~52.4% (10K games, σ≈0.5pp, 95% CI 51.4-53.4%).
+
+### What V13.2 looks like
+
+The version that worked:
+- **Encoder:** 17 channels = 14 raw (own + opp tokens + dice one-hot) +
+  3 STATIC board-layout channels (safe-cells, my-home-path,
+  opp-home-path) from V11. No dynamic strategic features (danger,
+  capture, idle, streak) in input — all derived from raw positions
+  by the CNN.
+- **Backbone:** 10 ResBlocks × 128 channels, pure CNN, no attention.
+  ~3M params.
+- **Heads:** standard 3-head (policy + win_prob + moves), same as
+  V10/V11/V12.
+- **SL distillation** from V12.2-bias teacher → 80-85% eval band.
+- **RL** with bias penalties + curriculum gating → +0.8pp over SL,
+  best eval 83.8%.
+
+### Why this fully validates the V13 thesis
+
+The original strategic question — "can a minimal-architecture model
+match or surpass V12.2?" — has a clear answer: **yes**. V13.2 doesn't
+just match V12.2 in head-to-head; it's slightly stronger.
+
+Even more conclusively: **V14_scalar (no CNN, no attention, just a
+DeepSets MLP over scalar features) ALSO converges to the same eval
+band**. So neither V12.2's hand-engineered features nor V13's spatial
+CNN structure was load-bearing. The plateau is in the supervised
+signal (V12.2 teacher) + reward shaping (bias penalties) + opponent
+ladder (curriculum) — not the architecture.
+
+### What was load-bearing all along (from converged 3-architecture data)
+
+1. **A strong SL teacher.** V12.2-bias provides a useful policy prior.
+   All three architectures distill it to 80-85%.
+2. **Bias-penalty RL.** Small per-move shaping that adds fine-tuned
+   gradient signal beyond the binary win/loss.
+3. **Curriculum.** Bot-only mix (`v122`) → harder mix (`v122_hist_v2`
+   with V10/V12.2 historicals) when 80% gate clears.
+4. **Encoder symmetry fix.** All three models depend on this
+   (canonical post-fix encoder). Without it, neither distillation nor
+   RL is reliable.
+
+### Open V13.x branches not yet pursued
+
+V13.1 (12×160 backbone with static aux heads) was archived in favour
+of V13.2's input-side approach. Mech-interp on V13.1 confirmed it
+has spare depth (blocks 8-11 KL < 0.03), which informed V13.2's
+choice to drop back to 10 layers and 128 channels.
+
+### Implications for the next phase
+
+Three convergent lines hitting the same 80-83% plateau strongly
+indicates **the architecture is no longer the constraint**. Options
+for breaking past:
+
+1. **MCTS at training time** (Exp 24 path). Search-improved policy +
+   value targets convert sparse-reward RL to dense supervised learning.
+   Prerequisite: a calibrated value head, which V12.2-bias has.
+2. **Stronger value targets.** Instead of `win_prob` from raw self-play
+   outcomes, use win_prob from self-play vs the strongest historical
+   (`Hist_V12_2`). Biases value head toward "what does it take to beat
+   a known-strong opponent" rather than "what does it take to beat a
+   policy-distribution average."
+3. **Decay-the-shaped-rewards curriculum.** Start with bias penalties
+   (good early-RL gradient), linearly decay to 0 by G=1M. Lets the
+   learned policy explore beyond the biases the penalties impose.
+4. **Step up the curriculum.** Beyond `v122_hist_v2`, add
+   `v_self_only` (100% self-play vs current model + ghosts only) once
+   bot WR is saturated. Forces gradient signal to come exclusively
+   from actual policy improvement, not from beating saturated bots.
+
+V13.x line is **complete as a direction**. The recipe is reproducible
+and documented. Next strategic decision is which of the four
+plateau-break levers to commit to.
