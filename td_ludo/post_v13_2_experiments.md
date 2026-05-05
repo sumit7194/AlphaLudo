@@ -340,3 +340,348 @@ should be either:
 The MODEL_HISTORY.md and training_journal.md remain the long-form
 records of what was actually done. This file is the forward-looking
 plan.
+
+---
+
+# Locked-in plan (2026-05-06 decisions)
+
+The above sections are the strategic rationale. This section is the
+**actionable spec** with every design choice committed, post planning
+session.
+
+## Audit of existing C++ MCTS code (`src/mcts.cpp/h`, ~518 LOC)
+
+Reviewed in detail before deciding to use it. Concept is correct
+(chance-node averaging, adversarial perspective flip in UCB, Dirichlet
+noise, virtual loss for parallelism). But found **4 specific bugs that
+would have killed previous MCTS attempts**:
+
+1. **Hardcoded V6.1 24-channel encoder in `get_leaf_tensors`** (lines
+   397, 414): `write_state_tensor_v6` is called with a hardcoded 24×15×15
+   leaf tensor size. Fatal for V13.2 (needs 17ch) and wrong for V12.2
+   (needs 33ch). The MCTS engine produces wrong inputs to the value
+   head regardless of which model is loaded.
+2. **Chance-node value averaging weights by visited children only**, not
+   by true 1/6 over all dice outcomes. Biased estimate when not all 6
+   dice values have been explored at a chance node.
+3. **Ambiguous policy input format.** Comment says "Already a
+   probability, don't exp()!" implying it expects softmaxed probs from
+   the network. Bug-prone — if a caller passes logits, search returns
+   garbage.
+4. **6-roll bonus turn handling unclear.** When dice == 6 in Ludo, the
+   same player gets another turn (`current_player` doesn't change
+   across `apply_move`). The perspective-flip logic checks parent vs
+   child `current_player`, which is correct for that case (no flip),
+   but the chance-node trigger checks `current_dice_roll == 0`,
+   assuming that means "next roll needed" — the state-machine
+   assumption is fragile.
+
+**Decision: ignore the existing C++ MCTS, write fresh Python code.**
+
+Reasons:
+- These bugs explain why prior MCTS experiments (Exp 9, 13c, 17b) all
+  failed without obvious root cause.
+- We are not speed-constrained (VM has L4 GPU, training time per game
+  isn't the bottleneck for first MCTS RL run).
+- Python MCTS with proper batched inference and `VectorGameState` for
+  parallel games is fast enough to run 100K games in 2 weeks on the L4.
+- A correct Python reference implementation is the prerequisite for
+  any future C++ port (Step 2.5, optional, only if results justify
+  production-grade speed).
+
+The existing C++ MCTS stays in the tree as historical record.
+
+## Device assignments
+
+| Workload | Device | Why |
+|----------|--------|-----|
+| Code development + tests | Local Mac (MPS / CPU) | Fast iteration |
+| Step 0 calibration audit | VM (L4 GPU) | Vectorized 200-game-batch inference; ~5-15 min on L4 vs ~30 min serial on Mac CPU |
+| Step 1 search-data generation | VM (L4 GPU) | 96 V-evals per state batched into one forward → 96M total for 1M states; needs GPU |
+| Step 1 SL distillation | VM (L4 GPU) | Standard SL training |
+| Step 1 H2H tournament | Local Mac CPU | Tournament code is single-game (batch=1 inference); CPU beats GPU due to kernel-launch overhead |
+| Step 2 MCTS RL | VM (L4 GPU) | Massive batched leaf inference per simulation |
+| Step 2 H2H tournament | Local Mac CPU | Same reason as Step 1 H2H |
+| Step 2.5 C++ port (optional) | Local for dev, VM for run | Standard C++ workflow |
+
+**Latest over best:** all model references in this plan use V13.2's
+`model_latest.pt` (most recent training step), not `model_best.pt`
+(highest eval-WR snapshot). Operational reality is we ship latest.
+
+## Step 0 — Calibration audit (locked spec)
+
+**Subject:** V13.2 `model_latest.pt` pulled from VM after pausing the
+ongoing RL run.
+
+**Procedure:**
+- Run **5,000 self-play games** of V13.2 vs V13.2 with stochastic
+  policy (`τ=1.0`, sample from softmax). Vectorized via
+  `VectorGameState(batch_size=200)`.
+- Record `(V_pred from current player POV, current_player)` at every
+  decision state. Discard the first 10 turns of each game (game-start
+  states are too easy and dominate the data).
+- Walk back from each game's outcome and label every recorded state
+  with `eventual_outcome` from the recorder's POV.
+- Bin V_pred into 10 equal-frequency deciles. Per bin:
+  - Count of samples (need ≥ 1000 per bin for tight CI)
+  - Empirical WR = `mean(eventual_outcome)`
+  - Mean V_pred
+- Compute Brier score = `mean((V_pred - outcome)²)`.
+- Compute ECE = `Σ |WR_bin - V_bin| × n_bin / N`.
+- Generate plot: empirical WR vs V_pred per bin, with `y=x` reference.
+
+**Pass criteria:**
+- ECE ≤ 5pp
+- No bin > 10pp deviation from `y=x`
+- Brier ≤ 0.20 (random-chance baseline is 0.25)
+
+**If pass:** value head is fit for MCTS use → proceed to Step 1.
+
+**If fail (ECE > 10pp or Brier > 0.22):** retrain value head only.
+Freeze backbone, train value head on 1M+ self-play states with BCE on
+outcomes. ~1-2 days. Then re-audit.
+
+**If marginal (5pp < ECE ≤ 10pp):** proceed to Step 1 with caution.
+Note in results that value-head quality is suboptimal.
+
+## Step 1 — Search-augmented distillation (locked spec)
+
+**Hypothesis:** 2-ply expectimax search produces policy improvements
+over V13.2's prior. Distilling those improvements into a fresh student
+yields a stronger model than vanilla V13.2 distillation.
+
+**Cost:** 2-3 days total wall time.
+
+### Generator (`generate_search_data.py`)
+
+- Load V13.2-latest frozen.
+- Self-play games via `VectorGameState(batch_size=200)`. V13.2 vs V13.2
+  (matches what Step 2 MCTS will explore).
+- Stochastic move selection during data collection (`τ=1.0`) so the
+  data covers diverse states.
+- At each visited state, run **2-ply expectimax** (own action → opp
+  dice → opp action → V at leaf):
+  ```
+  for own_a in legal:
+    for dice_d in 1..6:
+      apply own_a, set dice_d
+      legal_opp = get_legal_moves(state_after_own_d)
+      best_opp_q = max over opp_a [V(state_after(own_a, d, opp_a))]
+                  // opp picks max-V from opp's POV = max for opp = bad for us
+      sum += best_opp_q
+    Q[own_a] = -sum / 6  // negate because best_opp_q is opp POV
+  search_action = argmax_a Q[own_a]
+  search_value = max_a Q[own_a]
+  search_policy = softmax(Q / 0.5)  // τ=0.5 sharpens slightly
+  ```
+- Batch all leaf evaluations: 96 V-evals per state into one forward
+  pass on the L4. ~10-20 ms per state amortized.
+- Total: **1M states**.
+- Dump to parquet/npz: `(state_v17_tensor, search_policy, search_value,
+  search_action, eventual_outcome)`.
+
+### Trainer (`train_search_distill.py`)
+
+- Clone of `train_v132_sl.py`, swap teacher targets for search targets.
+- Fresh V13.2-architecture student (10×128, 17ch input).
+- Loss:
+  ```
+  α_p · KL(student.π || search_policy)
+  + α_v · MSE(student.V, search_value)
+  + α_o · BCE(student.V, eventual_outcome)
+  ```
+  with `α_p = 1.0, α_v = 0.5, α_o = 0.5` (anchors the value head to
+  terminal truth in case `search_value` is biased).
+- 5 epochs over the 1M-state buffer = 5M training steps.
+- Adam, lr 1e-3 → 1e-4 cosine. Same as V13.2 SL.
+- Output: `checkpoints/mcts_v1_step1_distill/model_latest.pt`.
+
+### Evaluation
+
+H2H tournament: distilled student vs V13.2-latest, **25K games on Mac
+CPU**, seat-balanced, greedy moves. σ ≈ 0.32pp.
+
+**Pass criteria for Step 1 (commit to Step 2):**
+- Student wins ≥ 53% (≥ +10 Elo, p < 0.001).
+
+**Marginal (51-53%):** review per-state-type breakdown. If student is
+clearly better in tactical positions but tied in early game, that's
+a pass. If wash everywhere, that's fail.
+
+**Fail (≤ 51%):** abandon MCTS hypothesis, pivot to transformer
+(temporal context as the next plateau-break lever).
+
+## Step 2 — Full MCTS RL (locked spec, executes only if Step 1 passes)
+
+### MCTS engine (`mcts_engine.py`)
+
+Fresh Python implementation. Designed for clarity and correctness, not
+for speed. Will be ported to C++ in Step 2.5 if results justify.
+
+**Algorithm:** AlphaZero-style PUCT MCTS with explicit chance nodes
+for Ludo dice. Per-move structure:
+
+1. From current state s_root, run **N=100 simulations**:
+   a. **Selection:** walk down tree from root.
+      - At an action node (player to move): pick action via PUCT:
+        ```
+        a* = argmax [Q(s,a) + c_puct · P(s,a) · √N(s) / (1 + N(s,a))]
+        ```
+      - At a chance node (dice not yet rolled): sample uniform from 6
+        children (each dice value 1-6 has equal prior probability).
+      - At a terminal node: return the win/loss outcome.
+   b. **Expansion:** when reaching an unexpanded leaf:
+      - If state.is_terminal: leaf value = +1 (current player wins) or
+        -1 (current player loses).
+      - Otherwise: query network for `(P(s, ·), V(s))`. P initializes
+        action priors. V initializes the leaf's expected value.
+      - Create children for each legal action.
+      - At chance nodes: create 6 children, one per dice value.
+   c. **Backup:** propagate leaf value up the path.
+      - Action nodes: `Q ← (N·Q + v) / (N+1); N += 1`. Flip sign when
+        crossing player boundaries.
+      - Chance nodes: average over visited children, weighted by visit
+        count of each (which converges to 1/6 each as N→∞).
+2. After N simulations, derive `π_search(a|s) = N(s_root, a) /
+   Σ_a N(s_root, a)`.
+3. Sample action from `π_search` with temperature τ.
+
+**MCTS hyperparameters (locked):**
+- N (simulations per move): **100** (start). Ramp to 200 if early
+  signal is clear and L4 has spare time. AlphaZero used 800 on chess.
+- c_puct: **1.5** (AlphaZero chess default).
+- Dirichlet noise at root: **α=0.3, ε=0.25** (AlphaZero chess
+  defaults). Mixed into root's prior `P(s_root, ·)` to encourage
+  exploration of moves the trained policy underweights.
+- Move temperature τ: **1.0 for first 30 moves of each game** (sample
+  from `π_search`), **0.001 thereafter** (effectively argmax). Standard
+  AlphaZero schedule for game-start exploration + game-end precision.
+- Chance-node behavior: **enumerate all 6 dice children**, weight backup
+  by visit count of each (asymptotically uniform).
+- 6-roll bonus turn: **same player keeps current_player flag**, no sign
+  flip in backup. Verified explicitly in unit tests.
+
+### Self-play + training loop (`train_mcts_rl.py`)
+
+- Load V13.2-latest as warm start.
+- Vectorize K=64 parallel games via `VectorGameState`.
+- For each game step:
+  - For each game in parallel: run MCTS with N=100 sims, derive
+    `π_search`, sample action with current temperature.
+  - Apply actions, advance games.
+  - Record `(state, π_search, current_player)` per move.
+- When a game terminates: walk back, label every recorded move with
+  `eventual_outcome` from that move's player POV. Add to replay buffer.
+- After every K=200 games: run training step on accumulated buffer.
+  - Loss: `α_p · KL(network.π || π_search) + α_v · BCE(network.V,
+    eventual_outcome)` with `α_p = 1.0, α_v = 1.0`. Plus L2 weight
+    decay = 1e-4.
+  - **No PPO, no bias penalties (in Phase 2).** Pure AlphaZero loss.
+  - Adam, lr 5e-5 (an order of magnitude lower than SL — small RL
+    updates).
+
+### Two-phase training
+
+**Phase 1 — Validation (~30K games, ~3-5 days on L4):**
+- MCTS + bias penalties + AlphaZero loss.
+- Goal: validate that policy diverges from V13.2's initial
+  distribution.
+- **Diagnostic:** every 5K games, measure `KL(π_search || π_v132_initial)`
+  averaged over states. If `KL ≥ 0.10`, search is finding new moves —
+  PROCEED. If `KL < 0.05` after 30K games, search isn't differentiating
+  — ABORT.
+- Eval cadence: every 5K games, 2.5K games per eval round.
+
+**Phase 2 — Pure search-driven RL (~70K games, ~10-12 days on L4):**
+- Drop bias penalties.
+- Continue MCTS + AlphaZero loss only.
+- Goal: see if pure search-improvement training breaks the V13.2
+  plateau.
+- Eval cadence: every 5K games.
+
+### Evaluation
+
+After Phase 1: H2H tournament vs V13.2-latest, 25K games. Just to
+confirm we haven't regressed.
+
+After Phase 2: H2H tournament vs V13.2-latest, 25K games on Mac CPU.
+
+**Pass criteria for Step 2 (declare MCTS the new SOTA):**
+- Final model wins ≥ +5pp / +17 Elo over V13.2-latest in 25K-game H2H
+  (p < 0.0001 at 25K).
+
+**Failure modes and responses:**
+- *KL stays below 0.05 in Phase 1:* MCTS isn't finding new moves at 100
+  sims. Either ramp to 200 sims and re-run Phase 1, or abort.
+- *KL diverges but eval WR drops below 80%:* search is finding moves
+  the value head likes but lose actual games. Value head is the
+  bottleneck. Fix value head first (Step 0 redux), retry.
+- *KL diverges, eval WR holds in Phase 1, drops in Phase 2:* bias
+  penalties were structural, MCTS doesn't replace them. Settle for
+  Phase 1's smaller plateau-break, document as such.
+- *Phase 2 finishes with student tied or worse than V13.2:* MCTS
+  doesn't break the plateau in this codebase. Definitive negative
+  result, pivot to transformer.
+
+## File layout (locked)
+
+All new code lives in `td_ludo/experiments/mcts_v1/`:
+
+```
+experiments/mcts_v1/
+├── README.md                    # operational spec, runs end-to-end
+├── calibration_audit.py         # Step 0
+├── generate_search_data.py      # Step 1 generator
+├── train_search_distill.py      # Step 1 trainer
+├── mcts_engine.py               # Step 2 — fresh Python MCTS
+├── train_mcts_rl.py             # Step 2 trainer
+├── test_mcts_engine.py          # unit tests for MCTS
+└── run_mcts_pipeline.sh         # combined runner for Step 2
+```
+
+Checkpoints:
+- Step 1 student: `checkpoints/mcts_v1_step1_distill/`
+- Step 2 model: `checkpoints/mcts_v1_step2_rl/`
+
+Logging: reuse `live_stats.json` + `training_metrics.json` pattern;
+existing dashboards work without changes.
+
+## Compute timeline (committed)
+
+| Phase | Where | Time | Cumulative |
+|-------|-------|------|-----------|
+| Code development | Mac local | 1-2 days | 1-2 days |
+| Pause + backup VM | — | 30 min | 1-2 days |
+| Step 0 calibration audit | VM | 15 min | 1-2 days |
+| Step 1 search-data generation | VM | 2-4 hrs | 1-2 days + 4 hrs |
+| Step 1 SL distillation training | VM | 2-3 hrs | 1-2 days + 7 hrs |
+| Step 1 H2H tournament | Mac CPU | 2 hrs | 2-3 days |
+| **Decision: commit to Step 2 or pivot** | — | — | 2-3 days |
+| Step 2 Phase 1 (validation, 30K games) | VM | 3-5 days | 1 week |
+| Step 2 Phase 1 H2H | Mac CPU | 2 hrs | 1 week |
+| Step 2 Phase 2 (pure RL, 70K games) | VM | 10-12 days | 2.5-3 weeks |
+| Step 2 Phase 2 H2H | Mac CPU | 2 hrs | 2.5-3 weeks |
+| **Final go/no-go on MCTS as plateau-breaker** | — | — | 2.5-3 weeks |
+
+V13.2 RL on VM stays paused for the entire 2.5-3 week window. Accepted
+as the cost of finding out whether MCTS works.
+
+## What this experiment ultimately answers
+
+One of three outcomes by end of Step 2:
+
+1. **MCTS works.** Final model beats V13.2 by ≥ +5pp. AlphaZero recipe
+   confirmed for this codebase. New strongest model. Step 2 model
+   becomes the new teacher; future SL distillations use it.
+
+2. **MCTS partially works.** Phase 1 shows policy divergence and small
+   WR lift, Phase 2 doesn't materialize. Bias penalties were
+   structural; settle for marginal gain, document.
+
+3. **MCTS doesn't work.** Definitive: search doesn't break the plateau
+   in this codebase, even with all the bug fixes in place. Pivot to
+   transformer with temporal context (Step 3 in original plan, becomes
+   the new primary).
+
+Each outcome is informative. The 3-week investment is worth it because
+the answer is otherwise unknowable.
