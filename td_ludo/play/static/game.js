@@ -49,6 +49,11 @@ let reviewedGameId = null;
 let modelPick = null;     // int 0..3, or null
 let modelPolicy = null;   // [p0, p1, p2, p3], or null
 
+// Disagree-with-AI: state for the most-recent AI move so the user can
+// tap a non-chosen prob row and flag "I'd have played that instead."
+// Cleared whenever a new AI move overwrites the panel.
+let lastAiDecision = null;  // { gameId, aiDecisionId, legal:[…], chosen, flaggedToken|null }
+
 function syncGameId(data) {
     if (data && typeof data.game_id === 'string' && data.game_id) {
         currentGameId = data.game_id;
@@ -361,6 +366,7 @@ async function newGame() {
     isProcessing = false;
     modelPick = null;
     modelPolicy = null;
+    lastAiDecision = null;
 
     // Clear UI
     document.getElementById('winModal').classList.remove('show');
@@ -370,6 +376,8 @@ async function newGame() {
     document.getElementById('dice').classList.remove('disabled');
     document.getElementById('messageArea').textContent = '';
     document.getElementById('aiProbs').textContent = '';
+    const dh = document.querySelector('.disagree-hint');
+    if (dh) dh.textContent = '';
     renderHumanProbsPanel(null);
     document.getElementById('logEntries').innerHTML = '';
     
@@ -568,23 +576,25 @@ async function doAITurn() {
     showMessage(`AI rolled ${aiRoll}`);
     await sleep(1500);  // Pause longer so user can see dice result before AI moves
     
-    // Show AI probabilities — visual prob bars per token
+    // Show AI probabilities — visual prob bars per token. Legal-but-not-
+    // chosen rows are tappable: one tap flags "I'd have played that one"
+    // and POSTs to /api/flag_ai_disagreement.
     if (data.ai_probs) {
-        const probsDiv = document.getElementById('aiProbs');
-        const legalSet = new Set(data.legal_moves || []);
-        probsDiv.innerHTML = data.ai_probs
-            .map((p, i) => {
-                const pct = (p * 100).toFixed(1);
-                const isChosen = i === data.ai_chosen;
-                const isIllegal = data.legal_moves && !legalSet.has(i);
-                const cls = isChosen ? 'chosen' : (isIllegal ? 'illegal' : '');
-                return `<div class="prob-row ${cls}">
-                    <span class="prob-label">T${i}${isChosen ? '✓' : ''}</span>
-                    <span class="prob-bar"><span class="prob-fill" style="width:${pct}%"></span></span>
-                    <span class="prob-pct">${pct}%</span>
-                </div>`;
-            })
-            .join('');
+        // ai_legal_moves = the legal set at AI decision time. Falls back
+        // to legal_moves (now stale, post-move) for older server builds.
+        const aiLegal = Array.isArray(data.ai_legal_moves)
+            ? data.ai_legal_moves
+            : (data.legal_moves || []);
+        lastAiDecision = (data.ai_decision_id !== undefined && data.game_id)
+            ? {
+                gameId: data.game_id,
+                aiDecisionId: data.ai_decision_id,
+                legal: aiLegal,
+                chosen: data.ai_chosen,
+                flaggedToken: null,
+            }
+            : null;
+        renderAiProbs(data.ai_probs, data.ai_chosen, aiLegal);
     }
     
     if (data.triple_six) {
@@ -692,6 +702,114 @@ function renderState() {
     updateTurnIndicator();
     updateStatusPills();
     updateWinChance();
+}
+
+function renderAiProbs(probs, chosen, aiLegal) {
+    // Render the AI's policy distribution. Legal-but-not-chosen rows are
+    // wired as tap targets for the "disagree" feature; the row that was
+    // flagged (if any) gets a 'you' tag mirroring the review modal.
+    const probsDiv = document.getElementById('aiProbs');
+    if (!probsDiv) return;
+    const legalSet = new Set(aiLegal || []);
+    const flagged = lastAiDecision ? lastAiDecision.flaggedToken : null;
+
+    probsDiv.innerHTML = probs.map((p, i) => {
+        const pct = (p * 100).toFixed(1);
+        const isChosen = i === chosen;
+        const isIllegal = !legalSet.has(i);
+        const isFlagged = (flagged === i);
+        const isTappable = !isChosen && !isIllegal && lastAiDecision !== null
+                            && flagged === null;
+        const cls = [
+            isChosen ? 'chosen' : '',
+            isIllegal ? 'illegal' : '',
+            isFlagged ? 'human-pick' : '',
+            isTappable ? 'tappable' : '',
+        ].filter(Boolean).join(' ');
+        const tags = [
+            isChosen ? '<span class="tag ai">AI</span>' : '',
+            isFlagged ? '<span class="tag you">You</span>' : '',
+        ].join('');
+        return `<div class="prob-row ${cls}" data-token="${i}">
+            <span class="prob-label">T${i}${isChosen ? '✓' : ''}</span>
+            <span class="prob-bar"><span class="prob-fill" style="width:${pct}%"></span></span>
+            <span class="prob-pct">${pct}%</span>
+            <span class="prob-tags">${tags}</span>
+        </div>`;
+    }).join('');
+
+    // Hint text below the panel — tells user the rows are tappable.
+    let hint = probsDiv.parentElement.querySelector('.disagree-hint');
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'disagree-hint';
+        probsDiv.parentElement.appendChild(hint);
+    }
+    if (lastAiDecision === null) {
+        hint.textContent = '';
+    } else if (flagged !== null) {
+        hint.textContent = `Flagged T${flagged} as your preferred move ✓`;
+    } else {
+        const tappableCount = [0, 1, 2, 3].filter(
+            i => i !== chosen && legalSet.has(i)
+        ).length;
+        hint.textContent = tappableCount > 0
+            ? 'Disagree? Tap a token above to flag it.'
+            : '';
+    }
+
+    // Wire the tap handlers (only on legal-but-not-chosen rows, before
+    // any flag is recorded — one disagreement per AI decision).
+    if (lastAiDecision !== null && flagged === null) {
+        probsDiv.querySelectorAll('.prob-row.tappable').forEach(row => {
+            row.addEventListener('click', () => {
+                const tok = parseInt(row.dataset.token, 10);
+                flagAiDisagreement(tok);
+            });
+        });
+    }
+}
+
+async function flagAiDisagreement(preferredToken) {
+    if (!lastAiDecision || lastAiDecision.flaggedToken !== null) return;
+    const { gameId, aiDecisionId, chosen, legal } = lastAiDecision;
+    if (preferredToken === chosen) return;
+
+    // Optimistic UI: mark immediately, re-render, then POST. If the
+    // server rejects, we roll back and re-render again.
+    lastAiDecision.flaggedToken = preferredToken;
+    // Pull current probs back out of the DOM so we can re-render with the flag.
+    const probsDiv = document.getElementById('aiProbs');
+    const probs = Array.from(probsDiv.querySelectorAll('.prob-row')).map(r => {
+        const pctTxt = r.querySelector('.prob-pct').textContent;
+        return parseFloat(pctTxt) / 100;
+    });
+    renderAiProbs(probs, chosen, legal);
+    addLog('system', `Flagged T${preferredToken} as your preferred move (AI played T${chosen}).`);
+
+    try {
+        const res = await fetch('/api/flag_ai_disagreement', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                game_id: gameId,
+                ai_decision_id: aiDecisionId,
+                preferred_token: preferredToken,
+            }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            console.warn('flag_ai_disagreement rejected:', data.error);
+            lastAiDecision.flaggedToken = null;
+            renderAiProbs(probs, chosen, legal);
+            addLog('system', `Disagreement flag failed: ${data.error || 'unknown'}`);
+        }
+    } catch (e) {
+        console.warn('flag_ai_disagreement error:', e);
+        lastAiDecision.flaggedToken = null;
+        renderAiProbs(probs, chosen, legal);
+        addLog('system', 'Disagreement flag failed: network error');
+    }
 }
 
 function renderHumanProbsPanel(policy, pick, legal) {

@@ -343,14 +343,24 @@ class FastActor:
                         traj['temperatures'].append(float(sample_temp))
                         traj['step_rewards'].append(0.0)  # filled after env step
 
-        # Pre-step states for reward computation
+        # Pre-step states for reward computation. Also capture decision
+        # context (dice, legal moves, chosen action, move_count) so the
+        # bias-correction penalties can fire when LUDO_BIAS_PENALTIES=1.
         pre_states = []
         for i in range(self.batch_size):
             game = self.env.get_game(i)
+            took_action = actions[i] >= 0 and not game.is_terminal
             pre_states.append({
                 'positions': {p: list(game.player_positions[p]) for p in range(4)},
                 'scores': list(game.scores),
                 'active_players': list(game.active_players),
+                'dice': int(game.current_dice_roll) if took_action else 0,
+                'legal_moves': (
+                    [int(m) for m in ludo_cpp.get_legal_moves(game)]
+                    if took_action else []
+                ),
+                'action': int(actions[i]) if took_action else -1,
+                'move_count': int(self.move_counts[i]),
             })
 
         # Step environment
@@ -383,6 +393,12 @@ class FastActor:
                         _S(pre['positions'], pre['scores'], pre['active_players']),
                         _S(next_game.player_positions, next_game.scores, next_game.active_players),
                         cp,
+                        context={
+                            'dice': pre['dice'],
+                            'legal_moves': pre['legal_moves'],
+                            'action': pre['action'],
+                            'move_count': pre['move_count'],
+                        },
                     )
                     traj['step_rewards'][-1] = reward
 
@@ -987,10 +1003,18 @@ def actor_worker_gpu(actor_id, batch_size, context_length,
         pre_states = []
         for i in range(batch_size):
             game = env.get_game(i)
+            took_action = actions[i] >= 0 and not game.is_terminal
             pre_states.append({
                 'positions': {p: list(game.player_positions[p]) for p in range(4)},
                 'scores': list(game.scores),
                 'active_players': list(game.active_players),
+                'dice': int(game.current_dice_roll) if took_action else 0,
+                'legal_moves': (
+                    [int(m) for m in ludo_cpp.get_legal_moves(game)]
+                    if took_action else []
+                ),
+                'action': int(actions[i]) if took_action else -1,
+                'move_count': int(move_counts[i]),
             })
 
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -1017,7 +1041,14 @@ def actor_worker_gpu(actor_id, batch_size, context_length,
                     reward = compute_shaped_reward(
                         _S(pre['positions'], pre['scores'], pre['active_players']),
                         _S(next_game.player_positions, next_game.scores, next_game.active_players),
-                        cp)
+                        cp,
+                        context={
+                            'dice': pre.get('dice', 0),
+                            'legal_moves': pre.get('legal_moves', []),
+                            'action': pre.get('action', -1),
+                            'move_count': pre.get('move_count', 0),
+                        },
+                    )
                     traj['step_rewards'][-1] = reward
 
             if dones_np[i]:

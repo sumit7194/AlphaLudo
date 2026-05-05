@@ -46,6 +46,17 @@ def compute_sparse_reward(old_state, new_state, player):
     return 0.0
 
 
+# Bias-correction penalties (opt-in via env var). When LUDO_BIAS_PENALTIES=1
+# is set in the trainer environment, the 5 known-bias penalties from
+# td_ludo.game.bias_penalties get added on top of the sparse score reward.
+# Default off so any in-flight training keeps producing identical rewards.
+_BIAS_PENALTIES_ENABLED = os.environ.get('LUDO_BIAS_PENALTIES', '0').lower() in ('1', 'true', 'yes')
+if _BIAS_PENALTIES_ENABLED:
+    from td_ludo.game.bias_penalties import compute_bias_penalties
+else:
+    compute_bias_penalties = None  # type: ignore
+
+
 BOT_CLASSES = {
     'Heuristic': HeuristicLudoBot,
     'Aggressive': AggressiveBot,
@@ -440,16 +451,32 @@ class VectorACGamePlayer:
         if train and self.search_enabled and self.search_target_fraction > 0:
             self._maybe_run_search(current_players)
 
-        # Pre-step state snapshot for reward computation
+        # Pre-step state snapshot for reward computation. Also capture
+        # decision context (dice, legal moves, action, move_count) so the
+        # bias-correction penalties can fire when LUDO_BIAS_PENALTIES=1.
+        # Cheap to capture; ignored unless bias penalties are enabled.
         pre_step_states = []
         pre_step_scores = []
         pre_step_active = []
+        pre_step_context = []
         for i in range(self.batch_size):
             game = self.env.get_game(i)
             old_pos = {p: list(game.player_positions[p]) for p in range(4)}
             pre_step_states.append(old_pos)
             pre_step_scores.append(list(game.scores))
             pre_step_active.append(list(game.active_players))
+            took_action = actions[i] >= 0 and not game.is_terminal
+            if _BIAS_PENALTIES_ENABLED and took_action:
+                # Re-fetch legal moves at decision time. Cheap C++ call.
+                lmoves = [int(m) for m in ludo_cpp.get_legal_moves(game)]
+                pre_step_context.append({
+                    'dice': int(game.current_dice_roll),
+                    'legal_moves': lmoves,
+                    'action': int(actions[i]),
+                    'move_count': int(self.move_counts[i]),
+                })
+            else:
+                pre_step_context.append(None)
 
         # Step environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -476,6 +503,14 @@ class VectorACGamePlayer:
                 dummy_new = DummyState(next_game.player_positions, list(next_game.scores), list(next_game.active_players))
 
                 step_reward = compute_sparse_reward(dummy_old, dummy_new, cp)
+
+                # Add bias-correction penalties (only when enabled + context).
+                # Penalty is ≤ 0; sums into step_reward.
+                if _BIAS_PENALTIES_ENABLED and pre_step_context[i] is not None:
+                    bias_total, _bd = compute_bias_penalties(
+                        dummy_old, dummy_new, cp, pre_step_context[i],
+                    )
+                    step_reward += bias_total
 
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:

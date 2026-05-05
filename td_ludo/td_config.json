@@ -1,0 +1,6 @@
+{
+  "PROD": {
+    "EVAL_INTERVAL": 25000,
+    "EVAL_GAMES": 2500
+  }
+}

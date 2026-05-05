@@ -31,8 +31,17 @@ Design principles:
 - Every strategic reward empirically validated against win correlation
 """
 
+import os
 import td_ludo_cpp as ludo_cpp
 from src.config import NUM_ACTIVE_PLAYERS
+
+# Bias-correction penalties (opt-in via env var). Disabled by default so
+# any in-flight training keeps producing identical rewards. Set
+# LUDO_BIAS_PENALTIES=1 in the trainer env to enable.
+BIAS_PENALTIES_ENABLED = os.environ.get('LUDO_BIAS_PENALTIES', '0').lower() in ('1', 'true', 'yes')
+
+if BIAS_PENALTIES_ENABLED:
+    from td_ludo.game.bias_penalties import compute_bias_penalties
 
 # =============================================================================
 # Constants
@@ -150,7 +159,7 @@ def _identify_captured_opponent(state, next_state, player):
 # Main Reward Function
 # =============================================================================
 
-def compute_shaped_reward(state, next_state, player):
+def compute_shaped_reward(state, next_state, player, context=None):
     """
     Compute dense strategic rewards based on state delta.
 
@@ -158,6 +167,11 @@ def compute_shaped_reward(state, next_state, player):
         state: Current game state (before move)
         next_state: Next game state (after move)
         player: Player index (0-3)
+        context: Optional dict for bias-correction penalties. When the
+            LUDO_BIAS_PENALTIES env var is set AND context is provided
+            with keys {'dice', 'legal_moves', 'action', 'move_count'},
+            the 5 bias penalties are added to the result. Old callers
+            that omit context get the original behavior unchanged.
 
     Returns:
         float: Shaped reward
@@ -285,6 +299,15 @@ def compute_shaped_reward(state, next_state, player):
         )
         if max_opp_score >= 3:
             reward += 0.05
+
+    # =========================================================================
+    # SECTION 3: BIAS-CORRECTION PENALTIES (opt-in, target known V12.2 biases)
+    # See td_ludo.game.bias_penalties for the 5 penalties and rationale.
+    # Triggers only when LUDO_BIAS_PENALTIES=1 AND context dict is provided.
+    # =========================================================================
+    if BIAS_PENALTIES_ENABLED and context is not None:
+        bias_total, _ = compute_bias_penalties(state, next_state, player, context)
+        reward += bias_total
 
     return reward
 

@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V13.1 SL Dashboard</title>
+<style>
+  :root {
+    --bg: #0c1426;
+    --panel: #142036;
+    --panel-2: #1a2a48;
+    --text: #e8e8ec;
+    --muted: #8b9bb5;
+    --accent: #8b5cf6;
+    --good: #10b981;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --border: #243250;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 16px; }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 1200px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .full { grid-column: 1 / -1; }
+  .big { font-size: 28px; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+  .num { font-family: 'IBM Plex Mono', monospace; font-size: 15px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .stat-row:last-child { border-bottom: 0; }
+  .stat-row span:first-child { color: var(--muted); }
+  .stat-row span:last-child { font-family: 'IBM Plex Mono', monospace; }
+  .progress { height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; margin-top: 6px; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #c4b5fd); transition: width 0.5s ease; }
+  .phase-badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+  .phase-SL { background: var(--accent); color: white; }
+  .phase-RL { background: var(--good); color: white; }
+  .phase-pending { background: var(--muted); color: white; }
+  canvas { display: block; width: 100%; height: 220px; background: var(--panel-2); border-radius: 4px; }
+  .legend { display: flex; gap: 12px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+  .legend .dot { width: 8px; height: 8px; border-radius: 50%; }
+  table { width: 100%; border-collapse: collapse; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .ts-stale { color: var(--bad); }
+  .err { color: var(--bad); padding: 8px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>V13.1 SL Dashboard</h1>
+<p class="sub" id="sub">connecting…</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>Phase</h3>
+    <div id="phase"><span class="phase-badge phase-pending">unknown</span></div>
+    <div class="stat-row" style="margin-top:8px"><span>Run</span><span id="runName">—</span></div>
+    <div class="stat-row"><span>Last update</span><span id="lastUpdate">—</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Progress</h3>
+    <div class="big"><span id="pctDone">—</span>%</div>
+    <div class="progress"><div class="progress-fill" id="pctBar" style="width: 0%"></div></div>
+    <div class="stat-row" style="margin-top:8px"><span>States</span><span id="states">—</span></div>
+    <div class="stat-row"><span>Step</span><span id="step">—</span></div>
+    <div class="stat-row"><span>FPS</span><span id="fps">—</span></div>
+    <div class="stat-row"><span>Elapsed</span><span id="elapsed">—</span></div>
+    <div class="stat-row"><span>ETA</span><span id="eta">—</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Schedule</h3>
+    <div class="stat-row"><span>LR</span><span id="lr">—</span></div>
+    <div class="stat-row"><span>Aux coeff</span><span id="auxCoeff">—</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Losses (recent average)</h3>
+    <div class="stat-row"><span>Total</span><span id="lossTotal">—</span></div>
+    <div class="stat-row"><span>Policy CE</span><span id="lossPol">—</span></div>
+    <div class="stat-row"><span>Value MSE</span><span id="lossVal">—</span></div>
+    <div class="stat-row"><span>Aux: safe squares</span><span id="lossAuxS">—</span></div>
+    <div class="stat-row"><span>Aux: home path</span><span id="lossAuxH">—</span></div>
+  </div>
+
+  <div class="card full">
+    <h3>Loss curves over time</h3>
+    <canvas id="lossChart"></canvas>
+    <div class="legend">
+      <span><span class="dot" style="background:#fff"></span>total</span>
+      <span><span class="dot" style="background:#8b5cf6"></span>policy</span>
+      <span><span class="dot" style="background:#10b981"></span>value</span>
+      <span><span class="dot" style="background:#f59e0b"></span>aux: safe</span>
+      <span><span class="dot" style="background:#06b6d4"></span>aux: home path</span>
+    </div>
+  </div>
+
+  <div class="card full">
+    <h3>Eval history (vs random bot mix)</h3>
+    <canvas id="evalChart"></canvas>
+    <table id="evalTable" style="margin-top:10px;"></table>
+  </div>
+</div>
+
+<script>
+const SL_API = '/api/sl_stats';
+const CHAIN_API = '/api/chain';
+const lossHistory = [];   // append on each refresh; max 500 points
+const lossKeys = ['loss', 'loss_policy', 'loss_value', 'loss_aux_safe', 'loss_aux_home_path'];
+const lossColors = {
+  loss: '#ffffff', loss_policy: '#8b5cf6', loss_value: '#10b981',
+  loss_aux_safe: '#f59e0b', loss_aux_home_path: '#06b6d4',
+};
+
+function fmtNum(n, dp = 3) {
+  if (n === undefined || n === null || isNaN(n)) return '—';
+  if (Math.abs(n) >= 10000) return n.toExponential(2);
+  return n.toFixed(dp);
+}
+function fmtInt(n) {
+  if (n === undefined || n === null) return '—';
+  return n.toLocaleString();
+}
+function fmtTime(sec) {
+  if (!sec || sec < 0) return '—';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function drawLossChart(history) {
+  const c = document.getElementById('lossChart');
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr;
+  c.height = c.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, c.clientWidth, c.clientHeight);
+  if (history.length < 2) return;
+
+  // Find global max for y-axis (cap at 5 to not blow up at start)
+  let maxY = 0;
+  for (const p of history)
+    for (const k of lossKeys)
+      if (p[k] !== undefined && p[k] > maxY) maxY = p[k];
+  maxY = Math.max(0.5, Math.min(5, maxY * 1.1));
+
+  const W = c.clientWidth, H = c.clientHeight, pad = 24;
+  const xScale = i => pad + (i / (history.length - 1)) * (W - 2 * pad);
+  const yScale = v => H - pad - (v / maxY) * (H - 2 * pad);
+
+  // Grid
+  ctx.strokeStyle = '#243250'; ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const y = pad + g * (H - 2 * pad) / 4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+    ctx.fillStyle = '#8b9bb5'; ctx.font = '10px monospace';
+    ctx.fillText((maxY - g * maxY / 4).toFixed(2), 2, y + 3);
+  }
+
+  // Lines
+  for (const k of lossKeys) {
+    ctx.strokeStyle = lossColors[k];
+    ctx.lineWidth = k === 'loss' ? 2 : 1.2;
+    ctx.beginPath();
+    let first = true;
+    history.forEach((p, i) => {
+      if (p[k] === undefined) return;
+      const x = xScale(i), y = yScale(p[k]);
+      if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+}
+
+function drawEvalChart(evals) {
+  const c = document.getElementById('evalChart');
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr;
+  c.height = c.clientHeight * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, c.clientWidth, c.clientHeight);
+  if (!evals || evals.length === 0) {
+    ctx.fillStyle = '#8b9bb5'; ctx.font = '13px sans-serif';
+    ctx.fillText('No evals yet — first lands at eval_every states.', 12, 24);
+    return;
+  }
+  const W = c.clientWidth, H = c.clientHeight, pad = 30;
+  const minX = evals[0][0], maxX = evals[evals.length - 1][0] || (minX + 1);
+  const xScale = x => pad + ((x - minX) / Math.max(1, maxX - minX)) * (W - 2 * pad);
+  const yScale = w => H - pad - (w / 100) * (H - 2 * pad);
+
+  ctx.strokeStyle = '#243250';
+  for (let g = 0; g <= 5; g++) {
+    const y = pad + g * (H - 2 * pad) / 5;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke();
+    ctx.fillStyle = '#8b9bb5'; ctx.font = '10px monospace';
+    ctx.fillText((100 - g * 20) + '%', 2, y + 3);
+  }
+
+  ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2; ctx.beginPath();
+  evals.forEach(([s, w], i) => {
+    const x = xScale(s), y = yScale(w);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#10b981';
+  for (const [s, w] of evals) {
+    ctx.beginPath(); ctx.arc(xScale(s), yScale(w), 3, 0, 6.28); ctx.fill();
+  }
+}
+
+async function refresh() {
+  const sl = await fetchJSON(SL_API);
+  const chain = await fetchJSON(CHAIN_API);
+  if (!sl) {
+    document.getElementById('sub').innerHTML = '<span class="err">Could not reach /api/sl_stats — SL trainer may not have written stats yet.</span>';
+    if (chain) {
+      const phaseEl = document.getElementById('phase');
+      phaseEl.innerHTML = `<span class="phase-badge phase-${chain.stage}">${chain.stage} · ${chain.phase}</span>`;
+      document.getElementById('runName').textContent = chain.run_name || '—';
+    }
+    return;
+  }
+  document.getElementById('sub').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+
+  // Phase
+  const phaseEl = document.getElementById('phase');
+  if (chain) {
+    phaseEl.innerHTML = `<span class="phase-badge phase-${chain.stage}">${chain.stage} · ${chain.phase}</span>`;
+    document.getElementById('runName').textContent = chain.run_name || '—';
+  }
+  const ageSec = Math.round(Date.now() / 1000 - sl.ts);
+  const upd = document.getElementById('lastUpdate');
+  upd.textContent = ageSec < 30 ? `${ageSec}s ago` : `${ageSec}s ago`;
+  upd.className = ageSec > 60 ? 'ts-stale' : '';
+
+  // Progress
+  const pct = sl.target ? (100 * sl.states / sl.target) : 0;
+  document.getElementById('pctDone').textContent = pct.toFixed(1);
+  document.getElementById('pctBar').style.width = `${Math.min(100, pct)}%`;
+  document.getElementById('states').textContent = `${fmtInt(sl.states)} / ${fmtInt(sl.target)}`;
+  document.getElementById('step').textContent = fmtInt(sl.step);
+  document.getElementById('fps').textContent = sl.fps ? sl.fps.toFixed(0) : '—';
+  document.getElementById('elapsed').textContent = fmtTime(sl.elapsed_sec);
+  const remaining = sl.fps && sl.target ? (sl.target - sl.states) / sl.fps : null;
+  document.getElementById('eta').textContent = fmtTime(remaining);
+
+  // Schedule
+  document.getElementById('lr').textContent = fmtNum(sl.lr, 6);
+  document.getElementById('auxCoeff').textContent = fmtNum(sl.aux_coeff, 3);
+
+  // Losses
+  document.getElementById('lossTotal').textContent = fmtNum(sl.loss);
+  document.getElementById('lossPol').textContent = fmtNum(sl.loss_policy);
+  document.getElementById('lossVal').textContent = fmtNum(sl.loss_value);
+  document.getElementById('lossAuxS').textContent = fmtNum(sl.loss_aux_safe);
+  document.getElementById('lossAuxH').textContent = fmtNum(sl.loss_aux_home_path);
+
+  // Append to history (cap at 500 points to avoid runaway)
+  lossHistory.push({
+    states: sl.states, loss: sl.loss, loss_policy: sl.loss_policy, loss_value: sl.loss_value,
+    loss_aux_safe: sl.loss_aux_safe, loss_aux_danger: sl.loss_aux_danger, loss_aux_capture: sl.loss_aux_capture,
+  });
+  if (lossHistory.length > 500) lossHistory.shift();
+  drawLossChart(lossHistory);
+
+  // Eval
+  drawEvalChart(sl.eval_history || []);
+  const tbl = document.getElementById('evalTable');
+  if (sl.eval_history && sl.eval_history.length > 0) {
+    const rows = sl.eval_history.slice().reverse().slice(0, 12).map(([s, w]) =>
+      `<tr><td>${fmtInt(s)}</td><td>${w.toFixed(1)}%</td></tr>`).join('');
+    tbl.innerHTML = `<tr><th>states</th><th>WR</th></tr>${rows}`;
+  } else {
+    tbl.innerHTML = '';
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

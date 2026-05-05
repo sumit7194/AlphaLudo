@@ -63,6 +63,38 @@ STOP_REQUESTED = False
 SECOND_CTRL_C = False
 
 
+def get_composition_mix(name):
+    """Return the GAME_COMPOSITION dict for a named preset, or None if unknown.
+    Centralized so curriculum-mode swap can re-apply mixes without
+    duplicating the dicts inside the if/elif chain in main()."""
+    if name == 'v122':
+        return {"SelfPlay": 0.75, "Expert": 0.15, "Heuristic": 0.05,
+                "Aggressive": 0.03, "Defensive": 0.02}
+    if name == 'v122_hist':
+        return {"SelfPlay": 0.60, "Expert": 0.15, "Heuristic": 0.05,
+                "Aggressive": 0.03, "Defensive": 0.02,
+                "Hist_V12_2": 0.05, "Hist_V10": 0.05,
+                "Hist_V6_3": 0.03, "Hist_V6_1": 0.02}
+    if name == 'v122_hist_v2':
+        return {"SelfPlay": 0.60, "Expert": 0.07, "Heuristic": 0.03,
+                "Hist_V12_2": 0.15, "Hist_V10": 0.10,
+                "Hist_V6_3": 0.03, "Hist_V6_1": 0.02}
+    return None
+
+
+def apply_composition(name):
+    """Monkey-patch GAME_COMPOSITION in src.config and the live player module.
+    Returns True on success. Used at startup AND during curriculum swap."""
+    mix = get_composition_mix(name)
+    if mix is None:
+        return False
+    import src.config as _cfg
+    _cfg.GAME_COMPOSITION = mix
+    import td_ludo.game.players.v11 as _v11mod
+    _v11mod.GAME_COMPOSITION = mix
+    return True
+
+
 def signal_handler(sig, frame):
     global STOP_REQUESTED, SECOND_CTRL_C
     if STOP_REQUESTED:
@@ -352,11 +384,25 @@ def main():
     # ffn-ratio, attn-dim) are ignored; defaults for num-res-blocks /
     # num-channels are overridden to 10/128. Use --game-composition v13
     # together with this flag to get the V13-tuned opponent mix.
+    parser.add_argument('--curriculum-mode', default='off',
+                        choices=['off', 'auto'],
+                        help="auto: starts with --game-composition (typically "
+                             "v122 = bots only) and swaps to --curriculum-target "
+                             "after 3 consecutive evals ≥ --curriculum-eval-thresh.")
+    parser.add_argument('--curriculum-target', default='v122_hist_v2',
+                        help='Game composition to swap to once gating triggers.')
+    parser.add_argument('--curriculum-eval-thresh', type=float, default=0.80,
+                        help='Eval WR threshold (decimal, e.g. 0.80) for gating.')
+    parser.add_argument('--curriculum-window', type=int, default=3,
+                        help='How many recent evals must all clear the threshold.')
     parser.add_argument('--model-arch', default='v12',
-                        choices=['v12', 'v13_minimal'],
+                        choices=['v12', 'v13_minimal', 'v131_aux', 'v132', 'v14_scalar'],
                         help="Model architecture. 'v12' = AlphaLudoV12 "
                              "(CNN+attn, 33ch encoder). 'v13_minimal' = "
-                             "MinimalCNN14 (10×128 pure CNN, 14ch raw).")
+                             "MinimalCNN14 (10×128 pure CNN, 14ch raw). "
+                             "'v14_scalar' = V14ScalarDeepSets (no CNN, no "
+                             "attention; per-token MLPs + DeepSets pool over "
+                             "V12.2-equivalent scalar features).")
     parser.add_argument('--num-res-blocks', type=int, default=4)
     parser.add_argument('--num-channels', type=int, default=96)
     parser.add_argument('--num-attn-layers', type=int, default=2)
@@ -398,11 +444,11 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122', 'v122_hist', 'v123', 'v13'],
+                        choices=['default', 'v122', 'v122_hist', 'v122_hist_v2', 'v123', 'v13'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
-                             "'v122_hist' = v122 + 15% historical mix: "
+                             "'v122_hist' = v122 + 15%% historical mix: "
                              "SelfPlay 60 / Expert 15 / Heuristic 5 / "
                              "Aggressive 3 / Defensive 2 / Hist_V12_2 5 / "
                              "Hist_V10 5 / Hist_V6_3 3 / Hist_V6_1 2. "
@@ -458,7 +504,7 @@ def main():
     print(f"[V12 Train] Device: {device}")
     print(f"[V12 Train] Mode:   {MODE}")
 
-    # Build model — V12 (CNN+attn, 33ch) or V13 (MinimalCNN14, 14ch).
+    # Build model — V12 (CNN+attn, 33ch) or V13/V13.1 (MinimalCNN14[Aux], 14ch).
     if args.model_arch == 'v13_minimal':
         from experiments.distillation_14ch.model_14ch import MinimalCNN14
         # V13 defaults: 10×128 deep CNN, 14ch raw input.
@@ -474,7 +520,61 @@ def main():
               f"({model.count_parameters():,} params)")
         print(f"[V12 Train]   {v13_blocks} ResBlocks × {v13_channels}ch, "
               f"pure CNN, 14ch raw input")
-        # Encoder for player loop + eval — 14ch raw.
+        import td_ludo_cpp as _ludo
+        encoder_fn = _ludo.encode_state_v14_minimal
+    elif args.model_arch == 'v132':
+        # V13.2: MinimalCNN14 with 17ch input (V14 + 3 V11 static channels).
+        # Default 10×128 (~3M params). No aux heads. The static board layout
+        # is provided as input rather than learned via aux losses.
+        from experiments.distillation_14ch.model_14ch import MinimalCNN14
+        from td_ludo.game.encoder_v17 import encode_state_v17, V17_CHANNELS
+        v132_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 10
+        v132_channels = args.num_channels if args.num_channels != 96 else 128
+        model_factory = lambda: MinimalCNN14(
+            num_res_blocks=v132_blocks,
+            num_channels=v132_channels,
+            in_channels=V17_CHANNELS,
+        )
+        model = model_factory()
+        print(f"[V12 Train] Model: MinimalCNN14 (V13.2) "
+              f"({model.count_parameters():,} params)")
+        print(f"[V12 Train]   {v132_blocks} ResBlocks × {v132_channels}ch, "
+              f"{V17_CHANNELS}ch input (V14 + 3 static), no aux heads")
+        encoder_fn = encode_state_v17
+    elif args.model_arch == 'v14_scalar':
+        # V14_scalar: DeepSets over V12.2-equivalent scalar features.
+        # No CNN, no attention. ~225K params at default sizes.
+        # Encoder returns a (FLAT_DIM=73, 1, 1) tensor; the model unpacks
+        # it back into the per-token + global dict structure internally so
+        # the existing tensor-based RL pipeline works unchanged.
+        from td_ludo.models.v14_scalar import V14ScalarDeepSets
+        from td_ludo.game.encoder_v14_scalar import (
+            encode_state_v14_scalar_flat, FLAT_DIM,
+        )
+        model_factory = lambda: V14ScalarDeepSets()
+        model = model_factory()
+        print(f"[V12 Train] Model: V14ScalarDeepSets (V14_scalar) "
+              f"({model.count_parameters():,} params)")
+        print(f"[V12 Train]   DeepSets, no CNN/attn, "
+              f"input shape ({FLAT_DIM}, 1, 1) flat tensor")
+        encoder_fn = encode_state_v14_scalar_flat
+    elif args.model_arch == 'v131_aux':
+        # V13.1: MinimalCNN14Aux (12×160 default, 14ch raw + 3 aux heads).
+        # During RL we use the same forward_policy_only path as V13 — aux
+        # heads exist in state_dict but are not exercised.
+        from td_ludo.models.v13_1 import MinimalCNN14Aux
+        v131_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 12
+        v131_channels = args.num_channels if args.num_channels != 96 else 160
+        model_factory = lambda: MinimalCNN14Aux(
+            num_res_blocks=v131_blocks,
+            num_channels=v131_channels,
+            in_channels=14,
+        )
+        model = model_factory()
+        print(f"[V12 Train] Model: MinimalCNN14Aux (V13.1) "
+              f"({model.count_parameters():,} params)")
+        print(f"[V12 Train]   {v131_blocks} ResBlocks × {v131_channels}ch, "
+              f"14ch raw input + 3 aux heads (frozen during RL)")
         import td_ludo_cpp as _ludo
         encoder_fn = _ludo.encode_state_v14_minimal
     else:
@@ -613,6 +713,25 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V122_HIST_MIX
         print(f"[V12 Train] Game composition: V12.2 + hist mix → {V122_HIST_MIX}")
+    elif args.game_composition == 'v122_hist_v2':
+        # Stronger opponent mix for the bias-penalty V12.2 lineage.
+        # Doubles historical share (15% → 30%), trims bot share to 10%.
+        # H2H tracking goal: V12.2-bias-vN beats V12.2-pre-search by 5pp+.
+        # Increases per-game inference cost (hist models run on CPU).
+        V122_HIST_V2_MIX = {
+            "SelfPlay":    0.60,
+            "Expert":      0.07,
+            "Heuristic":   0.03,
+            "Hist_V12_2":  0.15,
+            "Hist_V10":    0.10,
+            "Hist_V6_3":   0.03,
+            "Hist_V6_1":   0.02,
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V122_HIST_V2_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V122_HIST_V2_MIX
+        print(f"[V12 Train] Game composition: V12.2 + hist v2 mix → {V122_HIST_V2_MIX}")
     elif args.game_composition == 'v13':
         # V13-tuned mix: V12.2 added as strong external opponent
         # (Distill14-vs-V12.2 plays ~50/50, every game is a real test).
@@ -658,7 +777,13 @@ def main():
     if not args.no_dashboard:
         start_dashboard_server(port=args.port)
 
-    historical_opponents_enabled = args.game_composition in ('v123', 'v13', 'v122_hist')
+    # Initial composition uses what the user passed; curriculum mode also
+    # enables historicals upfront so the registry is loaded before the swap.
+    historical_opponents_enabled = (
+        args.game_composition in ('v123', 'v13', 'v122_hist', 'v122_hist_v2')
+        or (args.curriculum_mode == 'auto'
+            and args.curriculum_target in ('v123', 'v13', 'v122_hist', 'v122_hist_v2'))
+    )
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
         model_factory=model_factory,
@@ -703,6 +828,18 @@ def main():
     if trainer.total_games > 0:
         print(f"[V12 Train] Eval scheduler: last_bucket={last_eval_bucket} "
               f"(next eval at G={(last_eval_bucket + 1) * EVAL_INTERVAL:,})")
+
+    # Curriculum-mode tracking. eval_wr_history collects all evals this
+    # session; curriculum_swapped is one-shot — once we swap we don't keep
+    # checking. Persist nothing across restarts (intentional: if you resume
+    # past the swap you should manually pass the post-swap composition).
+    eval_wr_history = []
+    curriculum_swapped = False
+    if args.curriculum_mode == 'auto':
+        print(f"[V12 Train] Curriculum: ENABLED. Will swap "
+              f"{args.game_composition} → {args.curriculum_target} after "
+              f"{args.curriculum_window} consecutive evals ≥ "
+              f"{args.curriculum_eval_thresh:.0%}.")
 
     # LR annealing (same as V10)
     lr_anneal_active = args.anneal_lr > 0
@@ -847,6 +984,24 @@ def main():
                 # Plateau-break milestone tracking
                 if eval_wr >= 0.80:
                     print(f"  ★★★ PLATEAU BREAK: ≥80% sustained eval WR ★★★")
+
+                # Curriculum gating: swap composition once last N evals all clear threshold.
+                if args.curriculum_mode == 'auto' and not curriculum_swapped:
+                    eval_wr_history.append(eval_wr)
+                    recent = eval_wr_history[-args.curriculum_window:]
+                    if (len(recent) >= args.curriculum_window
+                            and all(w >= args.curriculum_eval_thresh for w in recent)):
+                        if apply_composition(args.curriculum_target):
+                            curriculum_swapped = True
+                            mix = get_composition_mix(args.curriculum_target)
+                            print(f"\n  ★★★ CURRICULUM TRIGGER: swapping "
+                                  f"{args.game_composition} → {args.curriculum_target} ★★★")
+                            print(f"      Last {args.curriculum_window} evals: "
+                                  f"{[f'{w:.1%}' for w in recent]}")
+                            print(f"      New mix: {mix}\n")
+                        else:
+                            print(f"  [curriculum] FAILED: unknown target "
+                                  f"'{args.curriculum_target}'")
 
                 win_rate_100 = sum(rolling_win_rate) / max(1, len(rolling_win_rate))
                 trainer.log_metrics(win_rate_100, trainer.total_games, eval_win_rate=eval_wr)

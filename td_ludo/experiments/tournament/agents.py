@@ -120,6 +120,25 @@ def _build_arch_presets() -> Dict[str, _ArchPreset]:
             encoder_fn=cpp.encode_state_v14_minimal,
             in_channels=14,
         ),
+        # V13.2: MinimalCNN14 with 17ch input (V14 + 3 V11 static channels).
+        # Same arch as v14_minimal but in_channels=17 + V17 encoder.
+        "v132": _ArchPreset(
+            name="v132",
+            arch_class=MinimalCNN14,
+            arch_kwargs=dict(num_res_blocks=10, num_channels=128, in_channels=17),
+            encoder_fn=__import__('td_ludo.game.encoder_v17', fromlist=['encode_state_v17']).encode_state_v17,
+            in_channels=17,
+        ),
+        # V14_scalar: DeepSets over scalar features. No CNN, no attention.
+        # Uses the (FLAT_DIM=73, 1, 1) flat tensor encoder so the model
+        # signature matches the (B, C, H, W) interface expected here.
+        "v14_scalar": _ArchPreset(
+            name="v14_scalar",
+            arch_class=__import__('td_ludo.models.v14_scalar', fromlist=['V14ScalarDeepSets']).V14ScalarDeepSets,
+            arch_kwargs=dict(),  # all defaults
+            encoder_fn=__import__('td_ludo.game.encoder_v14_scalar', fromlist=['encode_state_v14_scalar_flat']).encode_state_v14_scalar_flat,
+            in_channels=__import__('td_ludo.game.encoder_v14_scalar', fromlist=['FLAT_DIM']).FLAT_DIM,
+        ),
     }
 
 
