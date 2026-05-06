@@ -360,17 +360,48 @@ def _q_to_search_targets(Q, legal_own, temperature):
 
 
 def _save_buffer(out_path, states, search_policies, search_values, search_actions, outcomes):
+    """Atomically save the buffer with one-version-back failsafe.
+
+    Three-step write:
+      1. Write to <out_path>.tmp.npz
+      2. If <out_path> exists, mv <out_path> -> <out_path>.prev.npz
+         (overwriting any previous .prev backup)
+      3. mv <out_path>.tmp.npz -> <out_path>
+    Result: even if step 1 is interrupted (truncated tmp file), the
+    previous valid <out_path> is intact and the corrupt tmp can be
+    deleted. Even if a save WAS already complete, the immediate prior
+    save is kept as <out_path>.prev.npz, giving us a 2-version rolling
+    history. This prevents the failure mode where a network hiccup
+    during the final write corrupts the entire file (which destroyed
+    ~6 hours of work on 2026-05-06 morning).
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp.npz")
+    prev_path = out_path.with_name(out_path.stem + ".prev.npz")
+
+    # 1. Write to temp first (this is the only step that can corrupt anything,
+    #    and it's a separate file so it can't take down a valid out_path).
     np.savez_compressed(
-        out_path,
+        tmp_path,
         states=np.array(states, dtype=np.float32),
         search_policies=np.array(search_policies, dtype=np.float32),
         search_values=np.array(search_values, dtype=np.float32),
         search_actions=np.array(search_actions, dtype=np.int8),
         outcomes=np.array(outcomes, dtype=np.float32),
     )
-    print(f"[Gen] Saved buffer → {out_path} ({len(states):,} states)")
+
+    # 2. Rotate: out_path -> prev_path (if out_path exists).
+    if out_path.exists():
+        # os.replace is atomic on POSIX, so prev_path always reflects a valid
+        # previously-good buffer (or doesn't exist if we never had one).
+        os.replace(out_path, prev_path)
+
+    # 3. Atomic rename tmp -> out_path. After this point the new buffer is
+    #    durable.
+    os.replace(tmp_path, out_path)
+    print(f"[Gen] Saved buffer → {out_path} ({len(states):,} states) "
+          f"[prev kept at {prev_path.name}]")
 
 
 def main():
