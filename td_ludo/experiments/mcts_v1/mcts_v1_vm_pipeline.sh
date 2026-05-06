@@ -72,6 +72,39 @@ if [ ! -f "$OUT" ]; then
 fi
 log "output checkpoint saved: $OUT"
 
-# Phase 3: mark done
-echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$DONE_FLAG"
+# Phase 3: H2H tournament (Step1 distilled student vs V13.2-latest)
+# Run on VM CPU — small models, batch=1 inference; CPU beats GPU due to
+# kernel-launch overhead. Roughly 200-400 gpm; 25K games ≈ ~80-120 min.
+log "Phase 3: launching 25K-game H2H tournament on VM CPU..."
+TS=$(date '+%Y%m%d_%H%M%S')
+TOURNAMENT_OUT="runs/tournament_step1_vs_v132_${TS}.json"
+mkdir -p runs
+
+./td_env/bin/python -u -m experiments.tournament.run \
+  --add-model V13_2_latest:v132:checkpoints/v132/model_latest.pt \
+  --add-model Step1_Distill:v132:checkpoints/mcts_v1_step1_distill/model_latest.pt \
+  --games-per-pair 25000 \
+  --device cpu \
+  --seed 42 \
+  --output "$TOURNAMENT_OUT" \
+  >> "$LOG" 2>&1
+TRC=$?
+log "tournament exited with rc=$TRC"
+
+if [ $TRC -ne 0 ]; then
+  log "ERROR: tournament failed"
+  echo "tournament rc=$TRC" > "$ERROR_FLAG"
+  exit 1
+fi
+
+# Verify output
+if [ ! -f "$TOURNAMENT_OUT" ]; then
+  log "ERROR: tournament output $TOURNAMENT_OUT missing"
+  echo "tournament output missing" > "$ERROR_FLAG"
+  exit 1
+fi
+log "tournament results: $TOURNAMENT_OUT"
+
+# Phase 4: mark done (path includes tournament output for the watcher)
+echo "$(date '+%Y-%m-%d %H:%M:%S') ${TOURNAMENT_OUT}" > "$DONE_FLAG"
 log "=== VM pipeline DONE ==="
