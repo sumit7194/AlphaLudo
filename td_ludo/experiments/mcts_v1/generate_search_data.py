@@ -122,38 +122,84 @@ def _advance_to_decision(game, rng):
     return False
 
 
+def _copy_state(state):
+    """Return a fresh deep copy of a `GameState`.
+
+    Required because `apply_move` returns a new state, but mutating fields
+    on it (e.g. `current_dice_roll`, `current_player`) and then storing
+    that reference in multiple places aliases all those references to the
+    SAME mutable object — a fatal bug for the search expansion below.
+
+    Implementation: construct a new GameState and copy each exposed field
+    using numpy for the array-typed properties (which the pybind binding
+    exposes as `np.ndarray` views).
+    """
+    s = ludo_cpp.GameState()
+    # Array fields — copy via np.ndarray to detach from the source's buffer.
+    s.player_positions = np.array(state.player_positions, dtype=np.int8).copy()
+    s.scores = np.array(state.scores, dtype=np.int8).copy()
+    s.active_players = np.array(state.active_players, dtype=bool).copy()
+    s.idle_counter = np.array(state.idle_counter, dtype=np.int8).copy()
+    s.last_moved_token = np.array(state.last_moved_token, dtype=np.int8).copy()
+    s.streak = np.array(state.streak, dtype=np.int8).copy()
+    # Scalar fields
+    s.current_player = int(state.current_player)
+    s.current_dice_roll = int(state.current_dice_roll)
+    s.is_terminal = bool(state.is_terminal)
+    return s
+
+
 def _expand_two_ply_leaves(game):
     """Enumerate all 2-ply leaf states from `game`.
 
     Returns:
       leaves:   list of GameState, one per leaf (own action × dice × opp action)
-      meta:     list of dicts {own_action, dice, opp_action, opp_terminal}
-                — opp_terminal=True means the game ended after opp's move,
-                  so the leaf value is determined by the outcome (no V call needed)
+      meta:     list of dicts {own_action, dice, opp_action, terminal_winner,
+                               next_player_is_root}
+                next_player_is_root: True iff after `own_a` the current_player
+                is still the root_player (= a 6-roll bonus or scoring move that
+                kept the turn). The Q aggregator branches on this flag because
+                "opp picks min" is wrong when it's actually still us choosing.
       legal_own: list of int — own legal actions at the root
-      structure_per_action: dict[own_action] -> list of (dice, [(opp_action, leaf_index)])
-                indices into the `leaves` array. opp_action == -1 means
-                "opp had no legal moves" (turn passes back to us).
+      structure_per_action: dict[own_action] -> dict[dice] -> list of
+                (chosen_action, leaf_index). chosen_action == -1 means the
+                player at that node had no legal moves (turn-pass).
+
+    Bug-fix history:
+      v2 (2026-05-06): _copy_state used everywhere mutation occurs, so each
+        leaf is a distinct GameState object. Plus `next_player_is_root` flag
+        plumbed into meta so the aggregator handles bonus-turn moves correctly.
     """
     legal_own = list(ludo_cpp.get_legal_moves(game))
     leaves = []
     meta = []
     structure_per_action = {a: {} for a in legal_own}
 
+    root_player = int(game.current_player)
+
     for own_a in legal_own:
-        # Apply our move with the CURRENT dice (already known at root)
         s_after_own = ludo_cpp.apply_move(game, int(own_a))
+        # Whether the turn stayed with the root player after own_a.
+        # In Ludo this happens on dice == 6 OR when the move scored a token.
+        # The aggregator MUST use max-over-actions (not min) for these,
+        # because the actor at the next decision is still root_player.
+        next_player_is_root = (
+            (not s_after_own.is_terminal)
+            and int(s_after_own.current_player) == root_player
+        )
+
         for dice in DICE_VALUES:
-            # If our move terminated the game, opp doesn't get a turn —
-            # the leaf is the post-our-move state with known outcome.
             if s_after_own.is_terminal:
-                leaf = s_after_own
+                # Game ended on our move. Single leaf, all dice values share it.
+                # Take a fresh copy so mutations elsewhere can't corrupt it.
+                leaf = _copy_state(s_after_own)
                 terminal_winner = int(ludo_cpp.get_winner(leaf))
                 meta.append({
                     "own_action": int(own_a),
                     "dice": dice,
                     "opp_action": -1,
                     "terminal_winner": terminal_winner,
+                    "next_player_is_root": False,  # game over, no decision
                 })
                 leaves.append(leaf)
                 structure_per_action[own_a].setdefault(dice, []).append(
@@ -161,23 +207,23 @@ def _expand_two_ply_leaves(game):
                 )
                 continue
 
-            # Opp's turn: set dice, find legal opp moves
-            s_for_opp = s_after_own
-            # Set dice for whoever's turn it is now (could be us if we rolled 6)
+            # Build a FRESH copy for this dice iteration so mutations to
+            # current_dice_roll don't leak across dice loop iterations.
+            s_for_opp = _copy_state(s_after_own)
             s_for_opp.current_dice_roll = dice
             opp_legals = list(ludo_cpp.get_legal_moves(s_for_opp))
 
             if not opp_legals:
-                # Opp has no legal moves — turn passes. The post-pass state
-                # is the leaf (with the next player's dice unknown; V at this
-                # state captures expected value over unknown dice).
-                # In Ludo, "pass" means cycle to next active player, dice=0.
-                cp = int(s_for_opp.current_player)
+                # No legal moves at this dice — pass turn back. We need the
+                # post-pass state as the leaf. CRITICAL: this leaf must be a
+                # standalone GameState (no aliasing to s_after_own), or every
+                # subsequent iteration's leaf references will see whatever this
+                # one mutated to. We use _copy_state again to be safe.
+                leaf = _copy_state(s_for_opp)
+                cp = int(leaf.current_player)
                 nxt = (cp + 1) % 4
-                while not s_for_opp.active_players[nxt]:
+                while not leaf.active_players[nxt]:
                     nxt = (nxt + 1) % 4
-                # Construct the post-pass state
-                leaf = s_for_opp
                 leaf.current_player = nxt
                 leaf.current_dice_roll = 0
                 meta.append({
@@ -185,6 +231,7 @@ def _expand_two_ply_leaves(game):
                     "dice": dice,
                     "opp_action": -1,
                     "terminal_winner": -1,
+                    "next_player_is_root": next_player_is_root,
                 })
                 leaves.append(leaf)
                 structure_per_action[own_a].setdefault(dice, []).append(
@@ -192,9 +239,11 @@ def _expand_two_ply_leaves(game):
                 )
                 continue
 
-            # Opp has legal moves — try each, leaf = state-after-opp-move
+            # Opp (or root, if bonus turn) has legal moves — try each.
             for opp_a in opp_legals:
                 s_leaf = ludo_cpp.apply_move(s_for_opp, int(opp_a))
+                # apply_move returns a fresh state, so no copy needed for
+                # storage. (We're not mutating s_leaf after this point.)
                 terminal_winner = (
                     int(ludo_cpp.get_winner(s_leaf)) if s_leaf.is_terminal else -1
                 )
@@ -203,6 +252,7 @@ def _expand_two_ply_leaves(game):
                     "dice": dice,
                     "opp_action": int(opp_a),
                     "terminal_winner": terminal_winner,
+                    "next_player_is_root": next_player_is_root,
                 })
                 leaves.append(s_leaf)
                 structure_per_action[own_a].setdefault(dice, []).append(
@@ -255,19 +305,32 @@ def _aggregate_q_per_action(leaves, meta, leaf_values, legal_own, structure, roo
             else:
                 leaf_v_root[idx] = -v_signed
 
+    # `meta` carries `next_player_is_root`: True when, after own_a, the
+    # next decision-maker is the root player (6-roll bonus or score). The
+    # aggregation must use MAX over actions (we pick best for ourselves)
+    # instead of MIN (which is correct only when opp is choosing).
+    # We look up the flag once per (own_a, dice) bucket — every leaf in
+    # the same bucket shares the same flag by construction.
     Q = {}
     for own_a in legal_own:
         dice_to_pairs = structure[own_a]
-        # Average over dice (1/6 each, even if some dice values weren't expanded — shouldn't happen)
         sum_over_dice = 0.0
         for dice in DICE_VALUES:
             pairs = dice_to_pairs.get(dice, [])
             if not pairs:
                 continue
-            # Among opp's choices, opp picks the one MAXIMIZING their value (our loss).
-            # In root POV: opp picks the min V_root among their options.
-            best_opp_v_root = min(leaf_v_root[idx] for (_, idx) in pairs)
-            sum_over_dice += best_opp_v_root
+            # Find flag for this bucket using the first leaf's meta entry.
+            _, first_leaf_idx = pairs[0]
+            next_is_root = bool(meta[first_leaf_idx]["next_player_is_root"])
+
+            if next_is_root:
+                # Bonus turn: WE are the actor at the next decision.
+                # Pick max V_root over our second-move options.
+                best_v_root = max(leaf_v_root[idx] for (_, idx) in pairs)
+            else:
+                # Standard: opp picks max-for-them = min V_root for us.
+                best_v_root = min(leaf_v_root[idx] for (_, idx) in pairs)
+            sum_over_dice += best_v_root
         Q[own_a] = sum_over_dice / 6.0  # uniform expectation over dice
 
     return Q
