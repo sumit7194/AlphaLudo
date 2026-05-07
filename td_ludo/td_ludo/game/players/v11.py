@@ -46,6 +46,17 @@ def compute_sparse_reward(old_state, new_state, player):
     return 0.0
 
 
+# Bias-correction penalties (opt-in via env var). When LUDO_BIAS_PENALTIES=1
+# is set in the trainer environment, the 5 known-bias penalties from
+# td_ludo.game.bias_penalties get added on top of the sparse score reward.
+# Default off so any in-flight training keeps producing identical rewards.
+_BIAS_PENALTIES_ENABLED = os.environ.get('LUDO_BIAS_PENALTIES', '0').lower() in ('1', 'true', 'yes')
+if _BIAS_PENALTIES_ENABLED:
+    from td_ludo.game.bias_penalties import compute_bias_penalties
+else:
+    compute_bias_penalties = None  # type: ignore
+
+
 BOT_CLASSES = {
     'Heuristic': HeuristicLudoBot,
     'Aggressive': AggressiveBot,
@@ -61,7 +72,12 @@ class VectorACGamePlayer:
 
     def __init__(self, trainer, batch_size, device, model_factory=None, elo_tracker=None,
                  search_enabled=False, search_target_fraction=0.25,
-                 search_label_smoothing=0.1):
+                 search_label_smoothing=0.1,
+                 historical_opponents_enabled=False,
+                 encoder_fn=None):
+        # encoder_fn: ludo_cpp.encode_state_* callable for the main model's
+        # input. Defaults to encode_state_v11 (33ch) for V11/V12 family;
+        # V13 (MinimalCNN14) passes encode_state_v14_minimal (14ch).
         self.trainer = trainer
         self.batch_size = batch_size
         self.device = device
@@ -81,6 +97,24 @@ class VectorACGamePlayer:
             'top1_agreement_sum': 0.0, 'top1_agreement_n': 0,
         }
 
+        # Main-model encoder. Default = V11 (33ch) for V11/V12 line; V13
+        # passes encode_state_v14_minimal (14ch) for the MinimalCNN14
+        # student architecture.
+        self.encoder_fn = encoder_fn if encoder_fn is not None else ludo_cpp.encode_state_v11
+
+        # Phase 2: historical opponent registry. Lazy-loads prior-generation
+        # V-model checkpoints (V6.3 / V10 / V11 / V12) and routes Hist_*
+        # controller turns through them with the right encoder per arch.
+        # When disabled, Hist_* controllers fall through to the bot path
+        # (which would just play random) — safe but pointless. Caller
+        # should set this True iff the game composition includes Hist_* tags.
+        self.historical_opponents_enabled = historical_opponents_enabled
+        if historical_opponents_enabled:
+            from td_ludo.game.players.opponent_registry import OpponentRegistry
+            self.opp_registry = OpponentRegistry(device=device)
+        else:
+            self.opp_registry = None
+
         two_player = (NUM_ACTIVE_PLAYERS == 2)
         self.env = ludo_cpp.VectorGameState(batch_size, two_player)
 
@@ -92,6 +126,12 @@ class VectorACGamePlayer:
 
         self.game_compositions = [self._random_composition() for _ in range(batch_size)]
         self.trajectories = [{} for _ in range(batch_size)]
+        # Aux trajectories collect opponent-turn states (bot/hist controllers)
+        # for value-head training. Safe post encoder-fix because the canonical
+        # rotated view is now consistent across players. Per game: list of
+        # {'state': tensor, 'cp': int} dicts. NOT used for PPO policy loss
+        # (off-policy actions). Consumed by trainer for value-only loss.
+        self.aux_trajectories = [[] for _ in range(batch_size)]
 
         self.total_games = 0
         self.total_model_wins = 0
@@ -202,6 +242,9 @@ class VectorACGamePlayer:
         actions = []
         current_players = []
         decision_groups = {}
+        # Phase 2 (historical opponents): rows pending Hist_* batched
+        # inference. dict: tag → list of game-indices for this turn.
+        hist_pending = {}
 
         for i in range(self.batch_size):
             game = self.env.get_game(i)
@@ -258,10 +301,27 @@ class VectorACGamePlayer:
                     group_key = ('Main', None)
                 decision_groups.setdefault(group_key, []).append(i)
                 actions.append(-2)
+            elif controller.startswith('Hist_') and self.opp_registry is not None:
+                # Phase 2: historical opponent. Defer the action; we'll
+                # batch-resolve all Hist_* rows after the main model loop
+                # by tag using the OpponentRegistry.
+                hist_pending.setdefault(controller, []).append(i)
+                actions.append(-2)
             else:
                 bot = self.bots.get(ptype, self.bots['Random'])
                 action = bot.select_move(game, legal_moves)
                 actions.append(action)
+                # AUX: capture opp-turn state for value-head training.
+                # Only relevant when training is on AND this game has a model_player
+                # (otherwise the eventual outcome target won't be meaningful).
+                # Skip if cp is itself a train_player (already recorded normally).
+                if (train and cp not in composition['train_players']
+                        and len(legal_moves) >= 1):
+                    state_tensor_aux = self.encoder_fn(game)
+                    self.aux_trajectories[i].append({
+                        'state': state_tensor_aux,
+                        'cp': cp,
+                    })
 
         # Batched model inference (V10 encoding)
         if decision_groups:
@@ -277,8 +337,9 @@ class VectorACGamePlayer:
                     lmoves = ludo_cpp.get_legal_moves(game)
                     batch_legal_moves.append(lmoves)
 
-                    # V12.1: encode_state_v11 = V10 (28ch) + idle (4) + streak (1) = 33ch
-                    state_tensor = ludo_cpp.encode_state_v11(game)
+                    # Encoder dispatch via self.encoder_fn — V11/V12: 33ch
+                    # encode_state_v11; V13: 14ch encode_state_v14_minimal.
+                    state_tensor = self.encoder_fn(game)
                     batch_states.append(state_tensor)
 
                     legal_mask = np.zeros(4, dtype=np.float32)
@@ -349,22 +410,73 @@ class VectorACGamePlayer:
                         'pi_search': None,  # filled by _maybe_run_search below
                     })
 
+        # Phase 2: historical opponent resolution. Each Hist_* tag has its
+        # own architecture and encoder; the registry handles per-tag
+        # dispatch internally. We pass all pending rows in one call —
+        # registry groups by tag and runs one batched forward per group.
+        if hist_pending and self.opp_registry is not None:
+            items = []
+            order = []  # list of (tag, idx) in the order we'll receive actions
+            for tag, idxs in hist_pending.items():
+                for idx in idxs:
+                    game = self.env.get_game(idx)
+                    cp = current_players[idx]
+                    csix = int(self.consecutive_sixes[idx, cp])
+                    items.append((tag, game, csix))
+                    order.append((tag, idx))
+            flat_actions = self.opp_registry.select_actions_batched(items)
+            for k, (_tag, idx) in enumerate(order):
+                a = flat_actions[k]
+                if a < 0:
+                    # No legal moves — fall back to legacy bot-path "no-op"
+                    # (the env handles -1 as a pass).
+                    actions[idx] = -1
+                else:
+                    actions[idx] = a
+                # AUX: capture hist-opp turn state for value-head training.
+                if train and a >= 0:
+                    cp = current_players[idx]
+                    composition = self.game_compositions[idx]
+                    if cp not in composition['train_players']:
+                        game = self.env.get_game(idx)
+                        state_tensor_aux = self.encoder_fn(game)
+                        self.aux_trajectories[idx].append({
+                            'state': state_tensor_aux,
+                            'cp': cp,
+                        })
+
         # Exp 24: search-during-training. Run depth-1 expectimax on a sampled
         # fraction of newly-appended training-player steps and back-fill
         # 'pi_search' into them.
         if train and self.search_enabled and self.search_target_fraction > 0:
             self._maybe_run_search(current_players)
 
-        # Pre-step state snapshot for reward computation
+        # Pre-step state snapshot for reward computation. Also capture
+        # decision context (dice, legal moves, action, move_count) so the
+        # bias-correction penalties can fire when LUDO_BIAS_PENALTIES=1.
+        # Cheap to capture; ignored unless bias penalties are enabled.
         pre_step_states = []
         pre_step_scores = []
         pre_step_active = []
+        pre_step_context = []
         for i in range(self.batch_size):
             game = self.env.get_game(i)
             old_pos = {p: list(game.player_positions[p]) for p in range(4)}
             pre_step_states.append(old_pos)
             pre_step_scores.append(list(game.scores))
             pre_step_active.append(list(game.active_players))
+            took_action = actions[i] >= 0 and not game.is_terminal
+            if _BIAS_PENALTIES_ENABLED and took_action:
+                # Re-fetch legal moves at decision time. Cheap C++ call.
+                lmoves = [int(m) for m in ludo_cpp.get_legal_moves(game)]
+                pre_step_context.append({
+                    'dice': int(game.current_dice_roll),
+                    'legal_moves': lmoves,
+                    'action': int(actions[i]),
+                    'move_count': int(self.move_counts[i]),
+                })
+            else:
+                pre_step_context.append(None)
 
         # Step environment
         final_actions = [a if a >= 0 else -1 for a in actions]
@@ -392,6 +504,14 @@ class VectorACGamePlayer:
 
                 step_reward = compute_sparse_reward(dummy_old, dummy_new, cp)
 
+                # Add bias-correction penalties (only when enabled + context).
+                # Penalty is ≤ 0; sums into step_reward.
+                if _BIAS_PENALTIES_ENABLED and pre_step_context[i] is not None:
+                    bias_total, _bd = compute_bias_penalties(
+                        dummy_old, dummy_new, cp, pre_step_context[i],
+                    )
+                    step_reward += bias_total
+
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:
                     step = self.trajectories[i][cp][last_idx]
@@ -415,7 +535,8 @@ class VectorACGamePlayer:
                             self.trainer.train_on_game(
                                 self.trajectories[i],
                                 winner,
-                                train_player
+                                train_player,
+                                aux_trajectory=self.aux_trajectories[i],
                             )
                     self.trainer.total_games += 1
 
@@ -432,6 +553,7 @@ class VectorACGamePlayer:
                 self.game_compositions[i] = self._random_composition()
                 self.consecutive_sixes[i] = 0
                 self.trajectories[i] = {}
+                self.aux_trajectories[i] = []
 
                 results.append({
                     'winner': winner,

@@ -1,0 +1,268 @@
+:root {
+  --bg: #0b1220;
+  --panel: #131a2a;
+  --panel-2: #1a2236;
+  --border: #2a3550;
+  --text: #e6e9f2;
+  --muted: #8b95ad;
+  --human: #1fc97d;
+  --ai: #ffbf33;
+  --pickH: #34d399;
+  --pickA: #fb7185;
+  --safe: #5eead4;
+  --hp0: rgba(31, 201, 125, 0.18);
+  --hp2: rgba(255, 191, 51, 0.18);
+  --base0: rgba(31, 201, 125, 0.32);
+  --base2: rgba(255, 191, 51, 0.32);
+  --cell: 36px;
+  --good: #34d399;
+  --gold: #f59e0b;
+  --bad: #f87171;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.app { max-width: 1280px; margin: 0 auto; padding: 16px; }
+
+.header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.header .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.counter { font-size: 16px; color: var(--muted); }
+.counter #idx { color: var(--text); font-weight: 700; }
+.filter-info { font-size: 11px; color: var(--muted); margin-left: 8px; }
+
+.filterbar { display: flex; gap: 16px; align-items: center; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
+.filterbar select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+
+.grid { display: grid; grid-template-columns: minmax(420px, auto) 1fr; gap: 16px; align-items: start; }
+
+.board-pane { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.board-shell { display: flex; justify-content: center; }
+.board { display: grid; grid-template-columns: repeat(15, var(--cell)); grid-template-rows: repeat(15, var(--cell)); gap: 1px; background: #0a0f1d; padding: 4px; border-radius: 6px; }
+.cell { background: var(--panel-2); border-radius: 2px; position: relative; }
+.cell.path { background: #2a3346; }
+.cell.safe { background: var(--safe); opacity: 0.7; }
+.cell.home-run-0 { background: rgba(31, 201, 125, 0.45); }
+.cell.home-run-2 { background: rgba(255, 191, 51, 0.45); }
+.cell.home-center { background: #fff; opacity: 0.85; border-radius: 6px; }
+.cell.base-0 { background: var(--base0); }
+.cell.base-2 { background: var(--base2); }
+.cell.spawn-0 { box-shadow: inset 0 0 0 2px var(--human); }
+.cell.spawn-2 { box-shadow: inset 0 0 0 2px var(--ai); }
+
+.token { position: absolute; inset: 4px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25); }
+.token-stack { position: absolute; bottom: 2px; right: 3px; font-size: 9px; color: #000; background: #fff; padding: 0 4px; border-radius: 6px; font-weight: 700; }
+.token.h { background: radial-gradient(circle at 30% 30%, #59f1b2, #0c9158); border: 2px solid #0c9158; }
+.token.a { background: radial-gradient(circle at 30% 30%, #ffe17f, #dd8b08); border: 2px solid #dd8b08; }
+.token.picked-h { box-shadow: 0 0 0 3px var(--pickH), 0 0 12px var(--pickH); }
+.token.picked-a { box-shadow: 0 0 0 3px var(--pickA), 0 0 12px var(--pickA); }
+
+.legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.legend .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+.legend .dot.human { background: var(--human); }
+.legend .dot.ai { background: var(--ai); }
+.legend .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+.legend .badge.picked-h { background: var(--pickH); color: #082617; }
+.legend .badge.picked-a { background: var(--pickA); color: #2a0712; }
+
+.info-pane { display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.kv { width: 100%; font-size: 13px; }
+.kv th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 4px 0; width: 40%; }
+.kv td { padding: 4px 0; font-variant-numeric: tabular-nums; }
+.kv td.dice { font-weight: 700; font-size: 16px; }
+
+.probs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.prob-row { display: grid; grid-template-columns: 32px 1fr 56px; gap: 8px; align-items: center; }
+.prob-row .lab { font-weight: 600; font-size: 12px; }
+.prob-row .bar { height: 14px; background: var(--panel-2); border-radius: 3px; overflow: hidden; position: relative; }
+.prob-row .fill { height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); transition: width 200ms; }
+.prob-row .pct { font-variant-numeric: tabular-nums; font-size: 12px; text-align: right; color: var(--muted); }
+.prob-row.illegal .lab, .prob-row.illegal .pct { color: #4a5268; }
+.prob-row.illegal .bar { opacity: 0.3; }
+.prob-row.picked-h { background: rgba(52, 211, 153, 0.10); padding: 2px 6px; margin: 0 -6px; border-radius: 4px; }
+.prob-row.picked-a { background: rgba(251, 113, 133, 0.10); padding: 2px 6px; margin: 0 -6px; border-radius: 4px; }
+.prob-row.picked-both { background: rgba(139, 92, 246, 0.18); padding: 2px 6px; margin: 0 -6px; border-radius: 4px; }
+.meta { font-size: 12px; color: var(--muted); }
+
+textarea { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font: inherit; font-size: 13px; resize: vertical; min-height: 60px; }
+.markrow { display: flex; gap: 6px; margin-top: 8px; }
+.mark { flex: 1; padding: 8px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 13px; transition: background 100ms; }
+.mark:hover { background: #283250; }
+.mark.active { background: var(--panel); box-shadow: inset 0 0 0 2px currentColor; }
+.mark-important { color: var(--gold); }
+.mark-normal { color: var(--muted); }
+.mark-dismiss { color: var(--bad); }
+.annot-meta { margin-top: 8px; font-size: 11px; color: var(--muted); font-style: italic; }
+
+.card.nav { display: flex; gap: 8px; align-items: center; }
+.card.nav button { flex: 1; padding: 10px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 14px; }
+.card.nav button:hover { background: #283250; }
+.card.nav .hint { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+/* ===========================================================
+   MOBILE LAYOUT
+   <900px: stack columns, slim cards
+   <600px: compact header, sticky bottom nav, vw-scaled cells
+   =========================================================== */
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
+  :root { --cell: 30px; }
+  .info-pane { gap: 8px; }
+  .card { padding: 10px 12px; }
+  .header h1 { font-size: 16px; }
+  .filterbar { flex-wrap: wrap; gap: 10px; padding: 8px; font-size: 12px; }
+}
+
+@media (max-width: 600px) {
+  /* Use viewport width to scale board: 15 cells + 14 gaps + padding fits ~96vw */
+  :root { --cell: min(5.8vw, 30px); }
+
+  .app { padding: 8px; padding-bottom: 88px; /* room for sticky nav */ }
+
+  /* Header: ultra compact */
+  .header {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 8px;
+    gap: 8px;
+  }
+  .header h1 { font-size: 14px; line-height: 1.2; }
+  .header .sub { font-size: 10px; line-height: 1.3; margin-top: 2px; }
+  .counter { font-size: 13px; white-space: nowrap; }
+  .counter #idx { font-size: 16px; }
+  .filter-info { display: block; font-size: 10px; }
+
+  /* Filterbar: wrap to multiple rows on mobile (no horizontal scroll —
+     selects don't open reliably from inside scrollable containers on iOS). */
+  .filterbar {
+    padding: 8px;
+    gap: 8px;
+    font-size: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .filterbar label {
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  /* iOS tap-target compliance: make selects big enough to reliably activate */
+  .filterbar select {
+    font-size: 14px;
+    padding: 8px 24px 8px 8px;
+    min-height: 36px;
+    min-width: 110px;
+    -webkit-appearance: menulist;  /* native picker on iOS */
+    appearance: menulist;
+  }
+  /* Same for the checkbox label so it's tappable */
+  .filterbar input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Board pane: minimal padding so the board takes max width */
+  .board-pane { padding: 6px; }
+  .board-shell { padding: 0; }
+  .board { padding: 2px; }
+
+  /* Tokens: smaller text, thinner highlights */
+  .token { font-size: 9px; border-width: 1px; }
+  .token.picked-h, .token.picked-a {
+    box-shadow: 0 0 0 2px var(--pickH), 0 0 8px var(--pickH);
+  }
+  .token.picked-a { box-shadow: 0 0 0 2px var(--pickA), 0 0 8px var(--pickA); }
+  .token-stack { font-size: 8px; padding: 0 3px; }
+
+  /* Legend wraps cleanly */
+  .legend { font-size: 10px; gap: 8px; }
+  .legend .badge { padding: 2px 6px; font-size: 10px; }
+
+  /* Cards: tighter */
+  .card { padding: 8px 10px; }
+  .card h3 { font-size: 11px; margin-bottom: 6px; }
+  .kv { font-size: 12px; }
+  .kv th { width: 45%; padding: 3px 6px 3px 0; }
+  .kv td.dice { font-size: 14px; }
+
+  .probs { gap: 4px; }
+  .prob-row { grid-template-columns: 28px 1fr 60px; gap: 6px; font-size: 11px; }
+  .prob-row .bar { height: 12px; }
+  .meta { font-size: 11px; }
+
+  textarea { font-size: 13px; min-height: 50px; padding: 6px; }
+  .markrow { gap: 4px; margin-top: 6px; }
+  .mark { padding: 10px 4px; font-size: 12px; min-height: 44px; /* iOS tap target */ }
+  .annot-meta { font-size: 10px; margin-top: 6px; }
+
+  /* Annotation card: HIDDEN by default on mobile. Toggle with 💬 in nav.
+     When opened, slides up above the nav. */
+  .annot-card {
+    position: fixed !important;
+    left: 8px;
+    right: 8px;
+    bottom: 76px;
+    z-index: 49;
+    margin: 0;
+    padding: 8px 10px;
+    background: rgba(19, 26, 42, 0.97);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.4);
+    border-color: var(--border);
+    max-height: 50vh;
+    overflow-y: auto;
+    display: none;       /* HIDDEN by default on mobile */
+  }
+  .annot-card.open { display: block; }
+  .annot-card h3 { display: none; }
+  .annot-card textarea { min-height: 60px; max-height: 100px; font-size: 13px; }
+  .annot-card .annot-meta { display: none; }
+
+  /* Toggle button styling — stands out from prev/next */
+  .annot-toggle {
+    flex: 0 0 auto !important;
+    min-width: 48px;
+    background: var(--panel-2) !important;
+    font-size: 18px !important;
+    padding: 14px 12px !important;
+  }
+  .annot-toggle.has-annot { color: var(--gold); }
+  .annot-toggle.is-open { background: var(--gold) !important; color: #000 !important; }
+
+  /* Bottom padding only needs to cover the nav (~64). Annotation is overlay. */
+  .app { padding-bottom: 88px; }
+
+  /* Sticky bottom nav for thumbable prev/next */
+  .card.nav {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    z-index: 50;
+    margin: 0;
+    padding: 8px;
+    gap: 6px;
+    background: var(--panel);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(8px);
+  }
+  .card.nav button {
+    padding: 14px;
+    font-size: 15px;
+    min-height: 48px;
+    font-weight: 600;
+  }
+  .card.nav .hint { display: none; /* no keyboard on mobile */ }
+}
+
+/* Very small phones */
+@media (max-width: 380px) {
+  :root { --cell: min(5.5vw, 26px); }
+  .header h1 { font-size: 12px; }
+  .header h1 + .sub { display: none; }  /* drop subtitle */
+  .filterbar { font-size: 10px; }
+  .markrow { flex-direction: column; }
+  .mark { width: 100%; }
+}

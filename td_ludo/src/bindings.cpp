@@ -268,6 +268,111 @@ PYBIND11_MODULE(td_ludo_cpp, m) {
     return result;
   });
 
+  m.def("encode_state_v14_minimal", [](const GameState &state) {
+    // Return shape (14, 15, 15) - V14 Minimal Distillation Stack
+    py::array_t<float> result({14, BOARD_SIZE, BOARD_SIZE});
+    auto buf = result.mutable_data();
+    write_state_tensor_v14_minimal(state, buf);
+    return result;
+  });
+
+  // V14_scalar: non-spatial encoder for the DeepSets model. Returns a dict
+  // of numpy arrays + scalars. See V14ScalarEncoding in game.h for layout.
+  m.def("encode_state_v14_scalar", [](const GameState &state) {
+    V14ScalarEncoding enc;
+    write_state_v14_scalar(state, enc);
+    py::dict out;
+
+    // Per-own-token features (NUM_TOKENS = 4 each)
+    auto own_pos = py::array_t<int8_t>({NUM_TOKENS});
+    std::memcpy(own_pos.mutable_data(), enc.own_pos_emb,
+                NUM_TOKENS * sizeof(int8_t));
+    out["own_pos"] = own_pos;
+
+    auto own_in_danger = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_in_danger.mutable_data(), enc.own_in_danger,
+                NUM_TOKENS * sizeof(bool));
+    out["own_in_danger"] = own_in_danger;
+
+    auto own_can_capture = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_can_capture.mutable_data(), enc.own_can_capture,
+                NUM_TOKENS * sizeof(bool));
+    out["own_can_capture"] = own_can_capture;
+
+    auto own_can_score = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_can_score.mutable_data(), enc.own_can_score,
+                NUM_TOKENS * sizeof(bool));
+    out["own_can_score"] = own_can_score;
+
+    auto own_can_land_safe = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_can_land_safe.mutable_data(), enc.own_can_land_safe,
+                NUM_TOKENS * sizeof(bool));
+    out["own_can_land_safe"] = own_can_land_safe;
+
+    auto own_is_safe = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_is_safe.mutable_data(), enc.own_is_safe,
+                NUM_TOKENS * sizeof(bool));
+    out["own_is_safe"] = own_is_safe;
+
+    auto own_at_base = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_at_base.mutable_data(), enc.own_at_base,
+                NUM_TOKENS * sizeof(bool));
+    out["own_at_base"] = own_at_base;
+
+    auto own_at_home = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(own_at_home.mutable_data(), enc.own_at_home,
+                NUM_TOKENS * sizeof(bool));
+    out["own_at_home"] = own_at_home;
+
+    auto own_idle = py::array_t<float>({NUM_TOKENS});
+    std::memcpy(own_idle.mutable_data(), enc.own_idle_count,
+                NUM_TOKENS * sizeof(float));
+    out["own_idle_count"] = own_idle;
+
+    // Per-opp-token features
+    auto opp_pos = py::array_t<int8_t>({NUM_TOKENS});
+    std::memcpy(opp_pos.mutable_data(), enc.opp_pos_emb,
+                NUM_TOKENS * sizeof(int8_t));
+    out["opp_pos"] = opp_pos;
+
+    auto opp_in_my_danger = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(opp_in_my_danger.mutable_data(), enc.opp_in_my_danger,
+                NUM_TOKENS * sizeof(bool));
+    out["opp_in_my_danger"] = opp_in_my_danger;
+
+    auto opp_threatens_me = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(opp_threatens_me.mutable_data(), enc.opp_threatens_me,
+                NUM_TOKENS * sizeof(bool));
+    out["opp_threatens_me"] = opp_threatens_me;
+
+    auto opp_is_safe = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(opp_is_safe.mutable_data(), enc.opp_is_safe,
+                NUM_TOKENS * sizeof(bool));
+    out["opp_is_safe"] = opp_is_safe;
+
+    auto opp_at_base = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(opp_at_base.mutable_data(), enc.opp_at_base,
+                NUM_TOKENS * sizeof(bool));
+    out["opp_at_base"] = opp_at_base;
+
+    auto opp_at_home = py::array_t<bool>({NUM_TOKENS});
+    std::memcpy(opp_at_home.mutable_data(), enc.opp_at_home,
+                NUM_TOKENS * sizeof(bool));
+    out["opp_at_home"] = opp_at_home;
+
+    // Globals (Python-side scalars; Python wrapper will pack into a vector)
+    out["dice"] = (int)enc.dice;
+    out["same_token_streak"] = enc.same_token_streak;
+    out["my_locked_frac"] = enc.my_locked_frac;
+    out["opp_locked_frac"] = enc.opp_locked_frac;
+    out["score_diff"] = enc.score_diff;
+    out["leader_progress"] = enc.leader_progress;
+    out["non_home_tokens_frac"] = enc.non_home_tokens_frac;
+    out["bonus_turn_flag"] = enc.bonus_turn_flag;
+
+    return out;
+  });
+
   m.def("get_winner", &get_winner, "Get winner (-1 if none)");
   m.def("create_initial_state", &create_initial_state,
         "Create initial 4-player game state");

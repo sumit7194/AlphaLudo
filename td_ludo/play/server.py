@@ -8,7 +8,8 @@ Select via env var:
     LUDO_MODEL=v6_1                  (loads model_weights/model.pt)
     LUDO_MODEL=v6_3                  (loads model_weights/model_v6_3.pt)
     LUDO_MODEL=v11                   (loads model_weights/model_v11.pt)
-    LUDO_MODEL=v12   (default)       (loads model_weights/model_v12.pt)
+    LUDO_MODEL=v12                   (loads model_weights/model_v12.pt)
+    LUDO_MODEL=v12_2 (default)       (loads model_weights/v12_2/model_latest.pt)
 """
 
 import math
@@ -28,17 +29,26 @@ sys.path.insert(0, TD_LUDO_DIR)
 import td_ludo_cpp as ludo_cpp
 from flask import Flask, jsonify, request, send_from_directory
 from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11, AlphaLudoV12
+# V13.x models live in the main td_ludo package.
+from td_ludo.models.v13_1 import MinimalCNN14Aux
+# V13.2 uses a 17-channel encoder = V14_minimal (14ch) + 3 static V11 channels.
+from td_ludo.game.encoder_v17 import encode_state_v17
 
 # ── Configuration ──────────────────────────────────────────────
-MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12'):
-    raise ValueError(f"Unknown LUDO_MODEL='{MODEL_VERSION}'. Use 'v6_1', 'v6_3', 'v11', or 'v12'.")
+MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12_2').lower()
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2'):
+    raise ValueError(
+        f"Unknown LUDO_MODEL='{MODEL_VERSION}'. "
+        "Use 'v6_1', 'v6_3', 'v11', 'v12', 'v12_2', or 'v13_2'."
+    )
 
 MODEL_FILES = {
-    'v6_1': os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
-    'v6_3': os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
-    'v11':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
-    'v12':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
+    'v6_1':  os.path.join(SCRIPT_DIR, 'model_weights', 'model.pt'),
+    'v6_3':  os.path.join(SCRIPT_DIR, 'model_weights', 'model_v6_3.pt'),
+    'v11':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
+    'v12':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
+    'v12_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v12_2', 'model_latest.pt'),
+    'v13_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_2', 'model_best.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
 
@@ -157,7 +167,24 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v12':
+    if MODEL_VERSION == 'v13_2':
+        # V13.2: pure CNN, 10 ResBlocks × 128ch, 17-channel input
+        # (V14_minimal 14ch + 3 static V11 channels). No aux heads.
+        # We reuse MinimalCNN14Aux (the V13.1 class) and load with strict=False
+        # so the unused aux conv weights stay at random init — they are never
+        # called because forward(aux=False) skips them.
+        model = MinimalCNN14Aux(
+            num_res_blocks=10, num_channels=128, in_channels=17,
+        )
+    elif MODEL_VERSION == 'v12_2':
+        # V12.2: fresh-init wider+shallower (3×128 + 2 attn × 4 heads),
+        # V11 encoder (33 channels). 1.36M params.
+        model = AlphaLudoV12(
+            num_res_blocks=3, num_channels=128,
+            num_attn_layers=2, num_heads=4,
+            ffn_ratio=4, dropout=0.0, in_channels=33,
+        )
+    elif MODEL_VERSION == 'v12':
         # V12: same CNN backbone as V11.1, but attention over 8 game-piece
         # tokens (not 225 cells). 4 ResBlocks × 96ch + 2 attn × 4 heads.
         model = AlphaLudoV12(
@@ -186,9 +213,19 @@ def load_model():
         checkpoint = {k.replace('_orig_mod.', ''): v for k, v in checkpoint.items()}
     # Handle full checkpoint dict vs raw state_dict
     if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        state_dict = checkpoint['model_state_dict']
     else:
-        model.load_state_dict(checkpoint)
+        state_dict = checkpoint
+    if MODEL_VERSION == 'v13_2':
+        # V13.2 checkpoint has no aux conv weights — load non-strict.
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        non_aux_missing = [k for k in missing if not k.startswith('aux_')]
+        if non_aux_missing:
+            raise RuntimeError(f"V13.2 missing non-aux keys: {non_aux_missing}")
+        if unexpected:
+            raise RuntimeError(f"V13.2 unexpected keys: {unexpected}")
+    else:
+        model.load_state_dict(state_dict)
 
     model.eval()
     model.to(device)
@@ -273,6 +310,11 @@ class DecisionLogger:
         os.makedirs(self.logs_dir, exist_ok=True)
         self.outcomes_path = os.path.join(self.logs_dir, 'outcomes.jsonl')
         self.ratings_path = os.path.join(self.logs_dir, 'ratings.jsonl')
+        # Human-flagged "I'd have played differently" against the AI.
+        # One global file — same shape as the search-candidate review feeds.
+        self.ai_disagreements_path = os.path.join(
+            self.logs_dir, 'ai_disagreements.jsonl'
+        )
 
     @staticmethod
     def _now_iso():
@@ -284,6 +326,38 @@ class DecisionLogger:
 
     def decisions_path(self, game_id):
         return os.path.join(self.logs_dir, f'decisions_{game_id}.jsonl')
+
+    def ai_decisions_path(self, game_id):
+        return os.path.join(self.logs_dir, f'ai_decisions_{game_id}.jsonl')
+
+    def log_ai_decision(self, record):
+        try:
+            path = self.ai_decisions_path(record['game_id'])
+            with open(path, 'a') as f:
+                f.write(json.dumps(record, separators=(',', ':')) + '\n')
+        except Exception as e:
+            print(f"[DecisionLogger] log_ai_decision failed: {e}")
+
+    def read_ai_decisions(self, game_id):
+        path = self.ai_decisions_path(game_id)
+        if not os.path.exists(path):
+            return []
+        out = []
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+        return out
+
+    def log_ai_disagreement(self, record):
+        record['ts'] = self._now_iso()
+        with open(self.ai_disagreements_path, 'a') as f:
+            f.write(json.dumps(record, separators=(',', ':')) + '\n')
 
     def log_decision(self, record):
         try:
@@ -396,6 +470,7 @@ class GameManager:
         self.last_move_info = None
         self.game_id = decision_logger.start_game()
         self._human_decision_count = 0
+        self._ai_decision_count = 0
         self._outcome_logged = False
         self._cached_prediction = None
         if hasattr(self, '_initialized'):
@@ -449,7 +524,13 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION in ('v11', 'v12'):
+            if MODEL_VERSION == 'v13_2':
+                # V13.2 uses V17 encoder (V14 minimal + 3 static V11 channels).
+                state_tensor = encode_state_v17(self.state)
+            elif MODEL_VERSION == 'v12_2':
+                # V12.2 uses V11 encoder (33 channels — adds idle/streak/danger).
+                state_tensor = ludo_cpp.encode_state_v11(self.state)
+            elif MODEL_VERSION in ('v11', 'v12'):
                 # V11 and V12 both use the V10 encoder (28 channels).
                 state_tensor = ludo_cpp.encode_state_v10(self.state)
             elif MODEL_VERSION == 'v6_3':
@@ -484,9 +565,9 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        if MODEL_VERSION in ('v11', 'v12'):
-            # V11/V12 win_prob head is sigmoid-output, BCE-trained on actual
-            # outcomes — already a calibrated probability in [0, 1].
+        if MODEL_VERSION in ('v11', 'v12', 'v12_2', 'v13_2'):
+            # V11/V12/V12.2/V13.2 win_prob head is sigmoid-output, BCE-trained
+            # on actual outcomes — already a calibrated probability in [0, 1].
             ai_win_prob = v
         else:
             # V6.x value head is unbounded; squash for display.
@@ -631,7 +712,7 @@ class GameManager:
         """Run the loaded V11/V12 model on the current state and return a
         dict with policy / argmax / win_prob / moves_remaining. Returns
         None for older models (different encoder, not supported)."""
-        if MODEL_VERSION not in ('v11', 'v12'):
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
             return None
 
         legal_mask = np.zeros(4, dtype=np.float32)
@@ -639,7 +720,12 @@ class GameManager:
             legal_mask[int(m)] = 1.0
 
         try:
-            state_tensor = ludo_cpp.encode_state_v10(self.state)
+            if MODEL_VERSION == 'v13_2':
+                state_tensor = encode_state_v17(self.state)
+            elif MODEL_VERSION == 'v12_2':
+                state_tensor = ludo_cpp.encode_state_v11(self.state)
+            else:
+                state_tensor = ludo_cpp.encode_state_v10(self.state)
             with torch.no_grad():
                 s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
                     self.device, dtype=torch.float32
@@ -759,10 +845,9 @@ class GameManager:
         (interest_score, kl, agree) are precomputed at log time so the
         review endpoint can sort without re-deriving them.
         """
-        # Only V11/V12 share the 28-channel encoder we rely on. Older
-        # models use a different encoder + value-head semantics; just
-        # skip Level 1 for them.
-        if MODEL_VERSION not in ('v11', 'v12'):
+        # V11/V12/V12.2 all expose (policy, win_prob, ...) outputs we can log.
+        # Older models use a different encoder + value-head semantics; skip them.
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
             return
 
         cp = int(self.state.current_player)
@@ -830,6 +915,42 @@ class GameManager:
         decision_logger.log_decision(record)
         self._human_decision_count += 1
 
+    def _log_ai_decision(self, legal, policy, value, action, dice_val):
+        """Log the AI's pre-move state + full policy. Returns the new
+        ai_decision_id (caller ships it back to the FE so a later
+        disagreement flag can reference this exact decision)."""
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
+            return None
+
+        cp = int(self.state.current_player)
+        positions = {}
+        scores = {}
+        for player in [0, 2]:
+            positions[str(player)] = [int(p) for p in self.state.player_positions[player]]
+            scores[str(player)] = int(self.state.scores[player])
+
+        record = {
+            'schema_version': DECISION_SCHEMA_VERSION,
+            'game_id': self.game_id,
+            'ai_decision_id': self._ai_decision_count,
+            'ts': DecisionLogger._now_iso(),
+            'model_version': MODEL_VERSION,
+            'current_player': cp,
+            'dice': int(dice_val),
+            'consecutive_sixes': int(self.consecutive_sixes[cp]),
+            'positions': positions,
+            'scores': scores,
+            'move_count': self.move_count,
+            'legal_tokens': [int(m) for m in legal],
+            'ai_policy': [round(float(p), 6) for p in policy],
+            'ai_chosen': int(action),
+            'ai_value': round(float(value), 6),
+        }
+        decision_logger.log_ai_decision(record)
+        ai_id = self._ai_decision_count
+        self._ai_decision_count += 1
+        return ai_id
+
     def ai_move(self):
         """AI evaluates the board and makes a move."""
         if self.state.is_terminal:
@@ -862,7 +983,11 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': rolled_for_ai}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION in ('v11', 'v12'):
+        if MODEL_VERSION == 'v13_2':
+            state_tensor = encode_state_v17(self.state)
+        elif MODEL_VERSION == 'v12_2':
+            state_tensor = ludo_cpp.encode_state_v11(self.state)
+        elif MODEL_VERSION in ('v11', 'v12'):
             state_tensor = ludo_cpp.encode_state_v10(self.state)
         elif MODEL_VERSION == 'v6_3':
             state_tensor = ludo_cpp.encode_state_v6_3(
@@ -899,10 +1024,25 @@ class GameManager:
         )
 
         dice_val = roll_result['dice_roll']
+
+        # Persist pre-move AI decision so the FE can flag a disagreement
+        # later by reference (ai_decision_id is per-game monotonic).
+        try:
+            ai_decision_id = self._log_ai_decision(
+                legal=legal, policy=probs, value=value,
+                action=action, dice_val=dice_val,
+            )
+        except Exception as e:
+            print(f"[DecisionLogger] _log_ai_decision failed: {e}")
+            ai_decision_id = None
+
         result = self.make_move(action)
         result['ai_roll'] = dice_val
         result['ai_probs'] = [round(float(p), 3) for p in probs]
         result['ai_chosen'] = action
+        result['ai_legal_moves'] = [int(m) for m in legal]
+        if ai_decision_id is not None:
+            result['ai_decision_id'] = ai_decision_id
 
         return result
 
@@ -932,6 +1072,14 @@ MODEL_INFO = {
     'v12': {
         'label': 'V12 Token-Entity Attn',
         'subtitle': 'V12 CNN + token-entity attn · 81.00% eval (best) · 951K params',
+    },
+    'v12_2': {
+        'label': 'V12.2 (bias-trained)',
+        'subtitle': 'V12.2 + bias-penalty RL · 82.4% eval · 1.36M params',
+    },
+    'v13_2': {
+        'label': 'V13.2 (minimal CNN)',
+        'subtitle': 'V13.2 distilled CNN (10×128, 17ch) · 82.3% eval · 3M params',
     },
 }
 
@@ -1053,6 +1201,77 @@ def review_decisions_latest():
         return jsonify({'game_id': None, 'decisions': [], 'total_decisions': 0,
                         'returned': 0})
     return review_decisions(game_id)
+
+
+@app.route('/api/flag_ai_disagreement', methods=['POST'])
+def flag_ai_disagreement():
+    """Human-in-the-loop signal: 'I'd have played this token instead.'
+
+    Body: {game_id, ai_decision_id, preferred_token, comment?}
+    Looks up the AI decision record (so we get full pre-move state +
+    policy without trusting the client) and appends a denormalized
+    record to ai_disagreements.jsonl.
+    """
+    data = request.get_json(force=True) or {}
+    game_id = data.get('game_id')
+    ai_decision_id = data.get('ai_decision_id')
+    preferred_token = data.get('preferred_token')
+    comment = data.get('comment', '')
+
+    if not isinstance(game_id, str) or not game_id:
+        return jsonify({'ok': False, 'error': 'missing game_id'}), 400
+    try:
+        ai_decision_id = int(ai_decision_id)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'bad ai_decision_id'}), 400
+    try:
+        preferred_token = int(preferred_token)
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'bad preferred_token'}), 400
+    if preferred_token not in (0, 1, 2, 3):
+        return jsonify({'ok': False, 'error': 'preferred_token must be 0..3'}), 400
+
+    # Look up the AI decision so the disagreement record is self-contained.
+    decisions = decision_logger.read_ai_decisions(game_id)
+    match = next(
+        (d for d in decisions if d.get('ai_decision_id') == ai_decision_id),
+        None,
+    )
+    if match is None:
+        return jsonify({'ok': False, 'error': 'ai_decision_id not found'}), 404
+
+    if preferred_token not in (match.get('legal_tokens') or []):
+        return jsonify({
+            'ok': False,
+            'error': 'preferred_token was not legal at decision time',
+        }), 400
+    if preferred_token == match.get('ai_chosen'):
+        return jsonify({
+            'ok': False,
+            'error': 'preferred_token equals ai_chosen — not a disagreement',
+        }), 400
+
+    record = {
+        'schema_version': DECISION_SCHEMA_VERSION,
+        'game_id': game_id,
+        'ai_decision_id': ai_decision_id,
+        'model_version': match.get('model_version'),
+        'move_count': match.get('move_count'),
+        'dice': match.get('dice'),
+        'positions': match.get('positions'),
+        'scores': match.get('scores'),
+        'legal_tokens': match.get('legal_tokens'),
+        'ai_policy': match.get('ai_policy'),
+        'ai_chosen': match.get('ai_chosen'),
+        'ai_value': match.get('ai_value'),
+        'preferred_token': preferred_token,
+        'comment': comment if isinstance(comment, str) else '',
+    }
+    try:
+        decision_logger.log_ai_disagreement(record)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True, 'saved': record})
 
 
 @app.route('/api/submit_rating', methods=['POST'])

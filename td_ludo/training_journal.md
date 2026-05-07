@@ -1952,7 +1952,7 @@ V12 has flipped strengths: dominates aggressive opponents (which engage frequent
 
 This is exactly the **different inductive bias** we hoped for. The hope is that RL — playing against V12-itself in self-play + bot mix — recovers the missing positional skill while keeping the new entity-relational strength.
 
-**RL launched (PID 16469 on L4, port 8790, dashboard at http://34.143.250.98:8790/)**.
+**RL launched (PID 16469 on L4, port 8790, dashboard at http://<vm-ip>:8790/)**.
 
 Early RL evals (3 evals, 30K games):
 
@@ -2223,7 +2223,7 @@ The V12 collapse was *unproductive* (overconfident on calls that didn't correlat
 
 **Dashboard rebuild (`520035a`)**: full v11_dashboard.html structure ported to V12.2 — header status dot, plateau-break gate visualization, big eval chart with reference lines (now showing 85% NEW TARGET, 81% V12 broken, 79% V11.1, 78.8% V6.1), KPI row, split charts (rolling WR + entropy with healthy-band shading), PPO dynamics, bot-WR breakdown, ELO leaderboard. Color palette swapped to purple to distinguish V12.2 from V11 cyan.
 
-**Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://34.143.250.98:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.
+**Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://<vm-ip>:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.
 
 ---
 
@@ -2774,3 +2774,967 @@ near-1-block effective depth.
 **Headline metric:** CKA spread 0.057 (V12.2) vs 0.348 (MinimalCNN14),
 in_danger probe AUC delta blk0→blk9 = +0.16 (MinimalCNN14) vs −0.02
 (V12.2). Two independent measurements, same conclusion.
+
+## Exp 27 — Encoder Symmetry Bug Discovery + Distill14 v2 + Aux Trajectory (2026-05-01/02)
+
+### Discovery: BASE_COORDS mirror-flip bug (silent since V6)
+
+Caught while playing V12.2 on the play server: AI as P2 always picked T3
+first when rolling 6 with all tokens at base. Pre-search V12.2 was
+expected to prefer T0 (which it does as P0). Investigation traced through
+behavioral test → encoder tensor diff → `BASE_COORDS` in `src/game.cpp`.
+
+`BASE_COORDS[player][token][r,c]` was assigned in natural reading order
+within each player's base (TL, TR, BL, BR). After the per-player rotation
+`k = current_player` applied by `write_tensor_val`, the slot↔cell mapping
+within the base region was mirror-flipped between players:
+
+| Player | T0 lands at canonical | T1 | T2 | T3 |
+|---|---|---|---|---|
+| P0 | (2,2) TL | (2,3) TR | (3,2) BL | (3,3) BR |
+| P2 | (3,3) BR | (3,2) BL | (2,3) TR | **(2,2) TL** |
+
+Model learned a spatial-cell preference (e.g. "spawn TL token first") which
+manifested as **T0 for P0, T3 for P2**. Same learned policy, flipped slot
+labels by seat.
+
+**Affects every model since V6** that shares `BASE_COORDS` (V6.x, V10, V11,
+V12, V12.2, Distill14/V13). Each model effectively saw two mirror-flipped
+representations of every state — ~halving training capacity for state
+patterns that depend on base.
+
+### Validation (87/87 tests post-fix)
+
+`/tmp/encoder_symmetry_validation.py`: 87 tests covering all-at-base,
+single-on-track, home-stretch, opp-on-track, capture, danger, mixed states,
+edge cases. All 87 fail pre-fix (sum_diff > 7.0 each). All 87 pass post-fix
+(sum_diff exactly 0). See `encoder_symmetry_bug_discovery.md` for the
+complete write-up.
+
+### Fix (commit `1ff249f`)
+
+Reorder `BASE_COORDS` for P1/P2/P3 so post-rotation slot t lands at the
+same canonical cell as P0's slot t. One source-file change, all encoders
+fixed in one shot via shared constant.
+
+### Inference impact (V12.2 weights, fixed encoder, NOT retrained)
+
+| | Buggy enc native | Fixed enc | Δ |
+|---|---|---|---|
+| V12.2 vs deterministic-5 bot avg | 79.1% | 77.7% | −1.4 |
+| V12.2 vs all-6 bot avg | 81.5% | 80.7% | −0.8 |
+
+Mild degradation as expected — weights were tuned for the buggy input
+distribution. Per-bot variance is large (±5pp), the avg shift is small.
+**The fix is structural correctness, not a free inference unlock.**
+
+### Distill14 v2: re-distill from PRE-search V12.2 + fixed encoder
+
+New script: `experiments/distillation_14ch/train_distillation_v2.py`.
+
+Differences from v1:
+- Teacher: pre-search V12.2 (pre-Exp24, hash `08847742...`) instead of
+  post-search teacher
+- Encoder: post-fix (each pattern learned once instead of two flipped reps)
+- Output: `experiments/distillation_14ch/v2/`
+- Initial random-init checkpoint saved before training so we never lose a run
+
+5M state target, 1024 batch, lr 1e-3, ~2.5 hours on Mac MPS.
+
+### v2 vs v1 results (vs bots, 500 games each, seat-balanced)
+
+Apples-to-apples comparison (both measured on FIXED encoder):
+
+| Bot | v1 buggy enc | v1 fixed enc | v2 fixed enc | Δ buggy→fixed | Δ v2−v1 (both fixed) |
+|---|---|---|---|---|---|
+| Expert | 76.2% | 75.8% | 74.6% | −0.4 | −1.2 |
+| Heuristic | 74.2% | 77.2% | 71.8% | +3.0 | −5.4 |
+| Aggressive | 77.8% | 76.6% | 75.6% | −1.2 | −1.0 |
+| Defensive | 76.0% | 72.6% | 76.8% | −3.4 | +4.2 |
+| Racing | 79.6% | 78.0% | 77.2% | −1.6 | −0.8 |
+| Random | 93.0% | 95.6% | 92.6% | +2.6 | −3.0 |
+| **Avg det-5** | **76.8%** | **76.0%** | **75.2%** | **−0.7** | **−0.8** |
+
+**v1 vs v2 H2H, 1000 games seat-balanced:** Distill14 v1 = 49.9%,
+Distill14 v2 = 50.1%. **Statistically tied** (95% CI 46.8–53.0%).
+
+### Findings
+
+1. **Encoder fix is correct but doesn't unlock SL improvement.** v1 weights
+   robust to encoder swap (~1pp degradation). v2 trained from scratch with
+   fixed encoder = same strength as v1.
+2. **Pre-search vs post-search teacher: identical at SL level.** The
+   T2/T3 search artifact bias in post-search V12.2 transferred to v1's
+   policy distribution but didn't measurably affect WR.
+3. **The promised "free training-capacity unlock" did NOT materialize at
+   SL distillation.** The duplicate-pattern hypothesis (each pattern
+   learned twice) appears irrelevant for SL — the redundant work just
+   produces the same answer twice, not interfering.
+4. **Per-seat behavioral consistency IS now perfect.** Trace tests show
+   V12.2 picks T0 with 0.981 prob both as P0 and as P2 (was T0 0.475 / T3
+   0.466 pre-fix). This is the structural correctness benefit.
+
+### Aux trajectory: opp-turn states for value-head training (commit `afc8aa0`)
+
+Post encoder-fix, opp-turn states are safely usable for the value head
+(canonical view is consistent across players). PPO policy gradient still
+gated to model_player turns (off-policy actions from bots break IS ratio).
+
+Implementation:
+- `VectorACGamePlayer.aux_trajectories` per game; captured in bot/hist
+  branches when `cp ∉ train_players`
+- Plumbed to `trainer.train_on_game(...aux_trajectory=...)` at game-end
+- `_aux_buffer` + `aux_value_loss_coeff=0.5` in trainer
+- In `_ppo_update`, additional value-only loss term:
+  - Base trainer: `smooth_L1(V(s), z)` where z is discounted return from
+    cp's POV
+  - V10 trainer: `BCE(win_prob, won_target)` using same head as main BCE
+
+Patched both `trainer.py` and `trainer_v10.py` (used by V13 RL via
+train_v12.py). One bugfix on top: `view(-1)` instead of `squeeze(-1)`
+on aux_value to handle batch=1 case where squeeze produces a 0-dim
+scalar that mismatches the 1-element target.
+
+### V13 RL relaunch (in progress)
+
+Run: `ac_v13_v2`. Seeded from Distill14 v2 final ckpt. Composition:
+`v122` mix (75/15/5/3/2 SelfPlay/Expert/Heuristic/Aggressive/Defensive).
+LR 1e-5. EVAL_INTERVAL 10K, EVAL_GAMES 2K. Aux trajectory ON.
+Search OFF. Local Mac MPS for now (~30 GPM warm-up); will move to VM.
+
+First eval lands at G=10K. Test hypothesis: does the encoder fix +
+aux trajectory help V13 stay near its SL strength under PPO drift?
+v1 dropped from 79% → 43% greedy in 35K games on the buggy encoder
+without aux loss; v2 with fixes will be the test.
+
+---
+
+## Exp 28 — V13.1 / `MinimalCNN14Aux` with static-feature aux heads (2026-05-03/04)
+
+**Hypothesis.** V13 needs to internally re-derive static board layout
+(safe cells, home paths) from raw token positions every forward pass.
+That's wasted backbone capacity. Force the network to encode static
+layout via an aux supervised target during SL distillation; freeze the
+aux loss during RL.
+
+**Architecture.** `MinimalCNN14Aux` (`td_ludo/td_ludo/models/v13_1.py`).
+14ch input (same as V13). **12 ResBlocks × 160 channels** (~5.6M params,
+deeper + wider than V13's 10×128 / 3M). Two `Conv2d(160, 1, 1×1)` aux
+heads that predict the safe-cells map and my-home-path map (both
+constant in canonical view → easy targets, just force backbone to
+remember them).
+
+Earlier drafts had four aux heads (safe / danger / capture / home).
+Danger and capture were dropped after observing degenerate near-zero
+loss from initialisation: their targets are sparse-positive so a
+trivially all-zero predictor scores well under BCE. The static-only
+shape (safe + home_path) was kept.
+
+**SL distillation.** `train_v131_sl.py`. V12.2-bias teacher → V13.1
+student. 10M states, batch 1024, lr 1e-3 → 1e-4 cosine. Result: SL
+eval band 78-84%, peak **84.5%**. Comparable to V13's 79% but with
+more headroom.
+
+**RL (`ac_v131`).** Started but discontinued mid-run in favour of V13.2.
+The V13.1 checkpoint was archived to `checkpoint_backups/v131_aux_*`
+(see `model_latest.pt`). Mech-interp on the trained V13.1 fed back into
+V13.2's design — see Exp 29 below.
+
+**Mech-interp on V13.1 (channel activation + layer knockout, 2026-05-04).**
+- Channel activation: **0/160 dead channels in any of the 12 blocks**.
+  Bottom-decile activations in Block 11 = 1.03 (well above noise).
+  Activation magnitude grows ~5× from input to output; zero-fraction
+  drops from 41% to 11%. Late blocks specialize (max/min ratio 2× → 41×
+  across blocks 0 to 11) but no slack channels.
+- Layer knockout: **win-rate vs random opponent saturated** at 100% for
+  every layer-knocked variant (random is too weak to detect damage).
+  KL divergence is the meaningful signal:
+  - Block 0: KL=0.324 (critical — input transform)
+  - Block 1: KL=0.163 (critical)
+  - Blocks 2-3: KL=0.076-0.105 (important)
+  - Blocks 4-7: KL=0.030-0.072 (modest)
+  - **Blocks 8-11: KL=0.021-0.030 (near-free to remove)**
+- Late-block tail of the network does almost nothing. Suggests **10
+  layers would be enough**. Width (160 → 128) is the open question;
+  channel analysis showed all 160 active but informed nothing about
+  whether 128 would suffice.
+
+This mech-interp result drove V13.2's choice of 10×128 (down from
+12×160) — empirical reasoning, not a guess.
+
+---
+
+## Exp 29 — V13.2 / `MinimalCNN14` with 17ch input (2026-05-04 → present)
+
+**Hypothesis.** V13.1's aux heads work but they're a workaround.
+The cleaner answer is to give the network the static layout *as
+input* (3 extra channels) instead of forcing the backbone to predict
+it. This frees backbone capacity and removes the per-step aux loss
+overhead during RL.
+
+**Encoder change.** `td_ludo/game/encoder_v17.py` produces a 17ch
+input = V14_minimal (14ch: own + opp tokens + dice one-hot) + **3
+static V11 channels** (ch5 safe-cells, ch6 my-home-path, ch7 opp-home-
+path). The 3 static channels are constant per-current-player in the
+post-fix canonical encoder, so they're computed *once at module
+import* via `encode_state_v11(initial_state)[5:8]` and concatenated
+into every state. Validated periodically via
+`validate_static_channels()`.
+
+**Architecture.** Same `MinimalCNN14` class as V13 (no aux heads),
+just `in_channels=17`. Default 10×128 (~3M params). Mech-interp on
+V13.1 said 10 layers suffice; bumping width back from 160 → 128 was
+the bet that 128 channels are enough given the 3 extra input slots.
+
+**SL distillation (`train_v132_sl.py`).** V12.2-bias → V13.2 student
+over 10M states. Final policy KL ~0.10, value loss ~0.001. SL eval
+history (250K-state cadence): climbs from 74% at G=250K to 80-85% by
+G=2M, peaks at **85.0% at G=5.27M and G=8.53M**, ends at G=9.78M with
+82.5%. **Plateau matches V12.2's 82-83%** at SL alone — confirming
+the input gap was not load-bearing.
+
+**RL (run name `v132`).**
+- Started 2026-05-04 from `model_sl.pt`.
+- `train_v12.py --resume --model-arch v132 --num-res-blocks 10
+  --num-channels 128`.
+- Curriculum gating: `--curriculum-mode auto --curriculum-target
+  v122_hist_v2 --curriculum-eval-thresh 0.80 --curriculum-window 3`.
+  Auto-swaps the opponent mix from `v122` (bots only) to
+  `v122_hist_v2` (bots + V12.2 + V10 historicals) once 3 consecutive
+  evals clear 80%.
+- Bias penalties active: `LUDO_BIAS_PENALTIES=1`.
+- VM: `alphaludo-l4` L4 GPU, ~190 GPM warm.
+
+**Bias penalty bumps (2026-05-04 evening, 2026-05-05).**
+After observing that V13.2 in self-play frequently leaves a laggard
+token at base / spawn while pushing the leader (Penalty 6's territory),
+and that on a 6-roll the AI moves its leader into opponent capture
+range (Penalty 5's territory), both penalty magnitudes were bumped:
+
+- `P_LAGGARD_PER_CELL` 0.0005 → **0.0025** (5×). Worst-case raw
+  contribution = -0.2475 (laggard at base, 99-cell distance), capped
+  by `ABS_MAX_PENALTY=0.15` via proportional rescale of the breakdown.
+- `P_DANGER_ADVANCED_BASE` 0.04 → **0.12** (3×). Dice=6 discount
+  retained (move into danger on a 6-roll is half-priced — the bonus
+  turn lets you recover).
+
+Tests `td_ludo/td_ludo/game/test_bias_penalties.py` updated to
+account for the cap interaction (24/24 passing). Restart deployed
+clean.
+
+**Eval cadence change (2026-05-05).** `td_config.json` overrides
+`EVAL_INTERVAL: 100000 → 25000` and `EVAL_GAMES: 5000 → 2500`. SE
+on a 2500-game eval at p=0.82: σ ≈ 0.77pp. Tighter feedback loop
+on the smaller V13/V14 models where 100K-game intervals are too
+coarse for the experiment timeline.
+
+**Result (as of 2026-05-05 evening, G=257K).**
+- `best_eval_win_rate = 83.8%` — **slightly above V12.2-bias's
+  82-83% plateau**.
+- Last eval = 81.9%, eval band stable at 80-83%.
+- main_elo = 1641. Recent WR vs `Hist_V12_2` opponent in self-play
+  mix = 51-54% over recent 80-game slices.
+- Loss / entropy / KL / clip all stable. No PPO drift.
+
+**Conclusion.** V13.2 reproduces V12.2's eval band with a stripped-
+down encoder (only static features as input, all dynamic strategic
+features learned from raw positions) and a bigger pure-CNN backbone.
+The recipe (SL distill from a strong teacher → RL with curriculum +
+bias penalties) generalizes across architectures.
+
+---
+
+## Exp 30 — V14_scalar / DeepSets architecture (2026-05-05)
+
+**Hypothesis.** If V13.2 proves the input gap (engineered features)
+isn't load-bearing, the next question is whether **spatial CNN
+structure** is necessary either. Test by replacing the CNN with a
+DeepSets MLP and feeding the SAME information V12.2 had as scalars
++ per-token features.
+
+**Why DeepSets and not transformer.** User constraint was "no
+attention, just MLP." DeepSets (Zaheer 2017) is provably as
+expressive as attention for set inputs (universal approximator),
+trained as: per-element MLP → permutation-invariant pool (sum + max)
+→ context MLP. No learned attention weights, no quadratic cost, just
+shared MLPs.
+
+**Encoder.** `td_ludo/src/game.cpp::write_state_v14_scalar` produces
+a struct with V12.2-equivalent feature set, **non-spatial**:
+
+- Per own token (×4): position (int 0-58 → embedding), in_danger
+  (bool), can_capture (bool, dice-conditional), can_score (bool,
+  dice-conditional), can_land_safe (bool, dice-conditional), is_safe,
+  at_base, at_home, idle_count (float).
+- Per opp token (×4): position, in_my_danger, threatens_me, is_safe,
+  at_base, at_home.
+- Globals (×13): dice one-hot (6) + same_token_streak +
+  my_locked_frac + opp_locked_frac + score_diff + leader_progress +
+  non_home_tokens_frac + bonus_turn_flag.
+
+Python wrapper `td_ludo/game/encoder_v14_scalar.py` packs the C++ dict
+into batched arrays. Verified via 15-test value-correctness suite
+(`test_encoder_v14_scalar.py`): position embed remap, capture / score
+/ danger detection, idle / streak / score-diff globals, **POV
+symmetry** (P0 view ↔ P2 view of same physical state mirror own↔opp),
+and cross-check vs V11's spatial encoder for shared features (idle
+counters match).
+
+**Architecture (`V14ScalarDeepSets`).** ~226K params. No CNN, no
+attention. See class doc in
+`td_ludo/td_ludo/models/v14_scalar.py`. **6× smaller than V12.2 (1.36M),
+13× smaller than V13.1 (5.6M).**
+
+Dual-interface forward: accepts EITHER the dict batch (training/SL
+path) OR a flat `(B, 73, 1, 1)` tensor (RL pipeline path), so the
+existing `(C, H, W)` PPO trainer works unchanged. Encoder helper
+`encode_state_v14_scalar_flat` produces the flat form;
+`_unpack_flat` inside the model decomposes it.
+
+**SL distillation (`train_v14_scalar_sl.py`).** V12.2-bias → V14_scalar
+over 10M states. SL eval climbs steadily from 74% (G=250K) → 80-82%
+(G=2M) → **peak 85% at G=5.27M and G=8.53M**, settles at 82.5% by end.
+**Plateau matches V12.2 and V13.2** at SL alone — confirming neither
+spatial CNN structure NOR engineered features was load-bearing.
+
+**RL (run name `v14_scalar`, local).**
+- `run_v14_scalar_pipeline.sh` runs SL → RL handoff via shared
+  checkpoint dir + dashboard port.
+- `train_v12.py --resume --model-arch v14_scalar`. Same curriculum +
+  bias penalties as V13.2.
+- Local Mac mini, MPS device, ~330 GPM warm during SL, ~325 GPM
+  during RL.
+- Daemonized via Python double-fork (`/tmp/v14_daemon_launcher.py`)
+  to survive Claude Code closure — naked `nohup ... &` was insufficient
+  because closing CC sends signals beyond SIGHUP.
+
+**Result (as of 2026-05-05 evening, G=289K).**
+- `best_eval_win_rate = 80.0%`, eval band 79-80%.
+- main_elo 1587.
+- Loss / entropy / KL / clip stable.
+
+**Conclusion.** Three independent architectures (V12.2 attn-CNN, V13.2
+deep-CNN, V14_scalar pure-MLP DeepSets) all converge to the **same
+80-83% plateau**. The plateau is structural — in the task + reward
+signal + opponent ladder — not in the architecture.
+
+---
+
+## Exp 31 — Three-way head-to-head tournament (2026-05-05)
+
+**Setup.** All three trained models in a round-robin tournament,
+greedy play (argmax over legal moves), seat-rotation between games to
+control first-mover advantage, **10K games per pair = 30K total games**
+on CPU (MPS overhead per single-state inference is net-negative for
+batch=1).
+
+```
+python -m experiments.tournament.run \
+  --add-model V12_2:v122:play/model_weights/v12_2/model_latest.pt \
+  --add-model V13_2:v132:checkpoint_backups/v132_*/model_latest.pt \
+  --add-model V14_scalar:v14_scalar:checkpoint_backups/v14_scalar_*/model_latest.pt \
+  --games-per-pair 10000 \
+  --seed 42 \
+  --device cpu \
+  --output runs/tournament_3way_20260505.json
+```
+
+Tournament infrastructure at `experiments/tournament/run.py` was
+extended with two new arch presets in `agents.py`: **`v132`**
+(`MinimalCNN14` with `in_channels=17` + `encode_state_v17`) and
+**`v14_scalar`** (`V14ScalarDeepSets` with `encode_state_v14_scalar_flat`).
+
+**Result — Pair 1: V12.2 vs V13.2 (10K games).**
+- V12.2: **47.6%** (4760/10000)
+- V13.2: **52.4%** (5240/10000)
+- σ at p≈0.5 over 10K games = 0.50pp. **95% CI for V13.2: 51.4-53.4%.**
+- z-score = 4.8, p < 0.0001. **Statistically robust win for V13.2.**
+- Equivalent to V13.2 holding a **+17 Elo gap** over V12.2-bias.
+
+This is significant: V12.2 was the production model with months of
+iteration, hand-engineered features, and bias-penalty RL training.
+V13.2 is a 2-week side experiment with raw input + 17ch (only 3
+static board features) + the same RL recipe. **V13.2 is the new
+strongest model in the codebase.**
+
+**Result — Pair 2: V12.2 vs V14_scalar (10K games).**
+- V12.2: **52.9%** (5290/10000)
+- V14_scalar: **47.1%** (4710/10000)
+- σ ≈ 0.50pp. **95% CI for V12.2: 51.9-53.9%.** z = 5.8, p < 0.0001.
+- V12.2 wins by +5.8pp = **+20 Elo** over V14_scalar.
+
+**Result — Pair 3: V13.2 vs V14_scalar (10K games).**
+- V13.2: **53.9%** (5389/10000)
+- V14_scalar: **46.1%** (4611/10000)
+- σ ≈ 0.50pp. **95% CI for V13.2: 52.9-54.9%.** z = 7.8, p < 0.0001.
+- V13.2 wins by +7.8pp = **+27 Elo** over V14_scalar.
+
+**Final aggregate (20K games each, 30K total):**
+
+| # | Model | Wins | WR | Elo Δ vs V12.2 |
+|---|-------|------|----|----------------|
+| 1 | **V13.2** | 10,627 | **53.1%** | **+22** |
+| 2 | V12.2 (baseline) | 10,050 | 50.2% | 0 |
+| 3 | V14_scalar | 9,323 | 46.6% | −24 |
+
+The ranking is transitive: V13.2 > V12.2 > V14_scalar. All three pair
+results are statistically robust (p < 0.0001 each). Tournament took
+78.4 min total at 383 gpm on CPU. JSON output:
+`runs/tournament_3way_20260505.json`.
+
+**Headline takeaways:**
+
+1. **V13.2 is the new strongest model.** Decisively beats V12.2 head-to-
+   head (+4.8pp / +17 Elo). The "minimal-input, deeper-pure-CNN" thesis
+   was correct — V13.2's 17ch encoder + 10x128 backbone + bias-penalty
+   RL produces a strictly stronger policy than V12.2's 33ch engineered
+   encoder + 3x128 attention CNN.
+
+2. **V14_scalar's no-CNN-no-attention design loses both pairs but stays
+   within ~6pp of V12.2.** That's notable for a 226K-param DeepSets MLP
+   (6x smaller than V12.2). The bookend confirms the architecture is
+   not the binding constraint at this performance level.
+
+3. **The bot-eval ceiling masked all of this.** All three models hit
+   80-83% vs the bot mix; in eval-WR alone V13.2's 83.8% best looked
+   only marginally above V12.2's 82.7% best. **H2H exposes a real ~5pp
+   skill gap that the saturated bot evals cannot detect.** Methodological
+   lesson: tournament H2H is the right tool once eval-WR ceilings out.
+
+The fact that **bot evals were saturated** but **direct H2H exposed the
+gap** is itself a methodological finding — bot-only WR comparisons at
+the 80-83% range are not sensitive enough to distinguish the strongest
+models. H2H tournaments at 10K+ games per pair are the right tool.
+
+---
+
+## Exp 32 — MCTS Step 1 (Python rewrite, search-distillation) (2026-05-05/06)
+
+**Hypothesis.** AlphaZero-lite: 2-ply expectimax search using V13.2 as the
+leaf evaluator generates targets `(π_search, V_search)` strictly stronger
+than V13.2 itself. Distilling those targets into a fresh student should
+break the plateau.
+
+**Why a Python rewrite.** Earlier C++ MCTS attempt was scrapped — 4 bugs
+were documented in `post_v13_2_experiments.md`. Decided fresh Python
+implementation with explicit unit tests was lower-risk than fixing C++.
+
+**Code.** `experiments/mcts_v1/{generate_search_data,train_search_distill}.py`
++ `test_search_aggregation.py` (6 unit tests).
+
+**Bugs caught by tests during v1 → v2 development:**
+1. **State aliasing in dice loop.** `for d in range(1,7): leaf = state` —
+   all 6 leaves shared the same Python reference, so applying a move at
+   d=6 overwrote the d=1 leaf state. Fixed via explicit `_copy_state()`.
+2. **Bonus-turn sign error in Q-aggregation.** When the dice rolled a 6
+   (bonus turn → same player goes again), Q at root should aggregate via
+   MAX (you keep control). When dice ≠ 6, Q aggregates via MIN (opponent
+   gets control next). Original code always used MIN. Fixed with a
+   `next_player_is_root` meta flag.
+3. **Atomic versioned save.** A 11.7M-state buffer was corrupted mid-write
+   when the VM lost network. Added `os.replace` + `.prev.npz` failsafe.
+
+**Generation.** 901K states (target was 1M, OOM'd at 999K — VM ran out of
+RAM holding the state tensor list; versioned save preserved 901K from the
+previous checkpoint). 2-ply expectimax, V13.2 leaf evaluator, batch=200.
+
+**Training.** 5 epochs over 901K states, batch=1024, lr 1e-3 → 1e-4. Loss:
+KL(student || π_search) + MSE(value, V_search) + BCE(value, outcome).
+Final pol_loss 0.003 — essentially fit the targets perfectly.
+
+**Tournament result (25K-game H2H vs V13.2_latest, killed at 13.8K when
+verdict was clear):**
+
+- v1 (with bugs): **V13.2 92.2% vs Step1_Distill 7.8%**
+- v2 (bugs fixed): **V13.2 89.6% vs Step1_Distill 10.4%**
+
+Bug fixes moved the result by +2.6pp — the bugs were real but not the
+binding constraint. **2-ply search over V13.2 cannot meaningfully improve
+the targets** because:
+1. The leaf evaluator IS V13.2 — search corrects the teacher only in the
+   narrow band where 2-ply lookahead disagrees with V13.2's policy.
+2. Ludo dice has branching factor 6 — depth-2 expectimax has ~36 leaves,
+   most of which look the same to V13.2.
+3. 901K states is small for fresh-from-scratch SL on a 10×128 net.
+
+**Conclusion.** Shelved MCTS until we have a leaf evaluator stronger than
+V13.2. The recipe needs either deeper search (4-6 ply, ~6× more compute
+per state) OR a stronger leaf — neither available.
+
+---
+
+## Exp 33 — V13.3 / temporal transformer (mini, 418K params) (2026-05-06)
+
+**Hypothesis.** A transformer over K=8 past decision states extracts
+opponent-pattern signal that stateless V13.2 cannot. Even a small student
+with temporal context might match or beat the bigger V13.2 on H2H.
+
+**Architecture (`td_ludo/models/v13_3.py`):** per-frame CNN (4 res-blocks ×
+64ch) + projection to d=64 + sinusoidal positional encoding for K=8 +
+2-layer transformer encoder (4 heads, ffn=256) + 3-head output (policy/
+win_prob/moves). 418,694 params. Inference cache via `forward_with_cache()`.
+
+**SL distillation** (`train_v133_sl.py`, V13.2 → V13.3 mini, 5M states,
+batch=512, lr 1e-3 → 1e-4, ~80 min on Mac MPS). Eval history vs random
+heuristic-bot mix (200 games):
+
+| States | Eval WR |
+|---|---|
+| 500K | 42.0% |
+| 1M | 55.0% |
+| 2M | 72.5% |
+| 3M | 75.0% |
+| 4M | 78.0% |
+| 4.5M | **82.0%** |
+
+Lands at V13.2's bot-eval band as expected (teacher-bound).
+
+**RL v1: vanilla self-play REINFORCE** (`train_v133_rl.py`, 1.5M states,
+lr 2e-4, entropy 0.01). Catastrophic collapse:
+
+| States | Eval WR |
+|---|---|
+| 200K | 31.5% |
+| 400K | 33.5% |
+| 600K | 30.0% |
+
+Entropy 0.014 throughout — but this was misleading because most Ludo
+states have only 1 legal move (entropy = 0 forced by mask), so the batch
+mean was dragged near zero and the entropy bonus did nothing useful.
+
+**RL v2: KL-anchored REINFORCE.** Patches:
+- KL anchor to V13.2 teacher (coeff 0.1)
+- Multi-legal filter on policy + entropy losses (so single-legal states
+  don't drown the entropy signal)
+- LR 2e-4 → 5e-5 (4× lower)
+
+Result: 82% → 77% → 70% over 300K states. Drift slowed substantially but
+did not stop. Killed.
+
+**4-way H2H tournament** (V13.2_latest, V13.3_SL_82pct, V13.3_RL_v2, MCTS
+Step1_Distill, 500 games per pair, mirrored seeds, greedy):
+
+| pair | wins/games | WR |
+|---|---|---|
+| V13.2 vs V13.3_SL | 283/500, 217/500 | 56.6% / 43.4% |
+| V13.2 vs V13.3_RL_v2 | 268/500, 232/500 | 53.6% / 46.4% |
+| V13.2 vs Step1_Distill | 448/500, 52/500 | 89.6% / 10.4% |
+| V13.3_SL vs V13.3_RL_v2 | 260/500, 240/500 | 52.0% / 48.0% |
+| V13.3_SL vs Step1_Distill | 444/500, 56/500 | 88.8% / 11.2% |
+| V13.3_RL_v2 vs Step1_Distill | 433/500, 67/500 | 86.6% / 13.4% |
+
+**Standings (1500 games each):**
+
+| Rank | Agent | WR |
+|---|---|---|
+| 1 | V13.2_latest | 66.6% |
+| 2 | V13.3_SL_82pct | 61.4% |
+| 3 | V13.3_RL_v2_DEGRADED | 60.3% |
+| 4 | Step1_Distill | 11.7% |
+
+**Key findings.**
+
+1. **V13.3 mini lost 43.4 / 56.6 to V13.2** — temporal arch at 418K
+   params doesn't match the 3M-param V13.2.
+2. **V13.3 RL "degradation" was a bot-eval illusion.** RL v2 was
+   statistically tied with SL in H2H (52/48, n=500, SE ±2.2pp). The bot
+   eval got noisier as the policy moved off-distribution; H2H is the
+   truth.
+3. **Vanilla REINFORCE in symmetric self-play has ~zero advantage signal
+   at the population level** — wins for one side are losses for the
+   identical other side, so the policy gradient averages out across
+   mirrored agents. KL anchor + entropy bonus aren't enough to give a
+   net improvement signal. Either tournament-mode RL (frozen opponents)
+   or search-improved targets are needed.
+
+---
+
+## Exp 34 — V13.4 / temporal transformer at V13.2-comparable scale + per-player history fix (2026-05-06/07)
+
+**Architecture.** Same `V133Temporal` class, bigger args: per-frame CNN
+**10×128** (matches V13.2 trunk) + 4-layer transformer **d=128, h=4,
+ffn=512** + 3-head output. **3.79M params** (vs V13.2's 3.0M, 1.26×).
+
+**Critical bug discovered** (Option B fix). The V13.3 SL/RL envs kept
+ONE deque per game and pushed at every decision state regardless of
+which player was to move:
+
+```python
+# Old (buggy):
+self.history = [collections.deque(maxlen=K) for _ in range(B)]
+# At any decision: self.history[i].append(cur_frame)  # mixes both POVs
+```
+
+But `encode_state_v17` rotates the board to `current_player`'s POV, and
+the inference-time agent in H2H only observes its own turns. Result:
+**train/test distribution mismatch** — training on alternating-POV
+sequences, inference on own-POV-only sequences.
+
+Fix:
+
+```python
+# Fixed (per-player history):
+self.history = [{0: deque(maxlen=K), 2: deque(maxlen=K)} for _ in range(B)]
+# At cp=p decision: self.history[i][p].append(cur_frame)
+#                   stack = list(self.history[i][p])  # only p's frames
+```
+
+Inference automatically matches (each agent already had its own deque).
+
+**Verification.** `experiments/v134/test_per_player_history.py` — 86 unit
+tests covering: per-player init, push correctness, opp-frame isolation
+across 40+ decisions, reset clears both deques, RL trajectory
+snapshots align with per-player deques, encoder POV-pivot precondition
+sanity. **86/86 pass on Mac MPS, 86/86 pass on VM cuda.**
+
+**Chain orchestration.** `experiments/v134/chain.sh` runs SL → RL → H2H
+sequentially with phase JSON status files for the unified dashboard
+(`experiments/v134/dashboard.html` + `dashboard_server.py`, port 8796).
+Smoke tests (5K SL → 5K RL → 60-game H2H) passed end-to-end on both Mac
+MPS (4 min) and VM cuda (75s) before the real launch.
+
+**Real launch on VM (asia-southeast1-a, L4 GPU):**
+- **SL:** 10M states, batch=256 (1024 OOM'd; 256 is what fits the 3.79M
+  model + K=8 frames), lr 1e-3 → 1e-4. ~10.05 hrs at ~276 fps.
+
+**SL eval history (vs random heuristic-bot mix, 200 games):**
+
+| States | WR |
+|---|---|
+| 1M | 53.5% |
+| 2M | 74.5% |
+| 3M | 74.5% |
+| 4M | 81.5% |
+| 5M | 78.0% |
+| 6M | 82.5% |
+| 7M | 81.5% |
+| 8M | 78.5% |
+| 9M | 81.5% |
+
+Final SL loss: L=0.016 (pol 0.013, val 0.0005). **Plateaus at 80-82%** —
+same band as V13.2, V13.3-mini, V14_scalar. SL is teacher-bound; bot eval
+cannot tell us if V13.4 actually beats V13.2.
+
+- **RL (in progress as of writing):** 1.5M states, parallel-games=64,
+  train-chunk=2048, KL anchor 0.1 to V13.2, multi-legal filter, lr 5e-5
+  → 5e-6, entropy 0.02. Eval at 200K: **80%** — stable, no collapse like
+  V13.3 RL. ETA ~3 hrs.
+- **H2H:** Phase 3 of chain, 500 games per pair, V13.2_latest vs V13.4_SL
+  vs V13.4_RL. Pending. Will produce the architectural verdict.
+
+---
+
+## Exp 35 — V14_scalar RL resume + pause (2026-05-07)
+
+V14_scalar RL had been paused mid-training. Resumed on Mac MPS for ~5 hrs
+of opportunistic training while V13.4 occupied the VM. Game 485,910 →
+700,000 / updates 642K → 893K. Latest eval WR drifted **79% → 76.6%**;
+sliding WR (last 100) 56.6% → 61%; ELO **1574 → 1410**. Entropy collapsed
+to ~0 and stayed there. **Paused 2026-05-07 08:12 UTC** when V13.4 SL
+phase finished and we wanted Mac free.
+
+Backup: `checkpoint_backups/v14_scalar_rl_20260507_081221/` contains
+`model_latest.pt`, `model_prev.pt`, `model_prev2.pt`, `model_best.pt`,
+`model_sl.pt`, plus all stats JSONs and `sl.log`.
+
+**Standing question.** V14_scalar drift suggests the run is past its
+peak (best eval was 80% earlier in the run). Worth deciding whether
+to (a) resume from `model_best.pt` with stronger regularization,
+(b) keep the current paused state for record, or (c) retire it.
+
+---
+
+## Exp 36 — V13.5 / token-symmetric encoder + symmetric output (POC, 2026-05-07)
+
+**Hypothesis (user, 2026-05-07).** V13.x encoders treat the 4 own / 4 opp
+tokens as 4 separate input channels each, even though Ludo's rules make
+them fully permutation-symmetric. The model has likely "specialized"
+token IDs (token 0 typically more advanced than tokens 1/2/3 because
+of training-time policy bias). Capture-and-return events break this
+distribution. Proposal: collapse own/opp tokens to single per-side
+count channels (preserving multiplicity for stacks), keep all other
+information channels unchanged. Optionally also make the output
+permutation-equivariant.
+
+**Built (~3 hrs of code + tests + POC + ablation):**
+
+1. **`td_ludo/game/encoder_v18_symmetric.py`** — V18 encoder, 13 channels:
+    - ch0 own_token_count per cell (sum of V14 ch0..3, with home cells
+      zeroed since they leak token-ID via per-token home-cell assignment)
+    - ch1 opp_token_count per cell (same treatment)
+    - ch2 own_at_home_count (broadcast scalar, normalised /4)
+    - ch3 opp_at_home_count (broadcast)
+    - ch4..9 dice 6-one-hot (unchanged)
+    - ch10..12 V11 statics (safe / my-home / opp-home, unchanged)
+
+2. **`td_ludo/game/rank_mapping.py`** — canonical-rank helpers for
+   symmetric output. Sort unique own-token positions descending
+   (most-advanced first). Aggregate per-token policy → per-rank
+   policy via summation. Map predicted rank → legal token-ID at
+   play time.
+
+3. **`td_ludo/models/v13_5.py`** — V135Symmetric. Pure CNN trunk
+   (V13.2-style ResBlocks × channels), 13ch input, 4 rank-indexed
+   output logits via einsum-style per-rank feature extraction
+   (analogous to V13.2's per-token extraction). POC: 6×96 = 1.03M
+   params. Full-size: 8×128 = 2.4M params (planned for VM).
+
+4. **`experiments/v135/test_v135_symmetry.py`** — 19 unit tests:
+   encoder permutation-invariance under all 24 own- and opp-token
+   permutations, rank-mapping invariance, aggregation correctness,
+   stacked-token handling, legal-mask, rank→token round-trip,
+   permute_own_tokens preserving multiset, end-to-end V13.2-policy
+   aggregation symmetrization. **19/19 pass.**
+
+5. **`train_v135_sl.py`** — distillation from V13.2 with optional
+   random token-ID permutation augmentation in the teacher's input
+   (default: ON). Sample π ~ Uniform(S_4), feed V13.2 the permuted
+   state, aggregate per-token output to per-rank target. In
+   expectation this fits the symmetrised V13.2 policy.
+
+**POC config.** 6×96 = 1.03M params, batch 256, lr 1e-3 → 1e-4 cosine,
+2M states, MPS. ~45 min wall time at ~727 fps.
+
+**Run A (perm_augment ON, default):**
+
+| States | Bot eval (200 games) |
+|---|---|
+| 250K | 69.0% |
+| 1M  | 79.0% |
+| 1.5M | 79.5% |
+| 1.75M | **82.0%** |
+
+Final pol_loss 0.025. Plateau at the same 80-82% bot-eval band as all
+post-V13.2 architectures.
+
+**H2H (Run A) vs V13.2_latest, 500 games, mirrored seeds, greedy:**
+- V13.2 53.0% / V13.5 47.0%. Delta -6.0pp, z = 1.34.
+- V13.5 loses by 6pp at 1/3 V13.2's capacity (V13.2 is 3M params).
+
+**Run B — Ablation: perm_augment OFF.** Same config otherwise.
+
+| States | Bot eval |
+|---|---|
+| 250K | 68.0% |
+| 1M  | 79.0% |
+| 1.25M | **85.0%** (peak) |
+| 1.75M | 79.0% |
+
+**H2H (Run B) vs V13.2_latest, 500 games:**
+- V13.2 52.2% / V13.5 47.8%. Delta **-4.4pp, z = 0.98** — statistically tied at 95%.
+- Better than Run A by ~1.6pp in H2H.
+
+**Findings.**
+
+| Variant | Params | H2H WR | Δ vs 50% | z |
+|---|---|---|---|---|
+| V13.3 mini (asym + transformer) | 418K | 43.4% | -6.6pp | 4.2 |
+| V13.5 with perm aug | 1.0M | 47.0% | -3.0pp | 1.34 |
+| **V13.5 no perm aug** | 1.0M | **47.8%** | **-2.2pp** | **0.98** |
+| V13.2 baseline | 3.0M | 50.0% | 0 | — |
+
+1. **Symmetric encoder is per-param more efficient than asymmetric.** V13.5
+   at 1/3 V13.2's capacity statistically ties V13.2 (z = 0.98). V13.3 mini
+   at 1/7 V13.2's capacity lost by 13pp. The encoder change matters.
+
+2. **Permutation augmentation hurt slightly.** -1.6pp in H2H even though
+   the with-perm bot-eval looked similar. Hypothesis: V13.2's residual
+   token-id biases are *good* heuristics in disguise (e.g. "advance
+   token-0 first" empirically aligns with "advance most-advanced first"
+   because of training-time correlation). Symmetrizing through random
+   permutation washes out useful bias along with the noise. **Decision:
+   future runs default to no perm augmentation.**
+
+3. **The 4-5pp residual gap is plausibly all capacity.** Matched-capacity
+   V13.5 (10×128 ≈ 3M params) should close it.
+
+**Pending experiment (queued behind V13.4 finishing on VM):** V13.5 full-
+size on VM cuda. 10×128 = ~3M params (V13.2 match), perm_augment OFF,
+5-10M states SL. Then H2H vs V13.2. If it ties or beats V13.2 at matched
+capacity, the symmetry hypothesis is confirmed and we'd add RL on top.
+
+**Backups (Mac):**
+- `checkpoint_backups/v135_with_perm_20260507_142500/model_latest.pt` (planned)
+- `checkpoint_backups/v135_no_perm_20260507_160332/model_latest.pt` (planned)
+
+---
+
+## Exp 34 (continued) — V13.4 RL phase progress (2026-05-07)
+
+V13.4 chain (launched 2026-05-06 ~21:30 UTC) finished SL Phase 1 at
+80-82% bot-eval band. RL Phase 2 began, eval cadence 200K states. **The
+RL phase is the FIRST run in the post-V13.2 era where RL appears to
+genuinely improve over the SL ceiling, not collapse or drift.**
+
+**Eval history (vs random heuristic-bot mix, 200 games per eval):**
+
+| States | Eval WR | Δ vs SL ceiling (~80%) |
+|---|---|---|
+| 200K | 80.0% | 0 |
+| 400K | **86.5%** | +6.5pp |
+| 600K | 81.0% | +1pp |
+| 800K | 83.0% | +3pp |
+| 1M | 79.5% | -0.5pp |
+| 1.2M | **84.0%** | +4pp |
+
+200-game evals have ±2-3pp standard error, so the variance is real but
+the *peaks* (86.5%, 84%) are above the 80-82% band consistently seen in
+SL distillation, V13.3 RL attempts, and V14_scalar. Trajectory is
+genuinely upward, not the V13.3 RL collapse pattern (82→30) or v2 drift
+(82→70).
+
+**Working signals at 1.32M/1.5M states (88% complete):**
+
+- Entropy 0.37 — healthy, no collapse
+- KL anchor to V13.2 = 0.042 (with coeff 0.1) — tight but not over-pulling
+- Policy loss +0.005 — small, stable drift
+- Value loss 1.0 — value head still learning
+- avg_glen 160 — normal game lengths
+- FPS 117
+
+**What appears to make V13.4 RL work** (vs V13.3 RL failure):
+1. **Bigger architecture** (3.79M vs 418K params) gives capacity to
+   absorb RL signal without policy collapse.
+2. **Per-player history fix** (Option B from Exp 34) eliminates the
+   train/test distribution mismatch — model sees during inference what
+   it was trained on.
+3. **Tuned regularization recipe** ported from V13.3 RL v2:
+   KL anchor 0.1 to V13.2, multi-legal-move filter on policy/entropy
+   losses, lr 5e-5 → 5e-6 cosine, entropy coeff 0.02.
+
+**ETA.** 150K states left at 117 fps → ~21 min to RL completion. Phase 3
+H2H tournament (V13.2_latest vs V13.4_SL vs V13.4_RL, 500 games per pair,
+mirrored seeds) then fires automatically (~10 min). CHAIN_DONE flag at
+`checkpoints/v134/CHAIN_DONE` when complete; `h2h_results.json` carries
+the verdict.
+
+**Pre-verdict expectation.** Bot-eval peaks at 84-86% suggest V13.4 RL
+has a real lift over V13.2's ~82% band. If this translates to H2H, V13.4
+RL beats V13.2 by 2-4pp — meaningful new SOTA. Pending the actual H2H.
+
+**Chain-1 H2H result (2026-05-07 11:24 UTC).** 3-way tournament,
+500 games per pair, mirrored seeds, greedy:
+
+```
+                              W    L    D    WR%
+V13.2_latest vs V13.4_SL    251  249   0   50.2 / 49.8   (289s)
+V13.2_latest vs V13.4_RL    251  249   0   50.2 / 49.8   (294s)
+V13.4_SL     vs V13.4_RL    257  243   0   51.4 / 48.6   (342s)
+```
+
+Standings (1000 games each, SE ±1.6pp):
+
+| Rank | Model | WR |
+|---|---|---|
+| 1 | V13.4_SL | 50.6% |
+| 2 | V13.2_latest | 50.2% |
+| 3 | V13.4_RL | 49.2% |
+
+**All three statistically tied** (max delta 1.4pp, z=0.6). The bot-eval
+peaks of 84-86% during chain-1 RL turned out to be variance, not a
+real H2H lift. Confirms the journal's earlier note: SL distillation is
+teacher-bound and bot-eval is teacher-bound; only H2H is the gate.
+
+**Important caveat — RL was undersized.** Chain-1 RL ran only 1.5M states
+≈ **9,375 games** before chain ended. Scale comparison:
+
+| Run | RL games |
+|---|---|
+| V13.4 RL chain-1 | ~9,375 |
+| V14_scalar RL | ~700,000 |
+| V12.2 RL (production) | ~485,000 |
+| V13.2 RL (canonical) | millions |
+
+Concluding "RL doesn't help" from 9.4K games would be premature — that's
+barely warm-up vs every other RL run we've done. Decision (user, 2026-05-07
+11:28 UTC): continue V13.4 RL from `model_latest.pt` with a longer budget.
+
+---
+
+## Exp 34 (continued, part 2) — V13.4 RL extended continuation (2026-05-07)
+
+**Launch.** 2026-05-07 ~11:50 UTC. Resumed from `checkpoints/v134/model_latest.pt`
+(end-of-chain-1 RL state, 9.4K games, last bot-eval 83%).
+
+**Config.** Same hyperparams as chain-1 RL plus three changes:
+- **LR cosine reset**: 5e-5 → 5e-6 over the new budget (chain-1 ended at
+  5e-6 frozen — needed room for policy to move).
+- **Eval cadence by games**: `--eval-every-games 20000 --eval-games 3000`
+  (chain-1 was state-based at 200K state intervals, 200-game evals with
+  ±2-3pp SE; now 3K-game evals with ~±0.5pp SE — cleaner signal).
+- **Target states**: 100M (effectively "until stopped").
+
+Other hyperparams unchanged (KL anchor 0.1, multi-legal filter, entropy
+0.02, value coeff 0.5, train-chunk 2048, parallel-games 64, batch 256 ×
+2 epochs).
+
+**Plumbing fix.** Dashboard server was serving stale field names from
+the ac_v13_v2 Exp 27 era (HTML expected `total_games`, `games_per_minute`,
+`timestamp`; API returned `games_played`, `fps` (states/sec), `ts`).
+`dashboard_server.py` patched to also emit the legacy field names plus a
+games-per-minute computed from `fps × 60 / avg_game_len`. Banner text
+updated for v13.4. Dashboard now serves correctly on
+`http://<vm-ip>:8792/` (firewall whitelists user IP for port 8792).
+
+**State at first journal update (2026-05-07 ~16:25 UTC, 4.5h elapsed):**
+
+| Signal | Value | Read |
+|---|---|---|
+| States / Games | 2.01M / 12,678 | continuation in progress |
+| FPS | 122 | steady, no slowdown |
+| LR | 5.0e-5 | start of new cosine |
+| Entropy | 0.38 | healthy, no collapse |
+| KL anchor | 0.07 | tight to V13.2 |
+| Pol loss | -0.05 | small drift, exploring locally |
+| Val loss | 0.82 | settling |
+| avg_glen | 158 | normal |
+| Eval history | empty | first eval at G=20K (~2.7h away) |
+
+**GPU utilization.** L4 at 100% util / 95-98% mem-bandwidth / 70W of
+72W TDP at 77°C. **Compute-bound on the architecture** (K=8 transformer
+forward = ~8× CNN cost + transformer overhead). VRAM 11.5/23 GB (50%);
+RAM 3.6/31 GB (12%). Both have headroom but GPU compute is pegged so
+bigger batches won't help. bf16 ruled out (user: "we tried, model
+collapses"). torch.compile parked for later (would require restart).
+
+**Eval gate plan.** First 3K-game eval at G=20K. Subsequent at G=40K, 60K,
+80K, ... Bot-eval is unreliable signal but with 3K games the variance
+collapses to ±0.5pp — distinguishing 80% from 83% becomes meaningful.
+The real test remains H2H vs V13.2 from periodic snapshots; H2H side-job
+to be set up if/when bot-eval suggests divergence from chain-1 baseline.
+
+---
+
+## Exp 36 (continued) — V13.5 full-size local SL (2026-05-07, planned)
+
+**Motivation.** V13.5 POC at 1/3 V13.2 capacity statistically tied V13.2
+in H2H (z=0.98). Matched-capacity test is the clean isolation experiment.
+
+**Plan.** While VM grinds V13.4 RL continuation (~24h+), run V13.5 full-
+size SL distillation on Mac MPS in parallel — orthogonal architectural
+axis, no resource conflict.
+
+**Config (proposed).**
+- Architecture: V135Symmetric, 10 ResBlocks × 128 channels (~3M params,
+  V13.2-matched).
+- Encoder: V18 (count-based, 13ch).
+- Output: rank-indexed, no token-ID dependence.
+- Teacher: V13.2_latest (post-search RL).
+- `perm_augment: OFF` (POC ablation showed -1.6pp H2H penalty for ON).
+- Budget: 5M states (POC was 2M; matching V13.4 SL would be 10M).
+- Optimizer: same as V13.2/POC — Adam, batch 256, lr 1e-3 → 1e-4 cosine.
+- Eval cadence: every 1M states, 200 games (just for convergence check;
+  H2H is the real gate after SL completes).
+
+**Expected runtime.** Mac MPS, 10×128 trunk vs POC's 6×96 → ~3× compute
+per step, scaled from POC's 727 fps → ~240 fps. 5M states ≈ 6 hrs.
+10M states ≈ 12 hrs. Either fits overnight.
+
+**Success criterion.** H2H 500-game vs V13.2_latest after SL completes.
+- Tied (z<2): symmetry hypothesis confirmed at matched capacity. Next
+  step would be V13.5 RL on VM.
+- V13.5 wins (z≥2, 52%+): symmetric encoder is per-param more efficient
+  AND beats V13.2 outright. Big result.
+- V13.5 loses (z≥2, <48%): full-size symmetry doesn't carry the POC
+  promise. Hypothesis weakened.
+

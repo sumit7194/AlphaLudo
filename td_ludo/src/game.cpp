@@ -26,11 +26,23 @@ const int8_t HOME_RUN_P0[5][2] = {{7, 1}, {7, 2}, {7, 3}, {7, 4}, {7, 5}};
 
 const int8_t HOME_COORD_P0[2] = {7, 6};
 
+// Base-corner coordinates per (player, token).
+// Assigned so that AFTER the per-player rotation (k = current_player, k×90° CCW)
+// applied by write_tensor_val, slot t lands at the SAME canonical cell for every
+// player. Concretely: post-rotation T0→(2,2), T1→(2,3), T2→(3,2), T3→(3,3).
+//
+// History: prior to the encoder-symmetry fix, BASE_COORDS was assigned in
+// "natural reading order" within each player's base (TL,TR,BL,BR). That made
+// the same logical state encode differently depending on current_player, since
+// after rotation the slot↔cell mapping was mirror-flipped. See V12.2 mech-interp:
+// pre-search picked T0 89% as P0 but T3 47% as P2 — same spatial preference,
+// flipped slot identity. Fixed coords below — derived by applying the inverse
+// rotation per player to the canonical {(2,2),(2,3),(3,2),(3,3)}.
 const int8_t BASE_COORDS[4][4][2] = {
-    {{2, 2}, {2, 3}, {3, 2}, {3, 3}},         // P0 (Top Left) - Red
-    {{2, 11}, {2, 12}, {3, 11}, {3, 12}},     // P1 (Top Right) - Green
-    {{11, 11}, {11, 12}, {12, 11}, {12, 12}}, // P2 (Bottom Right) - Yellow
-    {{11, 2}, {11, 3}, {12, 2}, {12, 3}}      // P3 (Bottom Left) - Blue
+    {{2, 2},  {2, 3},  {3, 2},  {3, 3}},      // P0 (k=0, identity)         - Red
+    {{2, 12}, {3, 12}, {2, 11}, {3, 11}},     // P1 (k=1, 90° CCW inverse)  - Green
+    {{12, 12},{12, 11},{11, 12},{11, 11}},    // P2 (k=2, 180° inverse)     - Yellow
+    {{12, 2}, {11, 2}, {12, 3}, {11, 3}}      // P3 (k=3, 270° CCW inverse) - Blue
 };
 
 // Safe squares (indices on 52-track, P0 view)
@@ -1198,4 +1210,362 @@ void write_state_tensor_v11(const GameState &state, float *buffer) {
     float *ch32 = buffer + 32 * spatial_size;
     std::fill(ch32, ch32 + spatial_size, sv);
   }
+}
+
+// =============================================================================
+// V14 Minimal Encoder: Distillation architecture (14 channels)
+// =============================================================================
+// 0-3:   My Tokens (Distinct Identity 0,1,2,3)
+// 4-7:   Opponent Tokens (Distinct Identity 0,1,2,3)
+// 8-13:  Dice Roll (6-plane One-Hot)
+
+void write_state_tensor_v14_minimal(const GameState &state, float *buffer) {
+  int num_channels = 14;
+  int spatial_size = BOARD_SIZE * BOARD_SIZE;
+  clear_buffer(buffer, num_channels * spatial_size);
+
+  int current_p = state.current_player;
+  int k = current_p; // Rotation steps (CCW)
+
+  // --- CHANNELS 0-3: My Tokens (Distinct Identity) ---
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    int r, c;
+    if (pos == BASE_POS)
+      get_board_coords(current_p, pos, r, c, t);
+    else
+      get_board_coords(current_p, pos, r, c);
+
+    if (r >= 0) {
+      write_tensor_val(buffer, t, r, c, 1.0f, k);
+    }
+  }
+
+  // --- CHANNELS 4-7: Opponent Tokens (Distinct Identity) ---
+  int opp_p = -1;
+  for (int offset = 1; offset < 4; ++offset) {
+    int candidate = (current_p + offset) % 4;
+    if (state.active_players[candidate]) {
+      opp_p = candidate;
+      break;
+    }
+  }
+
+  if (opp_p >= 0) {
+    for (int t = 0; t < NUM_TOKENS; ++t) {
+      int pos = state.player_positions[opp_p][t];
+      int r, c;
+      if (pos == BASE_POS)
+        get_board_coords(opp_p, pos, r, c, t);
+      else
+        get_board_coords(opp_p, pos, r, c);
+
+      if (r >= 0) {
+        write_tensor_val(buffer, 4 + t, r, c, 1.0f, k);
+      }
+    }
+  }
+
+  // --- CHANNELS 8-13: Dice Roll (One-Hot) ---
+  int roll = state.current_dice_roll;
+  if (roll >= 1 && roll <= 6) {
+    int channel_idx = 8 + (roll - 1);
+    std::fill(buffer + (channel_idx * spatial_size),
+              buffer + ((channel_idx + 1) * spatial_size), 1.0f);
+  }
+}
+
+// =============================================================================
+// V14_scalar Encoder: non-spatial, V12.2-equivalent feature set
+// =============================================================================
+// Returns a struct of per-token + global scalars/categoricals. No 15x15 grid.
+// All values computed in the canonical (current_player POV) frame, exactly
+// matching how the V11 spatial encoder rotates. The first active opponent
+// (in (cp+1)%4, (cp+2)%4, (cp+3)%4 order) supplies the opp-token features —
+// matches V14_minimal's convention so 2P games behave identically.
+//
+// Design rationale: lift every piece of information V11/V12.2 spatially
+// encodes (per-token positions, danger map, capture-opp map, safe-landing
+// map, idle counters, streak, score diff, leader progress, non-home frac,
+// bonus turn flag) into a flat scalar form. Lets us compare a DeepSets
+// model on this input vs the V12.2 CNN on the spatial input.
+
+namespace {
+
+// Remap a raw position into a small embedding index.
+// See struct doc in game.h for the mapping. Returns 58 for unexpected input.
+inline int8_t pack_pos_for_emb(int raw_pos) {
+  if (raw_pos == BASE_POS) return 0;
+  if (raw_pos >= 0 && raw_pos <= 50) return (int8_t)(raw_pos + 1);   // 1..51
+  if (raw_pos >= 51 && raw_pos <= 55) return (int8_t)(raw_pos + 1);  // 52..56
+  if (raw_pos == HOME_POS) return 57;
+  return 58;  // catch-all (shouldn't hit in practice)
+}
+
+// Pick the first active opponent in the same order V14_minimal uses.
+inline int pick_first_active_opp(const GameState &state, int current_p) {
+  for (int offset = 1; offset < NUM_PLAYERS; ++offset) {
+    int candidate = (current_p + offset) % NUM_PLAYERS;
+    if (state.active_players[candidate]) return candidate;
+  }
+  return -1;
+}
+
+}  // namespace
+
+void write_state_v14_scalar(const GameState &state, V14ScalarEncoding &out) {
+  const int current_p = state.current_player;
+  const int dice = state.current_dice_roll;
+  const int opp_p = pick_first_active_opp(state, current_p);
+
+  // ────── Per-own-token features ──────
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    out.own_pos_emb[t] = pack_pos_for_emb(pos);
+    out.own_at_base[t] = (pos == BASE_POS);
+    out.own_at_home[t] = (pos == HOME_POS);
+
+    // is_safe: on a safe abs-cell, OR stacked with another own token,
+    // OR in own home stretch / scored.
+    bool is_safe = false;
+    if (pos == HOME_POS || (pos >= 51 && pos <= 55)) {
+      is_safe = true;
+    } else if (pos >= 0 && pos <= 50) {
+      int my_abs = get_absolute_pos(current_p, pos);
+      if (my_abs >= 0 && is_safe_pos(my_abs)) {
+        is_safe = true;
+      } else if (my_abs >= 0) {
+        for (int t2 = 0; t2 < NUM_TOKENS; ++t2) {
+          if (t2 == t) continue;
+          int op = state.player_positions[current_p][t2];
+          if (op >= 0 && op <= 50 &&
+              get_absolute_pos(current_p, op) == my_abs) {
+            is_safe = true;
+            break;
+          }
+        }
+      }
+    }
+    out.own_is_safe[t] = is_safe;
+
+    // in_danger: opp within 1..6 cells behind me (any opp), and I'm not safe.
+    // Mirrors V11 channel 21 logic (binarized to "any threat in dice range").
+    bool in_danger = false;
+    if (!is_safe && pos >= 0 && pos <= 50) {
+      int my_abs = get_absolute_pos(current_p, pos);
+      if (my_abs >= 0) {
+        for (int op = 0; op < NUM_PLAYERS && !in_danger; ++op) {
+          if (op == current_p || !state.active_players[op]) continue;
+          for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+            int op_pos = state.player_positions[op][ot];
+            if (op_pos < 0 || op_pos > 50) continue;
+            int op_abs = get_absolute_pos(op, op_pos);
+            if (op_abs < 0) continue;
+            int dist = (my_abs - op_abs + 52) % 52;
+            if (dist >= 1 && dist <= 6) { in_danger = true; break; }
+          }
+        }
+      }
+    }
+    out.own_in_danger[t] = in_danger;
+
+    // can_capture / can_score / can_land_safe: dice-conditional features.
+    bool can_capture = false, can_score = false, can_land_safe = false;
+    if (dice >= 1 && dice <= 6) {
+      int landing;
+      bool legal_step = false;
+      if (pos == BASE_POS) {
+        if (dice == 6) { landing = 0; legal_step = true; }
+      } else if (pos >= 0 && pos <= 55) {
+        landing = pos + dice;
+        if (landing <= 56) legal_step = true;
+      }
+      if (legal_step) {
+        // can_score: landing brings token to home (56 maps to HOME_POS in apply_move).
+        if (landing == 56) can_score = true;
+
+        // can_capture: landing on a non-safe abs cell with a single opp token there.
+        if (landing >= 0 && landing <= 50) {
+          int land_abs = get_absolute_pos(current_p, landing);
+          if (land_abs >= 0 && !is_safe_pos(land_abs)) {
+            for (int op = 0; op < NUM_PLAYERS && !can_capture; ++op) {
+              if (op == current_p || !state.active_players[op]) continue;
+              int opp_count = 0;
+              for (int ot = 0; ot < NUM_TOKENS; ++ot) {
+                int op_pos = state.player_positions[op][ot];
+                if (op_pos >= 0 && op_pos <= 50 &&
+                    get_absolute_pos(op, op_pos) == land_abs) {
+                  opp_count++;
+                }
+              }
+              if (opp_count == 1) can_capture = true;
+            }
+          }
+        }
+
+        // can_land_safe: home stretch, scored, on safe-abs, or stacking own.
+        if (landing == 56 || (landing > 50 && landing < 56)) {
+          can_land_safe = true;
+        } else if (landing >= 0 && landing <= 50) {
+          int land_abs = get_absolute_pos(current_p, landing);
+          if (land_abs >= 0) {
+            if (is_safe_pos(land_abs)) {
+              can_land_safe = true;
+            } else {
+              for (int t2 = 0; t2 < NUM_TOKENS; ++t2) {
+                if (t2 == t) continue;
+                int op = state.player_positions[current_p][t2];
+                if (op >= 0 && op <= 50 &&
+                    get_absolute_pos(current_p, op) == land_abs) {
+                  can_land_safe = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    out.own_can_capture[t] = can_capture;
+    out.own_can_score[t] = can_score;
+    out.own_can_land_safe[t] = can_land_safe;
+
+    // idle counter (own tokens only)
+    int idle = (int)state.idle_counter[current_p][t];
+    float v = (float)idle / 20.0f;
+    if (v > 1.0f) v = 1.0f;
+    out.own_idle_count[t] = v;
+  }
+
+  // ────── Per-opp-token features (first active opponent) ──────
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    if (opp_p < 0) {
+      out.opp_pos_emb[t] = 0;
+      out.opp_in_my_danger[t] = false;
+      out.opp_threatens_me[t] = false;
+      out.opp_is_safe[t] = false;
+      out.opp_at_base[t] = true;
+      out.opp_at_home[t] = false;
+      continue;
+    }
+    int pos = state.player_positions[opp_p][t];
+    out.opp_pos_emb[t] = pack_pos_for_emb(pos);
+    out.opp_at_base[t] = (pos == BASE_POS);
+    out.opp_at_home[t] = (pos == HOME_POS);
+
+    // opp_is_safe: same logic as own (with opp_p as the owner).
+    bool opp_safe = false;
+    if (pos == HOME_POS || (pos >= 51 && pos <= 55)) {
+      opp_safe = true;
+    } else if (pos >= 0 && pos <= 50) {
+      int opp_abs = get_absolute_pos(opp_p, pos);
+      if (opp_abs >= 0 && is_safe_pos(opp_abs)) {
+        opp_safe = true;
+      } else if (opp_abs >= 0) {
+        for (int t2 = 0; t2 < NUM_TOKENS; ++t2) {
+          if (t2 == t) continue;
+          int op2 = state.player_positions[opp_p][t2];
+          if (op2 >= 0 && op2 <= 50 &&
+              get_absolute_pos(opp_p, op2) == opp_abs) {
+            opp_safe = true;
+            break;
+          }
+        }
+      }
+    }
+    out.opp_is_safe[t] = opp_safe;
+
+    // in_my_danger: I (current_p) could capture this opp token w/ current dice.
+    // Same conditions as own_can_capture but checking whether ANY of my tokens
+    // can land on this opp's abs cell (provided it's not on a safe cell).
+    bool in_my_danger = false;
+    if (!opp_safe && dice >= 1 && dice <= 6 && pos >= 0 && pos <= 50) {
+      int opp_abs = get_absolute_pos(opp_p, pos);
+      if (opp_abs >= 0 && !is_safe_pos(opp_abs)) {
+        for (int mt = 0; mt < NUM_TOKENS && !in_my_danger; ++mt) {
+          int my_pos = state.player_positions[current_p][mt];
+          int landing;
+          if (my_pos == BASE_POS) {
+            if (dice != 6) continue;
+            landing = 0;
+          } else if (my_pos >= 0 && my_pos <= 50) {
+            landing = my_pos + dice;
+            if (landing > 50) continue;
+          } else {
+            continue;
+          }
+          int land_abs = get_absolute_pos(current_p, landing);
+          if (land_abs == opp_abs) in_my_danger = true;
+        }
+      }
+    }
+    out.opp_in_my_danger[t] = in_my_danger;
+
+    // threatens_me: this opp token is within 1..6 behind any of my non-safe tokens.
+    bool threatens = false;
+    if (pos >= 0 && pos <= 50) {
+      int opp_abs = get_absolute_pos(opp_p, pos);
+      if (opp_abs >= 0) {
+        for (int mt = 0; mt < NUM_TOKENS && !threatens; ++mt) {
+          int my_pos = state.player_positions[current_p][mt];
+          if (my_pos < 0 || my_pos > 50) continue;
+          int my_abs = get_absolute_pos(current_p, my_pos);
+          if (my_abs < 0 || is_safe_pos(my_abs)) continue;
+          int dist = (my_abs - opp_abs + 52) % 52;
+          if (dist >= 1 && dist <= 6) threatens = true;
+        }
+      }
+    }
+    out.opp_threatens_me[t] = threatens;
+  }
+
+  // ────── Globals ──────
+  out.dice = (int8_t)((dice >= 0 && dice <= 6) ? dice : 0);
+  out.bonus_turn_flag = (dice == 6);
+
+  int streak = (int)state.streak[current_p];
+  float sv = (float)streak / 10.0f;
+  if (sv > 1.0f) sv = 1.0f;
+  out.same_token_streak = sv;
+
+  // my_locked_frac
+  int my_locked = 0;
+  for (int t = 0; t < NUM_TOKENS; ++t)
+    if (state.player_positions[current_p][t] == BASE_POS) my_locked++;
+  out.my_locked_frac = (float)my_locked / (float)NUM_TOKENS;
+
+  // opp_locked_frac across all active opps
+  int opp_locked = 0, active_opp_tokens = 0;
+  for (int p = 0; p < NUM_PLAYERS; ++p) {
+    if (p == current_p || !state.active_players[p]) continue;
+    active_opp_tokens += NUM_TOKENS;
+    for (int t = 0; t < NUM_TOKENS; ++t)
+      if (state.player_positions[p][t] == BASE_POS) opp_locked++;
+  }
+  out.opp_locked_frac =
+      active_opp_tokens > 0 ? (float)opp_locked / (float)active_opp_tokens : 0.0f;
+
+  // score_diff
+  int my_score = state.scores[current_p];
+  int max_opp_score = 0;
+  for (int p = 0; p < NUM_PLAYERS; ++p)
+    if (p != current_p && state.active_players[p])
+      max_opp_score = std::max(max_opp_score, (int)state.scores[p]);
+  out.score_diff = (float)(my_score - max_opp_score) / 4.0f;
+
+  // leader_progress: most-advanced own token's progress / 56
+  // Treat HOME_POS (99) as 56 (fully home) for the progress metric.
+  int leader = 0;
+  for (int t = 0; t < NUM_TOKENS; ++t) {
+    int pos = state.player_positions[current_p][t];
+    int prog = (pos == HOME_POS) ? 56 : (pos == BASE_POS ? 0 : pos);
+    if (prog > leader) leader = prog;
+  }
+  out.leader_progress = (float)leader / 56.0f;
+
+  // non_home_tokens_frac: own tokens not yet scored / 4
+  int non_home = 0;
+  for (int t = 0; t < NUM_TOKENS; ++t)
+    if (state.player_positions[current_p][t] != HOME_POS) non_home++;
+  out.non_home_tokens_frac = (float)non_home / (float)NUM_TOKENS;
 }

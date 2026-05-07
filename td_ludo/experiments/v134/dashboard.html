@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>V13.4 Chain — Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0b1020; color: #e6e8ee; }
+  h1 { margin: 0 0 4px 0; font-size: 22px; }
+  h2 { margin: 0 0 12px 0; font-size: 14px; color: #94a3b8; text-transform: uppercase;
+       letter-spacing: 0.05em; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .panel { background: #131a32; border: 1px solid #1e2745; border-radius: 10px; padding: 14px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 5px 0;
+              border-bottom: 1px solid #1e2745; font-size: 13px; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row span:first-child { color: #94a3b8; }
+  .big { font-size: 22px; font-weight: 600; color: #fff; }
+  .progress-wrap { background: #0b1020; border-radius: 6px; height: 8px; overflow: hidden; margin-top: 8px; }
+  .progress { height: 100%; background: linear-gradient(90deg, #8b5cf6, #06b6d4); transition: width 0.6s; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; margin-right: 6px; }
+  .pill.live { background: #064e3b; color: #6ee7b7; }
+  .pill.done { background: #1e293b; color: #94a3b8; }
+  .pill.err  { background: #4c1d24; color: #f87171; }
+  .pill.idle { background: #1e293b; color: #64748b; }
+  .pill.run  { background: #1e3a8a; color: #93c5fd; }
+  canvas { width: 100%; height: 180px; display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #1e2745; }
+  th { color: #94a3b8; font-weight: 500; }
+  td:first-child, th:first-child { text-align: left; }
+  .phase-banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px;
+                  background: #1e293b; }
+  .phase-banner b { color: #f9fafb; }
+  .step-tags { display: flex; gap: 8px; margin-top: 6px; }
+  .step-tag { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; flex: 1; text-align: center; }
+  .step-tag.idle { background: #0b1020; color: #475569; border: 1px solid #1e2745; }
+  .step-tag.run  { background: #1e3a8a; color: #93c5fd; }
+  .step-tag.done { background: #064e3b; color: #6ee7b7; }
+  .step-tag.err  { background: #4c1d24; color: #f87171; }
+</style>
+</head>
+<body>
+<h1>V13.4 Chain — SL → RL → H2H</h1>
+<div class="sub">refreshes every 5s · arch: <span id="arch">—</span></div>
+
+<div class="phase-banner">
+  <span class="pill live" id="chainPill">live</span>
+  <b>Current phase:</b> <span id="curPhase">—</span> · <span id="curDetail" style="color:#94a3b8;">—</span>
+  <div class="step-tags">
+    <div class="step-tag" id="stepSL">1. SL</div>
+    <div class="step-tag" id="stepRL">2. RL</div>
+    <div class="step-tag" id="stepH2H">3. H2H</div>
+  </div>
+</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Phase 1 — SL Distillation</h2>
+    <div class="big"><span id="slStates">—</span> / <span id="slTarget">—</span></div>
+    <div class="progress-wrap"><div class="progress" id="slBar" style="width: 0%;"></div></div>
+    <div class="stat-row"><span>FPS</span><span id="slFps">—</span></div>
+    <div class="stat-row"><span>LR</span><span id="slLr">—</span></div>
+    <div class="stat-row"><span>Total loss</span><span id="slLoss">—</span></div>
+    <div class="stat-row"><span>Policy</span><span id="slPol">—</span></div>
+    <div class="stat-row"><span>Value</span><span id="slVal">—</span></div>
+    <div class="stat-row"><span>Last eval (vs bot mix)</span><span id="slEval">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Phase 2 — RL Self-Play</h2>
+    <div class="big"><span id="rlStates">—</span> / <span id="rlTarget">—</span></div>
+    <div class="progress-wrap"><div class="progress" id="rlBar" style="width: 0%;"></div></div>
+    <div class="stat-row"><span>FPS</span><span id="rlFps">—</span></div>
+    <div class="stat-row"><span>Games played</span><span id="rlGames">—</span></div>
+    <div class="stat-row"><span>Avg game len</span><span id="rlGlen">—</span></div>
+    <div class="stat-row"><span>Total loss</span><span id="rlLoss">—</span></div>
+    <div class="stat-row"><span>Policy / Value</span><span id="rlPolVal">—</span></div>
+    <div class="stat-row"><span>Entropy / KL</span><span id="rlEntKL">—</span></div>
+    <div class="stat-row"><span>Last eval (vs bot mix)</span><span id="rlEval">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>SL eval history</h2>
+    <table>
+      <thead><tr><th>States</th><th>WR%</th><th>Δ</th></tr></thead>
+      <tbody id="slEvalTable"><tr><td colspan="3" style="color:#64748b;text-align:center;">—</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>RL eval history</h2>
+    <table>
+      <thead><tr><th>States</th><th>WR%</th><th>Δ</th></tr></thead>
+      <tbody id="rlEvalTable"><tr><td colspan="3" style="color:#64748b;text-align:center;">—</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Phase 3 — H2H Tournament Results</h2>
+    <div id="h2hStatus" style="color:#64748b;font-size:13px;margin-bottom:8px;">awaiting completion of phases 1 + 2</div>
+    <table id="h2hStandings" style="display:none;margin-bottom:14px;">
+      <thead><tr><th>Rank</th><th>Agent</th><th>Wins</th><th>Games</th><th>Win Rate</th></tr></thead>
+      <tbody id="h2hStandingsBody"></tbody>
+    </table>
+    <table id="h2hPairs" style="display:none;">
+      <thead><tr><th>Pair</th><th>A wins</th><th>B wins</th><th>Draws</th><th>WR a / b</th></tr></thead>
+      <tbody id="h2hPairsBody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+function fmtSec(s) {
+  if (!Number.isFinite(s) || s < 0) return '—';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  return h > 0 ? `${h}h ${m}m` : (m > 0 ? `${m}m ${ss}s` : `${ss}s`);
+}
+async function fetchJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch (e) { return null; }
+}
+
+function setStepTags(phase) {
+  const sl = document.getElementById('stepSL');
+  const rl = document.getElementById('stepRL');
+  const h2 = document.getElementById('stepH2H');
+  // default all idle
+  for (const el of [sl, rl, h2]) el.className = 'step-tag idle';
+  if (phase === 'sl_running') sl.className = 'step-tag run';
+  else if (phase === 'rl_running') { sl.className = 'step-tag done'; rl.className = 'step-tag run'; }
+  else if (phase === 'h2h_running') { sl.className = 'step-tag done'; rl.className = 'step-tag done'; h2.className = 'step-tag run'; }
+  else if (phase === 'completed') { sl.className = 'step-tag done'; rl.className = 'step-tag done'; h2.className = 'step-tag done'; }
+  else if (phase === 'error') {
+    // mark all incomplete as err
+    for (const el of [sl, rl, h2]) if (el.className.includes('idle') || el.className.includes('run'))
+      el.className = 'step-tag err';
+  }
+}
+
+function fillEvalTable(tbodyId, evals) {
+  const tbody = document.getElementById(tbodyId);
+  tbody.innerHTML = '';
+  if (!evals || evals.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:#64748b;text-align:center;">no eval points yet</td></tr>';
+    return;
+  }
+  let prev = null;
+  for (const [s, wr] of evals) {
+    const tr = document.createElement('tr');
+    const delta = prev !== null ? (wr - prev) : null;
+    const dStr = delta === null ? '—' : (delta >= 0 ? '+' : '') + delta.toFixed(1);
+    const dColor = delta === null ? '#94a3b8' : (delta >= 0 ? '#10b981' : '#f87171');
+    tr.innerHTML = `<td>${s.toLocaleString()}</td><td>${wr.toFixed(1)}%</td>` +
+                   `<td style="color:${dColor}">${dStr}</td>`;
+    tbody.appendChild(tr);
+    prev = wr;
+  }
+}
+
+function updateSL(sl, chain) {
+  if (!sl) {
+    document.getElementById('slStates').textContent = '—';
+    document.getElementById('slTarget').textContent = '—';
+    return;
+  }
+  document.getElementById('slStates').textContent = (sl.states || 0).toLocaleString();
+  document.getElementById('slTarget').textContent = (sl.target || 0).toLocaleString();
+  const frac = Math.min(1, (sl.states || 0) / Math.max(1, sl.target || 1));
+  document.getElementById('slBar').style.width = (frac * 100).toFixed(1) + '%';
+  document.getElementById('slFps').textContent = sl.fps ? sl.fps.toFixed(0) : '—';
+  document.getElementById('slLr').textContent = sl.lr ? sl.lr.toExponential(2) : '—';
+  document.getElementById('slLoss').textContent = sl.loss?.toFixed(4) ?? '—';
+  document.getElementById('slPol').textContent = sl.loss_policy?.toFixed(4) ?? '—';
+  document.getElementById('slVal').textContent = sl.loss_value?.toFixed(4) ?? '—';
+  const evals = sl.eval_history || [];
+  document.getElementById('slEval').textContent = evals.length
+    ? `${evals[evals.length-1][1].toFixed(1)}% @ ${evals[evals.length-1][0].toLocaleString()}` : '—';
+  fillEvalTable('slEvalTable', evals);
+}
+
+function updateRL(rl, chain) {
+  if (!rl) {
+    document.getElementById('rlStates').textContent = '—';
+    document.getElementById('rlTarget').textContent = '—';
+    return;
+  }
+  document.getElementById('rlStates').textContent = (rl.states || 0).toLocaleString();
+  document.getElementById('rlTarget').textContent = (rl.target || 0).toLocaleString();
+  const frac = Math.min(1, (rl.states || 0) / Math.max(1, rl.target || 1));
+  document.getElementById('rlBar').style.width = (frac * 100).toFixed(1) + '%';
+  document.getElementById('rlFps').textContent = rl.fps ? rl.fps.toFixed(0) : '—';
+  document.getElementById('rlGames').textContent = (rl.games_played || 0).toLocaleString();
+  document.getElementById('rlGlen').textContent = rl.avg_game_len?.toFixed(0) ?? '—';
+  document.getElementById('rlLoss').textContent = rl.loss?.toFixed(4) ?? '—';
+  document.getElementById('rlPolVal').textContent = `${rl.loss_pol?.toFixed(3) ?? '—'} / ${rl.loss_val?.toFixed(3) ?? '—'}`;
+  document.getElementById('rlEntKL').textContent = `${rl.entropy?.toFixed(3) ?? '—'} / ${rl.loss_kl?.toFixed(3) ?? '—'}`;
+  const evals = rl.eval_history || [];
+  document.getElementById('rlEval').textContent = evals.length
+    ? `${evals[evals.length-1][1].toFixed(1)}% @ ${evals[evals.length-1][0].toLocaleString()}` : '—';
+  fillEvalTable('rlEvalTable', evals);
+}
+
+function updateH2H(h2h) {
+  if (!h2h) {
+    document.getElementById('h2hStatus').textContent = 'awaiting completion of phases 1 + 2';
+    document.getElementById('h2hStandings').style.display = 'none';
+    document.getElementById('h2hPairs').style.display = 'none';
+    return;
+  }
+  document.getElementById('h2hStatus').textContent =
+    `${h2h.games_per_pair} games per pair · completed in ${fmtSec(h2h.total_sec)}`;
+  document.getElementById('h2hStandings').style.display = '';
+  document.getElementById('h2hPairs').style.display = '';
+  const sBody = document.getElementById('h2hStandingsBody');
+  sBody.innerHTML = '';
+  for (let i = 0; i < h2h.standings.length; i++) {
+    const s = h2h.standings[i];
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${medal} ${i+1}</td><td>${s.name}</td>` +
+                   `<td>${s.wins}</td><td>${s.games}</td>` +
+                   `<td><b>${s.wr.toFixed(1)}%</b></td>`;
+    sBody.appendChild(tr);
+  }
+  const pBody = document.getElementById('h2hPairsBody');
+  pBody.innerHTML = '';
+  for (const r of h2h.results) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.a} vs ${r.b}</td>` +
+                   `<td>${r.a_wins}</td><td>${r.b_wins}</td><td>${r.draws}</td>` +
+                   `<td>${r.wr_a.toFixed(1)}% / ${r.wr_b.toFixed(1)}%</td>`;
+    pBody.appendChild(tr);
+  }
+}
+
+function updateChain(chain) {
+  if (!chain) {
+    document.getElementById('curPhase').textContent = 'no chain status';
+    document.getElementById('curDetail').textContent = '—';
+    document.getElementById('arch').textContent = '—';
+    return;
+  }
+  const phase = chain.phase || '—';
+  document.getElementById('curPhase').textContent = phase;
+  document.getElementById('curDetail').textContent = chain.detail || '—';
+  document.getElementById('arch').textContent =
+    chain.arch ? `${chain.arch} (${chain.params || '?'} params, cnn ${chain.cnn_blocks}×${chain.cnn_channels} + transformer ${chain.n_layers}L d=${chain.d_model})` : '—';
+  setStepTags(phase);
+  const pill = document.getElementById('chainPill');
+  if (phase === 'completed') { pill.className = 'pill done'; pill.textContent = 'done'; }
+  else if (phase === 'error') { pill.className = 'pill err'; pill.textContent = 'error'; }
+  else { pill.className = 'pill live'; pill.textContent = 'live'; }
+}
+
+async function tick() {
+  const [chain, sl, rl, h2h] = await Promise.all([
+    fetchJSON('/api/chain'), fetchJSON('/api/sl'),
+    fetchJSON('/api/rl'),    fetchJSON('/api/h2h'),
+  ]);
+  updateChain(chain);
+  updateSL(sl, chain);
+  updateRL(rl, chain);
+  updateH2H(h2h);
+}
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

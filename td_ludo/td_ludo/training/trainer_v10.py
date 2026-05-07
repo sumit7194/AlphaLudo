@@ -54,12 +54,32 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         self.recent_search_kl = []
         self.recent_search_coverage = []
 
-    def train_on_game(self, trajectories, winner, model_player):
-        """Buffer trajectory steps with own_moves_remaining + binary won target."""
+    def train_on_game(self, trajectories, winner, model_player, aux_trajectory=None):
+        """Buffer trajectory steps with own_moves_remaining + binary won target.
+
+        aux_trajectory: optional list of {'state': tensor, 'cp': int} opp-turn
+        states encoded canonically. Buffered for value-head training only
+        (off-policy actions, no PPO grad). See trainer.py for the same flag on
+        the base trainer.
+        """
         if winner == -1:
             return {}
 
         from src.config import NUM_ACTIVE_PLAYERS
+
+        # Buffer aux states with their value targets (current_player POV).
+        if aux_trajectory:
+            loss_penalty_aux = -1.0 / max(1, (NUM_ACTIVE_PLAYERS - 1))
+            for step in aux_trajectory:
+                cp_aux = step['cp']
+                z_aux = 1.0 if cp_aux == winner else loss_penalty_aux
+                won_target_aux = 1.0 if cp_aux == winner else 0.0
+                self._aux_buffer.append({
+                    'state': step['state'],
+                    'z': z_aux,
+                    'won_target': won_target_aux,
+                })
+
         trajectory = trajectories.get(model_player, [])
         if not trajectory:
             return {}
@@ -308,10 +328,38 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     coverage_frac = 0.0
                     kl_avg = torch.zeros((), device=self.device)
 
+                # AUX value loss (BCE on win_prob from opp-turn states).
+                # Off-policy actions, so value-only — no policy grad path.
+                # Encoded canonically post encoder-fix → value head learns
+                # P(current_player wins) from broader state distribution.
+                aux_value_loss = torch.tensor(0.0, device=self.device)
+                if self._aux_buffer:
+                    n_aux = len(self._aux_buffer)
+                    aux_mb = min(n_aux, mb_states.shape[0])
+                    aux_idx = torch.randint(0, n_aux, (aux_mb,), device=self.device)
+                    aux_states = torch.from_numpy(
+                        np.stack([self._aux_buffer[i.item()]['state'] for i in aux_idx])
+                    ).to(self.device, dtype=torch.float32)
+                    aux_won_targets = torch.tensor(
+                        [self._aux_buffer[i.item()]['won_target'] for i in aux_idx],
+                        dtype=torch.float32, device=self.device
+                    )
+                    # Permissive mask — value head is mask-independent.
+                    aux_masks = torch.ones((aux_mb, 4), dtype=torch.float32, device=self.device)
+                    _, aux_win_prob, _ = self.model(aux_states, aux_masks)
+                    # Use view(-1) instead of squeeze(-1) to handle batch=1 case.
+                    # squeeze(-1) on shape (1,) yields scalar (), causing BCE
+                    # to crash with 'target [1] vs input []' mismatch.
+                    aux_win_prob = aux_win_prob.view(-1)
+                    aux_value_loss = F.binary_cross_entropy(
+                        aux_win_prob.clamp(1e-6, 1 - 1e-6), aux_won_targets
+                    )
+
                 loss = (policy_loss
                         + self.win_bce_coeff * win_bce_loss
                         + self.moves_aux_coeff * moves_loss
                         + self.alpha_search * search_loss
+                        + self.aux_value_loss_coeff * aux_value_loss
                         - self.entropy_coeff * entropy)
 
                 # Safety net: skip NaN/Inf batches (belt-and-braces for MPS)
@@ -372,7 +420,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             avg_search_kl = 0.0
             avg_search_cov = 0.0
 
+        n_aux_used = len(self._aux_buffer)
         self._ppo_buffer = []
+        self._aux_buffer.clear()
         self._ppo_games_buffered = 0
 
         return {
@@ -389,4 +439,5 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             'search_coverage': avg_search_cov,
             'n_steps': n_steps,
             'n_minibatches': n_minibatches,
+            'aux_states_used': n_aux_used,
         }

@@ -91,6 +91,54 @@ void write_state_tensor_v11(const GameState &state, float *buffer);
 // Note: V6.3's ch25 (consecutive_sixes) was dropped — mech interp showed it unused.
 void write_state_tensor_v10(const GameState &state, float *buffer);
 
+// V14 Minimal Distillation Encoder (14 channels: 4 own + 4 opp + 6 dice)
+void write_state_tensor_v14_minimal(const GameState &state, float *buffer);
+
+// V14_scalar — non-spatial encoding with V12.2-equivalent feature set.
+// Per-token features for own + first active opponent + global game scalars.
+// Pure scalars/categoricals — no 15x15 spatial structure. Designed for the
+// V14_scalar DeepSets model to test whether spatial CNN is necessary.
+//
+// Position remap used by `*_pos_emb` (62 valid indices, leaves headroom):
+//   BASE_POS (-1)        -> 0
+//   main track 0..50      -> 1..51
+//   home stretch 51..55   -> 52..56
+//   HOME_POS (99)         -> 57
+//   anything else         -> 58 (catch-all "out of board")
+// Use num_embeddings=60 in the PyTorch model.
+struct V14ScalarEncoding {
+  // Per-own-token features (current_player POV)
+  int8_t own_pos_emb[NUM_TOKENS];        // 0-58 remap (see above)
+  bool   own_in_danger[NUM_TOKENS];      // any opp can capture me with dice 1-6
+  bool   own_can_capture[NUM_TOKENS];    // moving this token w/ current dice captures opp
+  bool   own_can_score[NUM_TOKENS];      // moving this token w/ current dice goes home
+  bool   own_can_land_safe[NUM_TOKENS];  // moving this token lands on safe cell/stack
+  bool   own_is_safe[NUM_TOKENS];        // currently on safe cell (or stacked w/ another own)
+  bool   own_at_base[NUM_TOKENS];
+  bool   own_at_home[NUM_TOKENS];
+  float  own_idle_count[NUM_TOKENS];     // idle/20, capped at 1.0
+
+  // Per-opp-token features (first active opponent in canonical order)
+  int8_t opp_pos_emb[NUM_TOKENS];
+  bool   opp_in_my_danger[NUM_TOKENS];   // I could capture them this turn
+  bool   opp_threatens_me[NUM_TOKENS];   // within 1-6 behind any of my tokens
+  bool   opp_is_safe[NUM_TOKENS];
+  bool   opp_at_base[NUM_TOKENS];
+  bool   opp_at_home[NUM_TOKENS];
+
+  // Globals (13 floats total when packed by Python wrapper)
+  int8_t dice;                  // 0-6 (0 = no dice rolled yet)
+  float  same_token_streak;     // streak/10, capped at 1.0
+  float  my_locked_frac;        // own tokens at base / 4
+  float  opp_locked_frac;       // active-opp tokens at base / total active opp tokens
+  float  score_diff;            // (my_score - max_opp_score) / 4
+  float  leader_progress;       // most-advanced own token progress / 56
+  float  non_home_tokens_frac;  // non-home own tokens / 4
+  bool   bonus_turn_flag;       // dice == 6
+};
+
+void write_state_v14_scalar(const GameState &state, V14ScalarEncoding &out);
+
 // Helper to reset state
 GameState create_initial_state();    // 4-player
 GameState create_initial_state_2p(); // 2-player (P0 vs P2)

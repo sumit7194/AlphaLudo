@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>V13.3 RL — Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0b1020; color: #e6e8ee; }
+  h1 { margin: 0 0 4px 0; font-size: 22px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: #131a32; border: 1px solid #1e2745; border-radius: 10px; padding: 16px; }
+  .panel h2 { margin: 0 0 12px 0; font-size: 14px; color: #94a3b8; text-transform: uppercase;
+              letter-spacing: 0.05em; }
+  .stat-row { display: flex; justify-content: space-between; padding: 6px 0;
+              border-bottom: 1px solid #1e2745; font-size: 14px; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row span:first-child { color: #94a3b8; }
+  .big { font-size: 28px; font-weight: 600; color: #fff; }
+  .progress-wrap { background: #0b1020; border-radius: 6px; height: 10px; overflow: hidden; margin-top: 8px; }
+  .progress { height: 100%; background: linear-gradient(90deg, #8b5cf6, #06b6d4); transition: width 0.6s; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; }
+  .pill.live { background: #064e3b; color: #6ee7b7; }
+  .pill.done { background: #1e293b; color: #94a3b8; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid #1e2745; }
+  th { color: #94a3b8; font-weight: 500; }
+  td:first-child, th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<h1>V13.3 RL — Self-Play REINFORCE</h1>
+<div class="sub">
+  <span class="pill live" id="statusPill">live</span>
+  <span id="runName">v13_3_rl</span>
+  · refreshes every 5s
+</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Progress</h2>
+    <div class="big"><span id="states">—</span> / <span id="target">—</span> states</div>
+    <div class="progress-wrap"><div class="progress" id="progBar" style="width: 0%;"></div></div>
+    <div class="stat-row"><span>Step</span><span id="step">—</span></div>
+    <div class="stat-row"><span>FPS</span><span id="fps">—</span></div>
+    <div class="stat-row"><span>LR</span><span id="lr">—</span></div>
+    <div class="stat-row"><span>Elapsed</span><span id="elapsed">—</span></div>
+    <div class="stat-row"><span>ETA</span><span id="eta">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Self-play</h2>
+    <div class="big"><span id="games">—</span> games</div>
+    <div class="stat-row"><span>Avg game length</span><span id="avgGlen">—</span></div>
+    <div class="stat-row"><span>States/game</span><span id="spg">—</span></div>
+    <div class="stat-row"><span>Stage</span><span id="stage">—</span></div>
+    <div class="stat-row"><span>Arch</span><span id="arch">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Losses (last reported)</h2>
+    <div class="stat-row"><span>Total</span><span id="lossTotal">—</span></div>
+    <div class="stat-row"><span>Policy (REINFORCE)</span><span id="lossPol">—</span></div>
+    <div class="stat-row"><span>Value MSE</span><span id="lossVal">—</span></div>
+    <div class="stat-row"><span>Entropy</span><span id="entropy">—</span></div>
+    <div class="stat-row"><span>KL anchor</span><span id="lossKL">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Loss curves</h2>
+    <canvas id="lossChart"></canvas>
+    <div class="sub" style="margin-top: 8px; font-size: 11px;">
+      <span style="color:#fff;">━ total</span>
+      &nbsp;<span style="color:#8b5cf6;">━ policy</span>
+      &nbsp;<span style="color:#10b981;">━ value</span>
+      &nbsp;<span style="color:#f59e0b;">━ entropy</span>
+    </div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Eval History (vs random heuristic-bot mix)</h2>
+    <table>
+      <thead><tr><th>States</th><th>Win Rate (%)</th><th>Δ vs prev</th></tr></thead>
+      <tbody id="evalTable"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const RL_API    = '/api/rl_stats';
+const CHAIN_API = '/api/chain';
+const lossHistory = [];
+const lossKeys = ['loss', 'loss_pol', 'loss_val', 'entropy'];
+const lossColors = { loss: '#ffffff', loss_pol: '#8b5cf6', loss_val: '#10b981', entropy: '#f59e0b' };
+
+async function fetchJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch (e) { return null; }
+}
+
+function fmtSec(s) {
+  if (!Number.isFinite(s) || s < 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = Math.floor(s % 60);
+  return h > 0 ? `${h}h ${m}m` : (m > 0 ? `${m}m ${ss}s` : `${ss}s`);
+}
+
+function update(rl, chain) {
+  if (!rl) return;
+  document.getElementById('states').textContent = rl.states.toLocaleString();
+  document.getElementById('target').textContent = rl.target.toLocaleString();
+  const frac = Math.min(1, rl.states / rl.target);
+  document.getElementById('progBar').style.width = (frac * 100).toFixed(1) + '%';
+  document.getElementById('step').textContent = rl.step;
+  document.getElementById('fps').textContent = rl.fps ? rl.fps.toFixed(0) : '—';
+  document.getElementById('lr').textContent = rl.lr ? rl.lr.toExponential(2) : '—';
+  document.getElementById('elapsed').textContent = fmtSec(rl.elapsed_sec);
+  const remaining = rl.fps > 0 ? (rl.target - rl.states) / rl.fps : NaN;
+  document.getElementById('eta').textContent = fmtSec(remaining);
+  document.getElementById('games').textContent = rl.games_played?.toLocaleString() ?? '—';
+  document.getElementById('avgGlen').textContent = rl.avg_game_len?.toFixed(0) ?? '—';
+  document.getElementById('spg').textContent = rl.games_played > 0
+    ? (rl.states / rl.games_played).toFixed(1) : '—';
+  document.getElementById('stage').textContent = rl.stage ?? '—';
+  document.getElementById('arch').textContent = rl.arch ?? '—';
+  document.getElementById('lossTotal').textContent = rl.loss?.toFixed(4) ?? '—';
+  document.getElementById('lossPol').textContent = rl.loss_pol?.toFixed(4) ?? '—';
+  document.getElementById('lossVal').textContent = rl.loss_val?.toFixed(4) ?? '—';
+  document.getElementById('entropy').textContent = rl.entropy?.toFixed(3) ?? '—';
+  document.getElementById('lossKL').textContent = rl.loss_kl?.toFixed(4) ?? '—';
+
+  const isDone = chain && chain.phase === 'completed';
+  const pill = document.getElementById('statusPill');
+  pill.textContent = isDone ? 'done' : 'live';
+  pill.className = 'pill ' + (isDone ? 'done' : 'live');
+  document.getElementById('runName').textContent = rl.run_name ?? chain?.run_name ?? 'v13_3_rl';
+
+  // Append loss history
+  const last = lossHistory[lossHistory.length - 1];
+  if (!last || last.step !== rl.step) {
+    lossHistory.push({ step: rl.step, states: rl.states,
+      loss: rl.loss, loss_pol: rl.loss_pol, loss_val: rl.loss_val, entropy: rl.entropy });
+    if (lossHistory.length > 500) lossHistory.shift();
+  }
+  drawLossChart();
+
+  // Eval history
+  const tbody = document.getElementById('evalTable');
+  tbody.innerHTML = '';
+  const evals = rl.eval_history || [];
+  let prev = null;
+  for (const [s, wr] of evals) {
+    const tr = document.createElement('tr');
+    const delta = prev !== null ? (wr - prev) : null;
+    const dStr = delta === null ? '—' :
+                 (delta >= 0 ? '+' : '') + delta.toFixed(1);
+    const dColor = delta === null ? '#94a3b8' : (delta >= 0 ? '#10b981' : '#f87171');
+    tr.innerHTML = `<td>${s.toLocaleString()}</td><td>${wr.toFixed(1)}%</td>` +
+                   `<td style="color:${dColor}">${dStr}</td>`;
+    tbody.appendChild(tr);
+    prev = wr;
+  }
+  if (evals.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:#94a3b8;text-align:center;">no eval points yet</td></tr>';
+  }
+}
+
+function drawLossChart() {
+  const c = document.getElementById('lossChart');
+  const ctx = c.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = '#0b1020';
+  ctx.fillRect(0, 0, w, h);
+  if (lossHistory.length < 2) return;
+
+  const allVals = [];
+  for (const k of lossKeys) for (const p of lossHistory)
+    if (p[k] !== undefined && p[k] !== null) allVals.push(p[k]);
+  if (allVals.length === 0) return;
+
+  const lo = Math.min(...allVals), hi = Math.max(...allVals);
+  const yScale = (v) => h - 10 - (v - lo) / Math.max(1e-6, hi - lo) * (h - 20);
+  const xScale = (i) => 40 + i / Math.max(1, lossHistory.length - 1) * (w - 50);
+
+  ctx.strokeStyle = '#1e2745'; ctx.lineWidth = 1;
+  for (let g = 0; g < 5; g++) {
+    const y = 10 + g * (h - 20) / 4;
+    ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(w - 10, y); ctx.stroke();
+    const v = hi - (hi - lo) * g / 4;
+    ctx.fillStyle = '#94a3b8'; ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right'; ctx.fillText(v.toFixed(2), 36, y + 3);
+  }
+
+  for (const k of lossKeys) {
+    ctx.strokeStyle = lossColors[k];
+    ctx.lineWidth = k === 'loss' ? 2 : 1.4;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < lossHistory.length; i++) {
+      const v = lossHistory[i][k];
+      if (v === undefined || v === null) continue;
+      const x = xScale(i), y = yScale(v);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+}
+
+async function tick() {
+  const [rl, chain] = await Promise.all([fetchJSON(RL_API), fetchJSON(CHAIN_API)]);
+  update(rl, chain);
+}
+
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>
