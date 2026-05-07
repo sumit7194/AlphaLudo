@@ -685,3 +685,77 @@ One of three outcomes by end of Step 2:
 
 Each outcome is informative. The 3-week investment is worth it because
 the answer is otherwise unknowable.
+
+---
+
+## Update — 2026-05-06/07: outcomes so far
+
+Plan above was executed in compressed form (1-2 days, not 2-3 weeks)
+because Step 1 came back so decisively negative that the longer path
+wasn't justified. Summary of what landed:
+
+### Step 1 — MCTS search-distillation: NEGATIVE
+
+Built fresh Python MCTS (`experiments/mcts_v1/`) with 6 unit tests
+catching the two real bugs (state aliasing in dice loop, bonus-turn
+sign error). Generated 901K-state buffer, distilled into fresh V13.2-arch
+student. H2H against V13.2_latest (25K-game tournament, killed at 13.8K
+when verdict was clear):
+
+- v1 (with bugs): V13.2 92.2 / Step1 7.8
+- v2 (bugs fixed): V13.2 89.6 / Step1 10.4
+
+Bug fixes moved the result by +2.6pp — the bugs were real but the
+binding constraint is **2-ply expectimax over the same teacher cannot
+meaningfully improve targets.** Shelved Step 1 / Step 2 until we have a
+stronger leaf evaluator than V13.2.
+
+### Step 3 (originally optional) — Temporal transformer: ESCALATED
+
+Pivoted to transformer-with-temporal-context experiments.
+
+**V13.3 mini** (418K params, cnn 4×64 + transformer L=2 d=64): SL plateau
+at 82% (same band), RL collapsed under vanilla REINFORCE (82→30), RL v2
+with KL anchor stabilized but still drifted (82→70). H2H: V13.3 lost
+43.4 / 56.6 to V13.2.
+
+**V13.4** (3.79M params, cnn 10×128 + transformer L=4 d=128 — V13.2-
+comparable scale): Discovered a train/test history mismatch bug in
+the V13.3 envs (mixed-POV in training, own-POV-only in inference,
+because encoder rotates board to current_player's POV). Fixed via
+per-player history deques in both SL and RL envs. 86 unit tests verify
+no opponent-frame leak.
+
+V13.4 SL plateau: also 80-82%. RL stable at 80% so far (200K of 1.5M
+states). **H2H verdict pending — phase 3 fires after RL completes.**
+
+### Methodology update
+
+The 4-way H2H (V13.2 / V13.3_SL / V13.3_RL / Step1_Distill, 500 games
+per pair, mirrored seeds) revealed a critical methodological lesson:
+**bot-eval ceilings around 80-83% across all architectures** mask real
+H2H differences of ±5-10pp. Any plateau-break claim must be validated
+by H2H, not bot eval.
+
+### Open questions, ranked by promise
+
+1. **Token-symmetry encoder fix** (proposed by user 2026-05-07). Current
+   encoders treat the 4 own / 4 opp tokens as 4 distinct channels each,
+   even though the rules make them permutation-symmetric. The model has
+   likely "specialized" token IDs (token 0 usually further along the
+   board). Capture-and-return events break this distribution. Proposal:
+   collapse to 1 channel "all my tokens" + 1 channel "all opp tokens"
+   (with multiplicity). Lower-risk than search; potentially additive
+   with all other improvements.
+
+2. **League / population-based RL.** Train V13.2 (or V13.4) against a
+   diverse pool of frozen older checkpoints rather than only against
+   itself. Gives meaningful advantage signal that vanilla self-play
+   REINFORCE lacks.
+
+3. **Bigger plain V13.2** (more channels, deeper trunk). Tests whether
+   the plateau is capacity-bound, independent of temporal information.
+
+4. **MCTS revisit, but only after we have a stronger leaf evaluator.**
+   Whatever wins from (1)/(2)/(3) becomes the new leaf; then 2-ply
+   search has actual headroom to extract.

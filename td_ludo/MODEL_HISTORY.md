@@ -660,3 +660,220 @@ hand-engineered features and V13's spatial CNN structure were both
 *sufficient but not necessary*. The plateau is in the supervised
 signal (V12.2 teacher) + the bias-penalty reward shaping +
 the opponent ladder, not the architecture.
+
+---
+
+## Post-V13.2 plateau-break attempts (2026-05-05 → 06)
+
+After the 3-way tournament confirmed V13.2 as strongest (V13.2 53.1% >
+V12.2 50.2% > V14_scalar 46.6%), four attempts were made to break the
+~80-83% bot-eval / ±5pp H2H plateau.
+
+### MCTS Step 1 — search-distillation from V13.2 (Python rewrite)
+
+**Goal.** AlphaZero-lite: generate ~1M states with 2-ply expectimax
+search using V13.2 as leaf evaluator, distill `(π_search, V_search,
+outcome)` targets into a fresh V13.2-arch student.
+
+**What we built:** `experiments/mcts_v1/{generate_search_data, train_search_distill}.py`
+plus a 6-test unit-test suite that catches the two bugs that broke the
+first attempt (state aliasing in the dice loop, bonus-turn sign error
+in Q-aggregation). Atomic versioned save (.prev.npz failsafe) added
+after a 11.7M-state buffer was corrupted by VM network failure.
+
+**Result.** Step1_Distill loses **89.6% / 10.4%** to V13.2_latest in
+H2H (25K games, capped early once verdict was clear). Bug fixes moved
+the result from v1 (92.2/7.8) only to v2 (89.6/10.4) — the bugs were
+real but not the dominant problem. **2-ply expectimax over the same
+teacher cannot meaningfully improve the targets.**
+
+Conclusion: shelved until we have a stronger leaf evaluator than V13.2.
+
+### V13.3 — temporal transformer (mini, 418K params)
+
+**Goal.** Test whether the model can use opponent-pattern signal across
+K=8 past decision states. Architecture: per-frame CNN (4 res-blocks ×
+64ch) + 2-layer transformer (d=64, h=4, ffn=256) over K=8 V17 frames.
+
+**SL distillation result.** 5M states, V13.2 teacher. Final eval 82%
+vs random heuristic-bot mix — exactly V13.2's band.
+
+**RL result (vanilla self-play REINFORCE, v1).** Catastrophic policy
+collapse: 82% → 31.5% → 30.0% over 600K states. Vanilla REINFORCE in
+symmetric self-play has near-zero gradient signal at the population
+level (advantage averages to zero across mirrored agents), and without
+strong regularization the policy random-walks into garbage.
+
+**RL v2 with patches** (KL anchor 0.1 to V13.2, multi-legal-move filter
+on policy/entropy losses, LR 5e-5): drift slowed but did not stop —
+82% → 77% → 70% over 300K states. Killed.
+
+**4-way H2H tournament** (V13.2_latest vs V13.3_SL vs V13.3_RL_v2 vs
+Step1_Distill, 500 games per pair, mirrored seeds, greedy):
+
+| Rank | Model | Wins/Games | WR |
+|---|---|---|---|
+| 1 | V13.2_latest | 999/1500 | **66.6%** |
+| 2 | V13.3_SL_82pct | 921/1500 | 61.4% |
+| 3 | V13.3_RL_v2_DEGRADED | 905/1500 | 60.3% |
+| 4 | Step1_Distill | 175/1500 | 11.7% |
+
+Key findings:
+- **V13.3 mini lost 43.4% / 56.6% to V13.2** — temporal arch at this
+  size does not match teacher.
+- **V13.3 RL "degradation" was a bot-eval illusion** — RL v2 was
+  statistically tied with SL in H2H (52/48). Methodology lesson:
+  bot-eval gets noisier as policy moves; trust H2H.
+- The H2H gap to V13.2 has two confounders: 7× capacity gap AND a
+  train/test history mismatch (see V13.4 below).
+
+### V13.4 — temporal transformer at V13.2-comparable scale + bug fix
+
+**Architecture.** Per-frame CNN 10×128 (matches V13.2 trunk) + 4-layer
+transformer d=128, h=4, ffn=512. **3.79M params** (vs V13.2's 3.0M).
+Same `V133Temporal` model class as V13.3, just bigger constructor args.
+
+**Critical bug discovered & fixed.** The V13.3 SL/RL envs maintained ONE
+deque per game and pushed every decision state regardless of which
+player was to move — so the transformer's K=8 history was a mixed
+sequence of own + opponent decision-state frames. But the encoder
+(`encode_state_v17`) rotates the board to `current_player`'s POV, and
+the inference-time agent in H2H only observes its own turns. Result:
+**train/test distribution mismatch** — model trained on alternating-POV
+sequences, asked to perform on own-POV-only sequences.
+
+Fix (Option B, "per-player history"):
+```python
+# Before:
+self.history = [collections.deque(maxlen=K) for _ in range(B)]
+# After:
+self.history = [{0: deque(maxlen=K), 2: deque(maxlen=K)} for _ in range(B)]
+```
+At a player p decision, push to `history[i][p]` and read from
+`history[i][p]`. Inference matches automatically (each agent had its
+own deque). Verified by **86 unit tests** in `experiments/v134/test_per_player_history.py`
+covering init, push correctness, opp-leak isolation, reset, RL
+trajectory snapshots, and encoder POV-pivot precondition.
+
+**SL distillation** (10M states, V13.2 teacher, batch=256, lr 1e-3 → 1e-4,
+~10 hrs on L4 GPU). Eval history:
+
+| States | Eval WR |
+|---|---|
+| 1M | 53.5% |
+| 4M | 81.5% |
+| 6M | 82.5% (peak) |
+| 9M | 81.5% |
+| 10M (final) | — |
+
+Lands at the same **80-82% bot-eval ceiling** as V13.2, V13.3-mini, and
+V14_scalar. Bot eval cannot distinguish them — only H2H can.
+
+**RL phase (chain-1).** Same recipe as V13.3 RL v2 (KL anchor 0.1,
+multi-legal filter, lr 5e-5 → 5e-6, entropy 0.02). 1.5M states, 9,375
+games. Bot-eval trajectory: 80→86.5→81→83→79.5→84→83 (peaks above the
+80-82% SL band, but 200-game evals carry ±2-3pp SE so peaks are within
+noise of mean).
+
+**Chain-1 H2H (2026-05-07 11:24 UTC, 500 games per pair, mirrored seeds):**
+
+| Rank | Model | WR (1000 games each) |
+|---|---|---|
+| 1 | V13.4_SL | 50.6% |
+| 2 | V13.2_latest | 50.2% |
+| 3 | V13.4_RL | 49.2% |
+
+All three **statistically tied** (max delta 1.4pp, z=0.6). The bot-eval
+peaks were variance, not real H2H lift. Confirms bot-eval is teacher-
+bound and only H2H is the gate.
+
+**RL was undersized.** 9.4K games is barely warm-up vs V14_scalar's 700K
+or V12.2's 485K. Concluding "RL doesn't help" from this would be unfair.
+
+**RL continuation (in progress, launched 2026-05-07 ~11:50 UTC).** Resumed
+from `checkpoints/v134/model_latest.pt` (chain-1 end state). LR cosine
+reset 5e-5 → 5e-6 over 100M states (effectively unbounded). Eval cadence
+now game-based: every 20K games × 3K games per eval (±0.5pp SE — clean
+signal). Other hyperparams unchanged. As of 2026-05-07 ~16:25 UTC: 2.01M
+states / 12,678 games / fps 122 / ent 0.38 / kl 0.07 — healthy and
+exploring. First eval at G=20K pending. Dashboard at `http://34.143.250.98:8792/`
+(firewall whitelists user IP).
+
+### V13.5 — symmetric encoder + symmetric output (POC 2026-05-07)
+
+**Hypothesis.** The 4 own / 4 opp tokens are permutation-symmetric under
+Ludo's rules, but per-token-channel encoders force the model to *learn*
+this symmetry from data. Capture-and-return events break the empirical
+"token-0 most advanced" correlation that the model ends up relying on.
+Build the symmetry into the architecture instead.
+
+**Two changes vs V13.2** (orthogonal axis to V13.4's temporal):
+1. **Encoder V18 (13ch, count-based).** ch0/1: own/opp token-count per
+   cell (sum of V14 ch0..3, with home cells zeroed since V14 leaks
+   token-id via per-token home cells); ch2/3: own/opp at-home count
+   (broadcast scalar /4); ch4..9: dice (unchanged); ch10..12: V11 statics
+   (unchanged). 19/19 invariance unit tests pass under all 24 own- and
+   opp-token permutations.
+2. **Rank-indexed output.** Sort own-token positions descending (most-
+   advanced = rank-0), output 4 logits per rank. Aggregate V13.2's per-
+   token policy → per-rank target via summation. At play time, map
+   chosen rank back to a legal token-ID.
+
+No transformer, no temporal history. Pure CNN trunk in V13.2 style.
+
+**POC (Mac MPS, 2026-05-07).** 6 ResBlocks × 96 ch = 1.03M params (1/3
+V13.2). 2M states SL, V13.2 teacher, lr 1e-3 → 1e-4 cosine, batch 256,
+~45 min wall. Two ablations:
+
+| Variant | perm aug | Bot peak | H2H vs V13.2 (500 games) | z |
+|---|---|---|---|---|
+| Run A | ON | 82% | 47.0% | 1.34 |
+| Run B | OFF | 85% | **47.8%** | **0.98 (tied)** |
+
+**Findings.**
+1. V13.5 at 1/3 V13.2's capacity statistically ties V13.2 in H2H
+   (z=0.98). For comparison, V13.3 mini at 1/7 V13.2's capacity lost by
+   13pp. **Per-param, the symmetric encoder is meaningfully more efficient.**
+2. Permutation augmentation hurt H2H by 1.6pp. V13.2's residual token-id
+   biases ("advance token-0 first") empirically align with good
+   heuristics ("advance most-advanced first") because of training-time
+   correlation. Random-permutation aug washes out useful bias along
+   with the noise. **Default OFF for future runs.**
+3. The 4-5pp residual gap at 1/3 capacity is plausibly capacity-bound,
+   not a symmetry-doesn't-work signal.
+
+**Pending (queued).** Full-size V13.5 SL on Mac MPS (in parallel with
+V13.4 RL on VM): 10×128 ≈ 3M params (V13.2-matched), 5-10M states, perm
+aug OFF. H2H gate after SL completes. If tied/winning, V13.5 + RL on VM
+becomes the canonical follow-up.
+
+**Files.** `td_ludo/game/encoder_v18_symmetric.py`, `td_ludo/game/rank_mapping.py`,
+`td_ludo/models/v13_5.py`, `experiments/v135/test_v135_symmetry.py`,
+`train_v135_sl.py`. Backups planned at `checkpoint_backups/v135_with_perm_*`
+and `checkpoint_backups/v135_no_perm_*`.
+
+### V14_scalar — RL run paused
+
+The V14_scalar RL run resumed on Mac MPS (game 485,910 → 700,000). Eval
+peaked at 80%, slowly drifted to 76.6%, ELO 1410 (down from peak ~1650).
+Entropy collapsed to ~0 mid-run. Paused 2026-05-07 08:12 UTC, weights
+backed up to `checkpoint_backups/v14_scalar_rl_20260507_081221/`.
+
+### Open methodological learning
+
+1. **Bot-eval ceilings around 80-83% across all architectures** — this
+   metric saturates and cannot distinguish stronger models. H2H at 1K-25K
+   games is the right tool above that band.
+2. **SL distillation is teacher-bound.** A student trained on V13.2's
+   outputs cannot exceed V13.2 in expectation, regardless of architecture.
+   To break the plateau, RL must contribute beyond the SL initialization.
+3. **Vanilla REINFORCE in symmetric self-play is too weak** to push the
+   policy past teacher; needs either KL-anchored regularization (which
+   slows drift but also slows improvement) or fundamentally different
+   gradient signal (search-improved targets, league play, exploiter
+   opponents).
+4. **Train/test distribution mismatches in temporal models can silently
+   cost percentage points.** The V13.3 mini's 43.4% H2H against V13.2
+   was partly attributable to the per-player history bug, not just
+   capacity. Always verify inference protocol matches training protocol
+   for any stateful architecture.

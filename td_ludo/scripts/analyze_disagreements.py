@@ -49,28 +49,42 @@ def load_all_decisions():
                     continue
 
 
-def is_interchangeable(d):
-    """True if the human's picked token sits on the same board cell as
-    the AI's picked token (or any other legal token). Moving either is
-    functionally identical, so the disagreement is a UI artifact, not
-    a real strategic choice."""
+def is_interchangeable(d, prob_tolerance=1e-3):
+    """True if all three conditions hold:
+      (a) human's picked token sits on a board cell with ≥2 own tokens
+      (b) AI's argmax token is also in that same-cell stack
+      (c) AI's policy probability is equal across ALL stacked tokens
+          (within `prob_tolerance` — model is genuinely indifferent)
+
+    Only when all three are true is the disagreement a pure UI artifact.
+    If AI shows preference for a SPECIFIC stacked token (e.g., 0.6 vs 0.3
+    even though both produce identical board outcomes), that's still a
+    real signal about the model's internal asymmetry — count as real.
+    """
     cp = d.get('current_player', HUMAN_PLAYER)
     own_positions = d.get('positions', {}).get(str(cp), [])
     if len(own_positions) < 4:
         return False
-    legal = set(d.get('legal_tokens', []))
     human_pick = d.get('human_token')
     ai_pick = d.get('v12_argmax')
     if human_pick is None or ai_pick is None or human_pick == ai_pick:
         return False
-    # Both picks must be at non-base, non-home positions to be on same "cell"
     h_pos = own_positions[human_pick]
-    a_pos = own_positions[ai_pick]
     if h_pos == BASE_POS or h_pos == HOME_POS:
         return False
-    if a_pos == BASE_POS or a_pos == HOME_POS:
+    # (a) find tokens stacked at human's cell
+    stack_indices = [t for t in range(4) if own_positions[t] == h_pos]
+    if len(stack_indices) < 2:
         return False
-    return h_pos == a_pos
+    # (b) AI's argmax must also be in that stack
+    if ai_pick not in stack_indices:
+        return False
+    # (c) AI's probabilities for ALL stacked tokens must be equal
+    policy = d.get('v12_policy', [0, 0, 0, 0])
+    stack_probs = [policy[i] for i in stack_indices]
+    if max(stack_probs) - min(stack_probs) > prob_tolerance:
+        return False
+    return True
 
 
 def stack_count_at_human_cell(d):

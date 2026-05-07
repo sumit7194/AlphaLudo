@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLudo — AI vs AI Watch</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  /* Auto-watch overrides — keeps the play UI's board styling but
+     swaps the side panel for watch controls + a scrubbable timeline. */
+  html, body { -webkit-text-size-adjust: 100%; }
+  .app { box-sizing: border-box; }
+  /* Make the board scale to its container instead of overflowing on
+     narrow screens. The board itself is a 15-cell grid that uses
+     CSS variables; we override --cell-size relative to viewport width. */
+  :root { --cell-size: clamp(18px, 5.6vw, 38px); }
+
+  .watch-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .watch-btn { padding: 10px 14px; background: var(--panel-2, #2a2a2a); color: var(--text, #eee); border: 1px solid var(--border, #444); border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 600; min-width: 70px; min-height: 40px; touch-action: manipulation; }
+  .watch-btn:hover { background: var(--panel, #333); }
+  .watch-btn.active { background: #8b5cf6; color: white; border-color: #8b5cf6; }
+  .watch-btn.live { background: #10b981; color: white; border-color: #10b981; }
+  .watch-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .speed-row { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+  .speed-row .watch-btn { min-width: 38px; padding: 6px 8px; font-size: 12px; }
+  .scrub-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  .scrub-row input[type="range"] { flex: 1; }
+  .scrub-info { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ink-2, #aaa); min-width: 80px; }
+  .scrub-info .live-tag { color: #10b981; font-weight: 700; }
+  .scrub-info .past-tag { color: #f59e0b; font-weight: 700; }
+
+  .move-card { padding: 10px; background: var(--panel-2, rgba(0,0,0,0.05)); border-radius: 6px; margin-top: 8px; }
+  .move-card .move-meta { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-2, #888); margin-bottom: 6px; }
+  .move-card .move-meta .player-tag { display: inline-block; padding: 2px 6px; border-radius: 3px; font-weight: 700; margin-right: 6px; }
+  .move-card .move-meta .player-tag.p0 { background: #6ea8ff; color: white; }
+  .move-card .move-meta .player-tag.p2 { background: #f59e0b; color: white; }
+  .move-card .move-meta .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; margin-left: 4px; font-weight: 700; font-size: 10px; }
+  .move-card .move-meta .badge.captured { background: #ef4444; color: white; }
+  .move-card .move-meta .badge.bonus { background: #10b981; color: white; }
+  .move-card .move-meta .badge.forced { background: #6b7280; color: white; }
+  .move-card .move-meta .badge.passed { background: #6b7280; color: white; }
+
+  .comment-card { padding: 10px; margin-top: 10px; background: rgba(56,132,255,0.06); border: 1px solid rgba(56,132,255,0.25); border-radius: 6px; }
+  .comment-card textarea { width: 100%; box-sizing: border-box; min-height: 60px; font-family: inherit; font-size: 13px; padding: 6px; border: 1px solid var(--border, #444); border-radius: 4px; resize: vertical; }
+  .comment-card .pref-row { display: flex; gap: 4px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .comment-card .pref-label { font-size: 11px; color: var(--ink-2, #888); margin-right: 4px; }
+  .pref-btn { padding: 4px 10px; background: var(--panel-2, #2a2a2a); color: var(--text, #eee); border: 1px solid var(--border, #444); border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; min-width: 38px; }
+  .pref-btn.active { background: #3884ff; color: white; border-color: #3884ff; }
+  .pref-btn.illegal { opacity: 0.3; cursor: not-allowed; }
+  .pref-btn.chosen { opacity: 0.5; cursor: not-allowed; outline: 1px dashed #f59e0b; }
+  .comment-actions { display: flex; gap: 8px; }
+  .comment-status { font-size: 11px; color: var(--ink-2, #888); margin-top: 6px; min-height: 14px; }
+  .comment-status.success { color: #10b981; }
+  .comment-status.error { color: #ef4444; }
+
+  .timeline { margin-top: 10px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border, #444); border-radius: 4px; -webkit-overflow-scrolling: touch; }
+  .timeline-row { padding: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.05); display: grid; grid-template-columns: 36px 24px 32px 1fr auto; gap: 6px; align-items: center; min-height: 36px; }
+  .timeline-row:hover { background: rgba(56,132,255,0.10); }
+  .timeline-row.current { background: rgba(56,132,255,0.18); font-weight: 700; }
+  .timeline-row.commented { background: rgba(245,158,11,0.10); }
+  .timeline-row .tl-idx { color: var(--ink-2, #888); }
+  .timeline-row .tl-player { font-weight: 700; }
+  .timeline-row .tl-player.p0 { color: #6ea8ff; }
+  .timeline-row .tl-player.p2 { color: #f59e0b; }
+  .timeline-row .tl-marker { font-size: 10px; }
+
+  /* ── Board overlays: center dice + active-player corner glow ───── */
+  .board { position: relative; }
+
+  /* Dice sits over the pinwheel home-center. Sized relative to cell size. */
+  .dice-overlay {
+      position: absolute;
+      width: calc(var(--cell-size) * 1.8);
+      height: calc(var(--cell-size) * 1.8);
+      left: calc(var(--board-pad) + (var(--cell-size) * 7.5) - (var(--cell-size) * 0.9));
+      top:  calc(var(--board-pad) + (var(--cell-size) * 7.5) - (var(--cell-size) * 0.9));
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35), 0 0 0 3px rgba(0,0,0,0.1);
+      font-family: 'Sora', 'Manrope', sans-serif;
+      font-weight: 800;
+      font-size: calc(var(--cell-size) * 1.2);
+      line-height: 1;
+      color: #1a1a1a;
+      transition: background 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease;
+      pointer-events: none;
+      user-select: none;
+  }
+  .dice-overlay.empty { background: rgba(255,255,255,0.55); color: rgba(0,0,0,0.25); font-size: calc(var(--cell-size) * 0.7); font-weight: 600; }
+  .dice-overlay.player-0 { background: #32b94a; color: white; box-shadow: 0 6px 24px rgba(50,185,74,0.55), 0 0 0 3px rgba(31,31,31,0.18); }
+  .dice-overlay.player-2 { background: #ffdf00; color: #1a1a1a; box-shadow: 0 6px 24px rgba(255,223,0,0.65), 0 0 0 3px rgba(31,31,31,0.18); }
+  .dice-overlay .dice-num { line-height: 1; }
+  .dice-overlay .dice-roll-anim { animation: dice-pop 0.32s ease; }
+  @keyframes dice-pop {
+      0%   { transform: scale(0.6) rotate(-12deg); }
+      55%  { transform: scale(1.18) rotate(8deg); }
+      100% { transform: scale(1) rotate(0); }
+  }
+
+  /* Active-player corner highlight: pulses the full corner block. */
+  .cell.corner-player-0.turn-on,
+  .cell.corner-player-2.turn-on {
+      box-shadow: inset 0 0 0 2px rgba(255,255,255,0.85);
+      animation: turn-pulse 1.6s ease-in-out infinite;
+  }
+  .cell.corner-player-0.turn-on { filter: brightness(1.08) saturate(1.15); }
+  .cell.corner-player-2.turn-on { filter: brightness(1.05) saturate(1.18); }
+  @keyframes turn-pulse {
+      0%, 100% { box-shadow: inset 0 0 0 2px rgba(255,255,255,0.6); }
+      50%      { box-shadow: inset 0 0 0 3px rgba(255,255,255,1); }
+  }
+
+  /* Scored tokens go BEHIND the dice (z-index < .dice-overlay z-index). */
+  .token.scored-token { z-index: 3 !important; opacity: 0.85; }
+
+  /* ── Search tree visualization ───────────────────────────────────── */
+  .search-card {
+      padding: 10px;
+      margin-top: 10px;
+      background: rgba(139,92,246,0.06);
+      border: 1px solid rgba(139,92,246,0.25);
+      border-radius: 6px;
+  }
+  .search-card .search-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+      font-size: 12px;
+  }
+  .search-card .search-title {
+      font-weight: 700;
+      color: #8b5cf6;
+  }
+  .search-card .search-picks {
+      display: flex;
+      gap: 8px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      color: var(--ink-2, #888);
+  }
+  .search-card .search-picks .pick-tag {
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: 700;
+  }
+  .search-card .search-picks .pick-tag.model { background: #f59e0b; color: #2a1500; }
+  .search-card .search-picks .pick-tag.reward { background: #10b981; color: white; }
+  .search-card .search-picks .pick-tag.blend { background: #8b5cf6; color: white; }
+  .search-card .search-picks .pick-tag.same { opacity: 0.5; }
+
+  .search-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+  }
+  .search-table th {
+      text-align: left;
+      padding: 4px 6px;
+      font-weight: 600;
+      color: var(--ink-2, #888);
+      border-bottom: 1px solid var(--border, #ddd);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+  }
+  .search-table td {
+      padding: 6px;
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+  }
+  .search-table tr.row-action.is-model { background: rgba(245,158,11,0.10); }
+  .search-table tr.row-action.is-reward { background: rgba(16,185,129,0.10); }
+  .search-table tr.row-action.is-blend { background: rgba(139,92,246,0.10); }
+  .search-table tr.row-action.is-multi {
+      background: linear-gradient(90deg, rgba(245,158,11,0.10), rgba(139,92,246,0.10));
+  }
+  .search-table .tl { font-weight: 700; }
+  .search-table .move-arrow { color: var(--ink-2, #888); }
+  .search-table .num-pos { color: #16a34a; }
+  .search-table .num-neg { color: #dc2626; }
+  .search-table .num-zero { color: var(--ink-3, #888); }
+  .search-table .pick-marks { font-size: 9px; font-weight: 700; }
+  .search-table .pick-marks .mk-m { color: #f59e0b; }
+  .search-table .pick-marks .mk-r { color: #10b981; }
+  .search-table .pick-marks .mk-b { color: #8b5cf6; }
+  .search-card .penalty-detail {
+      font-size: 10px;
+      color: var(--ink-2, #888);
+      padding: 0 6px 6px;
+  }
+  .search-card .penalty-detail b { color: #dc2626; font-weight: 600; }
+
+  /* Layout: 2-column on wide screens, single-column on mobile/tablet. */
+  .watch-layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 16px;
+      align-items: start;
+  }
+  /* Tablet & phone: stack board over the side panel. The header's New Game
+     button shrinks too. The pref-btn row already wraps via flex. */
+  @media (max-width: 900px) {
+      .watch-layout {
+          grid-template-columns: 1fr;
+      }
+      .info-pane {
+          /* Order so timeline is below comment on mobile, but everything
+             stays in source order — no reorder needed. */
+      }
+      .board-pane .board-shell {
+          /* Center the board within whatever width is available. */
+          display: flex;
+          justify-content: center;
+      }
+      h1 { font-size: 18px; }
+      .sub { font-size: 11px; }
+      .app-header h1, header h1 { font-size: 18px; }
+  }
+  @media (max-width: 600px) {
+      .app { padding: 8px !important; }
+      .app .app-header, .app header { flex-wrap: wrap; gap: 8px; }
+      :root { --cell-size: clamp(16px, 5.8vw, 30px); }
+      .move-card, .comment-card { padding: 8px; }
+      .scrub-info { min-width: 0; }
+      .speed-row { flex-wrap: wrap; }
+      /* Larger tap targets on phone */
+      .watch-btn { min-height: 44px; padding: 10px 12px; }
+      .pref-btn { min-height: 40px; min-width: 44px; padding: 8px 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" style="max-width: 1400px; margin: 0 auto; padding: 16px;">
+  <header class="header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+    <div>
+      <h1 style="margin: 0;">AI vs AI — Watch & Comment</h1>
+      <p class="sub" id="meta" style="margin: 4px 0 0; color: var(--ink-2, #888); font-size: 13px;">loading…</p>
+    </div>
+    <div>
+      <button class="watch-btn" id="newGameBtn">↻ New Game</button>
+    </div>
+  </header>
+
+  <main class="watch-layout">
+    <section class="board-pane">
+      <div class="board-shell">
+        <div class="board-frame">
+          <div class="board" id="board"></div>
+        </div>
+      </div>
+      <div id="messageArea" style="margin-top: 12px; padding: 8px 12px; background: var(--panel-2, rgba(0,0,0,0.05)); border-radius: 4px; font-size: 13px; min-height: 36px;"></div>
+    </section>
+
+    <aside class="info-pane" style="display: flex; flex-direction: column; gap: 12px;">
+      <div>
+        <div class="watch-controls">
+          <button class="watch-btn" id="playPauseBtn">▶ Play</button>
+          <div class="speed-row">
+            <span style="font-size: 11px; color: var(--ink-2, #888);">speed:</span>
+            <button class="watch-btn speed" data-speed="2500">slow</button>
+            <button class="watch-btn speed active" data-speed="1000">1×</button>
+            <button class="watch-btn speed" data-speed="500">2×</button>
+            <button class="watch-btn speed" data-speed="250">4×</button>
+          </div>
+        </div>
+        <div class="scrub-row">
+          <button class="watch-btn" id="stepBackBtn" title="step back 1">◀</button>
+          <button class="watch-btn" id="stepFwdBtn" title="step forward 1">▶</button>
+          <input type="range" id="scrubber" min="0" max="0" value="0" />
+          <button class="watch-btn live" id="jumpLiveBtn" title="jump to live">live ⇥</button>
+        </div>
+        <div class="scrub-info" id="scrubInfo">—</div>
+      </div>
+
+      <div class="move-card" id="moveCard">
+        <div class="move-meta">no move yet</div>
+        <div id="movePolicy"></div>
+      </div>
+
+      <div class="search-card" id="searchCard" style="display: none;">
+        <div class="search-header">
+          <span class="search-title">Search trees (depth-1)</span>
+          <span class="search-picks" id="searchPicks"></span>
+        </div>
+        <table class="search-table" id="searchTable"></table>
+        <div class="penalty-detail" id="penaltyDetail"></div>
+      </div>
+
+      <div class="comment-card" id="commentCard" style="display: none;">
+        <div style="font-size: 11px; color: var(--ink-2, #888); margin-bottom: 4px;">
+          Comment on move #<span id="commentMoveIdx">—</span>
+        </div>
+        <textarea id="commentText" placeholder="What's interesting about this move? Why was it good/bad? Any tactical pattern?"></textarea>
+        <div class="pref-row">
+          <span class="pref-label">Better choice (optional):</span>
+          <button class="pref-btn" data-tok="0">T0</button>
+          <button class="pref-btn" data-tok="1">T1</button>
+          <button class="pref-btn" data-tok="2">T2</button>
+          <button class="pref-btn" data-tok="3">T3</button>
+        </div>
+        <div class="comment-actions">
+          <button class="watch-btn" id="commentSaveBtn">Save</button>
+          <button class="watch-btn" id="commentClearBtn">Clear</button>
+        </div>
+        <div class="comment-status" id="commentStatus"></div>
+      </div>
+
+      <div>
+        <div style="font-size: 11px; color: var(--ink-2, #888); margin-bottom: 4px;">Timeline (click to scrub)</div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+    </aside>
+  </main>
+</div>
+<script src="/static/game.js"></script>
+</body>
+</html>

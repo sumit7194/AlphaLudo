@@ -112,15 +112,22 @@ class TemporalDistillEnv:
         self.history_k = history_k
         self.max_game_len = max_game_len
         self.games = [ludo_cpp.create_initial_state_2p() for _ in range(batch_size)]
-        # Per-game history: list of last K-1 frames (each (17,15,15) np.float32),
-        # plus the current frame is added at decision time.
-        self.history = [collections.deque(maxlen=history_k) for _ in range(batch_size)]
+        # Per-game per-player history. Each game has TWO deques (one per
+        # player in 2P); we push to the deque of the player to move so the
+        # transformer's K-window is "this player's last K decision states"
+        # — matching what an agent sees during inference.
+        self.history = [
+            {0: collections.deque(maxlen=history_k),
+             2: collections.deque(maxlen=history_k)}
+            for _ in range(batch_size)
+        ]
         self.consec_sixes = np.zeros((batch_size, 4), dtype=np.int32)
         self.step_count = np.zeros(batch_size, dtype=np.int32)
 
     def _reset(self, i):
         self.games[i] = ludo_cpp.create_initial_state_2p()
-        self.history[i].clear()
+        self.history[i][0].clear()
+        self.history[i][2].clear()
         self.consec_sixes[i] = 0
         self.step_count[i] = 0
 
@@ -175,11 +182,12 @@ class TemporalDistillEnv:
                 # Encode current frame
                 cur_frame = encode_state_v17(game)  # (17,15,15) float32
 
-                # Push current frame to history
-                self.history[i].append(cur_frame)
+                # Push current frame to THIS PLAYER's history (per-player deques)
+                self.history[i][cp].append(cur_frame)
 
-                # Build K-frame stack (oldest first, padded with zeros at front)
-                hist = list(self.history[i])  # 1..K frames (current is last)
+                # Build K-frame stack from THIS PLAYER's history
+                # (oldest first, padded with zeros at front)
+                hist = list(self.history[i][cp])  # 1..K frames (current is last)
                 pad = self.history_k - len(hist)
                 if pad > 0:
                     zero = np.zeros((V17_CHANNELS, 15, 15), dtype=np.float32)

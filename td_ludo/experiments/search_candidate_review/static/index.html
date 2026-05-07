@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Search Candidate Review</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  /* Mark colors specific to this UI */
+  .mark-critical    { color: #f87171; }
+  .mark-helpful     { color: #fbbf24; }
+  .mark-unnecessary { color: var(--muted); }
+  .mark-dismiss     { color: #6b7280; }
+  .depth-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; font-size: 12px; }
+  .depth-row label { color: var(--muted); }
+  .depth-btn { flex: 1; padding: 6px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 13px; min-height: 36px; }
+  .depth-btn.active { background: var(--panel); box-shadow: inset 0 0 0 2px #8b5cf6; color: #c4b5fd; }
+  .bucket-tag { display: inline-block; background: rgba(139,92,246,0.18); color: #c4b5fd; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 6px; }
+  .tac-flag { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-right: 4px; font-weight: 600; }
+  .tac-flag.cap { background: #5eead4; color: #042f2e; }
+  .tac-flag.dng { background: #fb7185; color: #2a0712; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div>
+      <h1>Search Candidate Review</h1>
+      <p class="sub" id="meta">loading…</p>
+    </div>
+    <div class="counter">
+      <span id="idx">–</span> / <span id="total">–</span>
+      <span class="filter-info" id="filterInfo"></span>
+    </div>
+  </header>
+
+  <div class="filterbar">
+    <label>filter:
+      <select id="filterMark">
+        <option value="all">all</option>
+        <option value="unmarked">unmarked only</option>
+        <option value="critical">★ critical</option>
+        <option value="helpful">~ helpful</option>
+        <option value="unnecessary">— unnecessary</option>
+        <option value="dismiss">✗ dismissed</option>
+      </select>
+    </label>
+    <label>phase:
+      <select id="filterPhase">
+        <option value="all">all phases</option>
+        <option value="early">early</option>
+        <option value="early_mid">early-mid</option>
+        <option value="mid">mid</option>
+        <option value="endgame">endgame</option>
+      </select>
+    </label>
+    <label>tactical:
+      <select id="filterTac">
+        <option value="all">all tactical</option>
+        <option value="capture">capture available</option>
+        <option value="danger">danger present</option>
+        <option value="both">both</option>
+        <option value="none">neither</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="hideDismissed" checked> hide dismissed</label>
+  </div>
+
+  <main class="grid">
+    <section class="board-pane">
+      <div class="board-shell">
+        <div class="board" id="board"></div>
+      </div>
+      <div class="legend">
+        <span class="dot human"></span> Active player
+        <span class="dot ai"></span> Opponent
+        <span class="badge picked-h">model's argmax</span>
+      </div>
+    </section>
+
+    <aside class="info-pane">
+      <div class="card">
+        <h3>Bucket</h3>
+        <div id="bucketRow">–</div>
+      </div>
+
+      <div class="card">
+        <h3>Decision context</h3>
+        <table class="kv">
+          <tr><th>Game</th><td id="kvGame">–</td></tr>
+          <tr><th>Move #</th><td id="kvMove">–</td></tr>
+          <tr><th>Dice</th><td id="kvDice" class="dice">–</td></tr>
+          <tr><th>Active player</th><td id="kvCp">–</td></tr>
+          <tr><th>V12.2 win prob</th><td id="kvWin">–</td></tr>
+          <tr><th>Moves remaining (pred)</th><td id="kvMoves">–</td></tr>
+          <tr><th>Legal tokens</th><td id="kvLegal">–</td></tr>
+          <tr><th>Eventual winner</th><td id="kvWinner">–</td></tr>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Policy distribution</h3>
+        <div class="probs" id="probs"></div>
+        <div class="meta">
+          model picked: <b id="kvActed">–</b> · max prob: <b id="kvMaxProb">–</b>
+        </div>
+      </div>
+
+      <div class="card annot-card" id="annotCard">
+        <h3>Annotation</h3>
+        <textarea id="comment" rows="3" placeholder="Why does (or doesn't) this need search? What would the right move be?"></textarea>
+        <div class="markrow">
+          <button id="btnCritical"    class="mark mark-critical">★ critical</button>
+          <button id="btnHelpful"     class="mark mark-helpful">~ helpful</button>
+          <button id="btnUnnecessary" class="mark mark-unnecessary">— unnecessary</button>
+          <button id="btnDismiss"     class="mark mark-dismiss">✗ dismiss</button>
+        </div>
+        <div class="depth-row">
+          <label>if search needed, depth:</label>
+          <button class="depth-btn" data-depth="1">1</button>
+          <button class="depth-btn" data-depth="2">2</button>
+          <button class="depth-btn" data-depth="3">3</button>
+        </div>
+        <div class="annot-meta" id="annotMeta">no annotation yet</div>
+      </div>
+
+      <div class="card nav">
+        <button id="btnPrev">◀ prev</button>
+        <button id="btnAnnotToggle" class="annot-toggle" title="show/hide annotation">💬</button>
+        <button id="btnNext">next ▶</button>
+        <span class="hint">←/→ navigate · c/h/u/d mark · 1/2/3 depth</span>
+      </div>
+    </aside>
+  </main>
+</div>
+<script src="/static/review.js"></script>
+</body>
+</html>
