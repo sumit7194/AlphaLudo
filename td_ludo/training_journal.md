@@ -1952,7 +1952,7 @@ V12 has flipped strengths: dominates aggressive opponents (which engage frequent
 
 This is exactly the **different inductive bias** we hoped for. The hope is that RL — playing against V12-itself in self-play + bot mix — recovers the missing positional skill while keeping the new entity-relational strength.
 
-**RL launched (PID 16469 on L4, port 8790, dashboard at http://34.143.250.98:8790/)**.
+**RL launched (PID 16469 on L4, port 8790, dashboard at http://<vm-ip>:8790/)**.
 
 Early RL evals (3 evals, 30K games):
 
@@ -2223,7 +2223,7 @@ The V12 collapse was *unproductive* (overconfident on calls that didn't correlat
 
 **Dashboard rebuild (`520035a`)**: full v11_dashboard.html structure ported to V12.2 — header status dot, plateau-break gate visualization, big eval chart with reference lines (now showing 85% NEW TARGET, 81% V12 broken, 79% V11.1, 78.8% V6.1), KPI row, split charts (rolling WR + entropy with healthy-band shading), PPO dynamics, bot-WR breakdown, ELO leaderboard. Color palette swapped to purple to distinguish V12.2 from V11 cyan.
 
-**Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://34.143.250.98:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.
+**Status (2026-04-29 06:30)**: V12.2 RL running, G=60K+, eval cadence 10K. Trainer detached (PID 26112, PPID=1). Dashboard at http://<vm-ip>:8790/ — refresh to see new chart-rich layout. Next eval at G=70K. If trajectory holds, expect first 85%+ eval somewhere in G=100–150K.
 
 ---
 
@@ -3329,7 +3329,7 @@ the ac_v13_v2 Exp 27 era (HTML expected `total_games`, `games_per_minute`,
 `dashboard_server.py` patched to also emit the legacy field names plus a
 games-per-minute computed from `fps × 60 / avg_game_len`. Banner text
 updated for v13.4. Dashboard now serves correctly on
-`http://34.143.250.98:8792/` (firewall whitelists user IP for port 8792).
+`http://<vm-ip>:8792/` (firewall whitelists user IP for port 8792).
 
 **State at first journal update (2026-05-07 ~16:25 UTC, 4.5h elapsed):**
 

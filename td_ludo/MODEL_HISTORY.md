@@ -796,7 +796,7 @@ reset 5e-5 → 5e-6 over 100M states (effectively unbounded). Eval cadence
 now game-based: every 20K games × 3K games per eval (±0.5pp SE — clean
 signal). Other hyperparams unchanged. As of 2026-05-07 ~16:25 UTC: 2.01M
 states / 12,678 games / fps 122 / ent 0.38 / kl 0.07 — healthy and
-exploring. First eval at G=20K pending. Dashboard at `http://34.143.250.98:8792/`
+exploring. First eval at G=20K pending. Dashboard at `http://<vm-ip>:8792/`
 (firewall whitelists user IP).
 
 ### V13.5 — symmetric encoder + symmetric output (POC 2026-05-07)
