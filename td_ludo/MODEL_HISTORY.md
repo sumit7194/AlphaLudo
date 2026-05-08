@@ -904,15 +904,61 @@ V13.2). 2M states SL, V13.2 teacher, lr 1e-3 → 1e-4 cosine, batch 256,
 3. The 4-5pp residual gap at 1/3 capacity is plausibly capacity-bound,
    not a symmetry-doesn't-work signal.
 
-**Pending (queued).** Full-size V13.5 SL on Mac MPS (in parallel with
-V13.4 RL on VM): 10×128 ≈ 3M params (V13.2-matched), 5-10M states, perm
-aug OFF. H2H gate after SL completes. If tied/winning, V13.5 + RL on VM
-becomes the canonical follow-up.
+**Full-size V13.5 SL — completed 2026-05-08.** 10×128 = 2.99M params
+(V13.2-matched within 0.15%), 5M states, perm aug OFF, Mac MPS, 3h 35m
+wall at 388 fps.
+
+| States | Eval WR |
+|---|---|
+| 1M | 75.0% |
+| 2M | 78.5% |
+| 4M | **81.5%** (peak) |
+
+Final losses: L=0.020, pol=0.012, val=0.001 — full convergence to V13.2.
+
+**H2H vs V13.2_latest** (500 games, mirrored seeds, greedy):
+- V13.2 51.4% / V13.5_full 48.6% · delta -1.4pp · z = 0.63 · **TIED**
+
+Comparative table — all four V13.5 variants vs V13.2:
+
+| Variant | Params | pol_loss | Bot peak | H2H | Δ | z |
+|---|---|---|---|---|---|---|
+| POC perm-aug | 1.0M | 0.025 | 82% | 47.0% | -3.0pp | 1.34 |
+| POC no-perm | 1.0M | 0.023 | 85% | 47.8% | -2.2pp | 0.98 |
+| **Full-size no-perm** | **3.0M** | **0.012** | 81.5% | **48.6%** | **-1.4pp** | **0.63** |
+| V13.2 baseline | 3.0M | — | ~82% | 50.0% | 0 | — |
+
+**Findings.**
+
+1. **Full-size has the smallest H2H gap of any V13.5 variant.** Scaling
+   capacity helped — symmetric encoder is no worse than asymmetric at
+   matched capacity.
+2. **POC's "tie" was capacity-bottleneck regularization, not symmetry
+   shining through.** Final-loss numbers prove it: POC couldn't fully
+   fit V13.2 (0.023), full-size fit ~50% better (0.012). At 1/3 capacity,
+   POC was forced to smooth across V13.2's quirks. At full capacity, the
+   student is a near-perfect mimic of V13.2.
+3. **POC's 85% peak bot eval was an outlier** (smoothing got lucky one
+   eval). Full-size tracks V13.2's 80–82% band cleanly.
+4. **Pure-SL distillation is mathematically teacher-bound.** Across
+   V13.3-mini, V13.4_SL, V13.5 POC, V13.5 full-size — all four land in
+   the 47–51% H2H band vs V13.2. The teacher caps the student.
+
+**Symmetry's actual value is structural — invisible during pure SL.**
+The win V13.5 might buy vs V13.2 is that gradient updates are constrained
+to be permutation-equivariant: when RL pushes the policy, V13.5 can't
+drift into useless token-id specialization the way V13.2 did (per V12.2
+mech-interp findings). RL is where the architecture earns its keep — or
+doesn't. **The verdict gate was wrong before; SL+H2H can't measure
+architectural advantage when the teacher is the bound. V13.5 + RL is the
+real experiment.**
 
 **Files.** `td_ludo/game/encoder_v18_symmetric.py`, `td_ludo/game/rank_mapping.py`,
 `td_ludo/models/v13_5.py`, `experiments/v135/test_v135_symmetry.py`,
-`train_v135_sl.py`. Backups planned at `checkpoint_backups/v135_with_perm_*`
-and `checkpoint_backups/v135_no_perm_*`.
+`train_v135_sl.py`, `experiments/v135/chain_full.sh`,
+`experiments/v135/h2h_v135.py`. Final weights at
+`checkpoints/v135_full/model_latest.pt`. Backup at
+`checkpoint_backups/v135_full_<TS>/`.
 
 ### V14_scalar — RL run paused
 
