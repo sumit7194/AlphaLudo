@@ -57,6 +57,22 @@
         "Expert",
         "MCTSHighSim"
       ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "MCTSPure",
+      "n_games": 30,
+      "a_wins": 23,
+      "b_wins": 7,
+      "draws": 0,
+      "a_wr_pct": 76.66666666666667,
+      "b_wr_pct": 23.333333333333332,
+      "avg_length": 143.5,
+      "elapsed_sec": 117.15418648719788,
+      "pair": [
+        "Expectimax",
+        "MCTSPure"
+      ]
     }
   ]
 }
