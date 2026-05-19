@@ -171,9 +171,12 @@ End state I'm aiming for by morning:
 
 | Phase | Outcome | Commit |
 |---|---|---|
-| 1 — Expectimax variants | pending | — |
-| 2 — Round-robin runner | pending | — |
-| 3 — Depth-2 | pending | — |
-| 4 — MCTS-prior | pending | — |
-| 5 — Endgame solver | pending | — |
-| 7 — Final tournament + mix | pending | — |
+| 1 — Expectimax variants | ✓ 4 variants implemented; 3 beat base by 52-54% h2h | `834df41` |
+| 2 — Round-robin runner | ✓ JSON-checkpointed, BT-ELO, resumable | `834df41` |
+| 3 — Depth-2 | ✓ 3 depth-2 variants implemented; arena pending | `3ced262` |
+| 4 — MCTS-prior | ✓ Expert + Expectimax priors implemented; arena running | `3ced262` |
+| 5 — Endgame solver | skipped — defer to keep diversity-first focus | — |
+| 6 — Adaptive + rule | ✓ 6 bots (Adaptive, Vote, 4 rule-based) implemented | `2cb3c44`, `73c6cd8` |
+| 7 — Final tournament + mix | pending — depends on Phase 3+4+6 arena completion | — |
+
+See `STRONG_BOTS_RESULTS.md` for measured numbers as they come in.
