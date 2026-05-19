@@ -320,6 +320,22 @@
         "Expert",
         "MCTSExpertPrior"
       ]
+    },
+    {
+      "a": "Expert",
+      "b": "MCTSExpectimaxPrior",
+      "n_games": 200,
+      "a_wins": 46,
+      "b_wins": 154,
+      "draws": 0,
+      "a_wr_pct": 23.0,
+      "b_wr_pct": 77.0,
+      "avg_length": 155.075,
+      "elapsed_sec": 901.7229616641998,
+      "pair": [
+        "Expert",
+        "MCTSExpectimaxPrior"
+      ]
     }
   ]
 }
