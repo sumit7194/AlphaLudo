@@ -304,6 +304,22 @@
         "Expert",
         "Depth2DefensiveExpectimax"
       ]
+    },
+    {
+      "a": "Expert",
+      "b": "MCTSExpertPrior",
+      "n_games": 200,
+      "a_wins": 93,
+      "b_wins": 107,
+      "draws": 0,
+      "a_wr_pct": 46.5,
+      "b_wr_pct": 53.5,
+      "avg_length": 165.65,
+      "elapsed_sec": 795.4492545127869,
+      "pair": [
+        "Expert",
+        "MCTSExpertPrior"
+      ]
     }
   ]
 }
