@@ -1,0 +1,23 @@
+{
+  "Expectimax_vs_V13.5": {
+    "a_wins": 71,
+    "b_wins": 129,
+    "draws": 0,
+    "a_wr": 35.5,
+    "b_wr": 64.5
+  },
+  "Expectimax_vs_V15.1_RL": {
+    "a_wins": 79,
+    "b_wins": 121,
+    "draws": 0,
+    "a_wr": 39.5,
+    "b_wr": 60.5
+  },
+  "Expectimax_vs_V15.1_SL": {
+    "a_wins": 69,
+    "b_wins": 131,
+    "draws": 0,
+    "a_wr": 34.5,
+    "b_wr": 65.5
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "names": [
+    "V13.5",
+    "V13.5_exp",
+    "V15",
+    "V15_SL",
+    "V15.1",
+    "V15.1_SL"
+  ],
+  "results": {
+    "V13.5": {
+      "V13.5": null,
+      "V13.5_exp": [
+        2007,
+        1993,
+        0
+      ],
+      "V15": [
+        2177,
+        1823,
+        0
+      ],
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    },
+    "V13.5_exp": {
+      "V13.5": [
+        1993,
+        2007,
+        0
+      ],
+      "V13.5_exp": null,
+      "V15": null,
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    },
+    "V15": {
+      "V13.5": [
+        1823,
+        2177,
+        0
+      ],
+      "V13.5_exp": null,
+      "V15": null,
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    },
+    "V15_SL": {
+      "V13.5": null,
+      "V13.5_exp": null,
+      "V15": null,
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    },
+    "V15.1": {
+      "V13.5": null,
+      "V13.5_exp": null,
+      "V15": null,
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    },
+    "V15.1_SL": {
+      "V13.5": null,
+      "V13.5_exp": null,
+      "V15": null,
+      "V15_SL": null,
+      "V15.1": null,
+      "V15.1_SL": null
+    }
+  },
+  "games_per_orientation": 2000,
+  "elapsed_sec_so_far": 3731.09974193573,
+  "device": "cpu",
+  "complete": false
+}

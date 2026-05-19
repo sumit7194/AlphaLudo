@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Random",
+      "Distill14_v2"
+    ],
+    "elapsed_min": 1.2,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Random",
+      "b": "Distill14_v2",
+      "n_games": 500,
+      "a_wins": 37,
+      "b_wins": 463,
+      "draws": 0,
+      "a_wr_pct": 7.3999999999999995,
+      "b_wr_pct": 92.60000000000001,
+      "avg_length": 144.804,
+      "seat_a_p0": [
+        22,
+        250
+      ],
+      "seat_a_p2": [
+        15,
+        250
+      ],
+      "pair": [
+        "Random",
+        "Distill14_v2"
+      ]
+    }
+  ]
+}

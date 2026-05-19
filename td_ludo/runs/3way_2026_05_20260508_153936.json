@@ -1,0 +1,69 @@
+{
+  "games_per_pair": 1000,
+  "total_sec": 1519.1909308433533,
+  "device": "mps",
+  "ts": 1778256296,
+  "agents": [
+    {
+      "name": "V13.2_latest"
+    },
+    {
+      "name": "V13.5_SL"
+    },
+    {
+      "name": "V14_scalar_RL"
+    }
+  ],
+  "pairs": [
+    {
+      "a": "V13.2_latest",
+      "b": "V13.5_SL",
+      "a_wins": 484,
+      "b_wins": 516,
+      "draws": 0,
+      "wr_a": 48.4,
+      "wr_b": 51.6,
+      "elapsed_sec": 430.5844280719757
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V14_scalar_RL",
+      "a_wins": 602,
+      "b_wins": 398,
+      "draws": 0,
+      "wr_a": 60.2,
+      "wr_b": 39.8,
+      "elapsed_sec": 567.1325359344482
+    },
+    {
+      "a": "V13.5_SL",
+      "b": "V14_scalar_RL",
+      "a_wins": 568,
+      "b_wins": 432,
+      "draws": 0,
+      "wr_a": 56.8,
+      "wr_b": 43.2,
+      "elapsed_sec": 521.4739189147949
+    }
+  ],
+  "standings": [
+    {
+      "name": "V13.2_latest",
+      "wins": 1086,
+      "games": 2000,
+      "wr": 54.3
+    },
+    {
+      "name": "V13.5_SL",
+      "wins": 1084,
+      "games": 2000,
+      "wr": 54.2
+    },
+    {
+      "name": "V14_scalar_RL",
+      "wins": 830,
+      "games": 2000,
+      "wr": 41.5
+    }
+  ]
+}

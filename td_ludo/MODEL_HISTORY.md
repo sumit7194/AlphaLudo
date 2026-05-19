@@ -985,3 +985,374 @@ backed up to `checkpoint_backups/v14_scalar_rl_20260507_081221/`.
    was partly attributable to the per-player history bug, not just
    capacity. Always verify inference protocol matches training protocol
    for any stateful architecture.
+
+---
+
+## V13.5 / token-symmetric encoder + symmetric output (2026-05-07/08)
+
+The user proposed (2026-05-07) collapsing the 4 own-token / 4 opp-token
+input channels (one per token-id) into a single per-side count channel,
+arguing the rules treat tokens as fully permutation-symmetric and that
+the asymmetric encoding wastes capacity learning a symmetry it shouldn't
+need to learn. Bonus claim: the model's training-time bias (token-0
+typically further along) creates a state distribution where capture-and-
+return events land in undertrained regions.
+
+### V13.5 architecture
+
+- **Encoder (`td_ludo/game/encoder_v18_symmetric.py`)** — 13 channels:
+  - ch0 own_token_count per cell (sum of V14 ch0..3, with home cells
+    zeroed because per-token home cells leaked token-id otherwise)
+  - ch1 opp_token_count per cell (same treatment)
+  - ch2 own_at_home_count broadcast scalar (/4)
+  - ch3 opp_at_home_count broadcast scalar
+  - ch4..9 dice 6-one-hot
+  - ch10..12 V11 statics (safe / my-home / opp-home)
+- **Output (`td_ludo/game/rank_mapping.py`)** — 4 logits indexed by
+  canonical *position rank* (most-advanced own-token position first;
+  ties go to lowest token-id). Truly permutation-equivariant under
+  token-id swaps; engine maps rank→token-id at action time.
+- **Backbone** — V13.2-style pure CNN (no temporal). POC was 6×96
+  (1.0M params); full-size matches V13.2: 10×128 (3.0M params).
+- **19 unit tests** in `experiments/v135/test_v135_symmetry.py` verify
+  encoder permutation-invariance under all 24 own- and opp-token
+  permutations, rank ordering correctness, stack handling, aggregation
+  invariance, encoder POV-pivot precondition. All pass on Mac and VM.
+
+### POC (1.0M params, Mac MPS)
+
+5M states SL with random token-id permutation augmentation in the
+teacher input (sampling V13.2's policy under permutations of own-token
+IDs to train against the *symmetrized* V13.2 policy):
+
+| Run | Perm aug | Bot eval (peak) | H2H vs V13.2 (n=500) | Δ vs 50% |
+|---|---|---|---|---|
+| with-perm | ON | 82.0% | 47.0% / 53.0% | -3.0pp |
+| **no-perm** | OFF | 85.0% | **47.8% / 52.2%** | **-2.2pp** (z = 0.98) |
+
+Both POC variants statistically tied with V13.2 at 1/3 V13.2's capacity.
+At V13.3 mini's 1/7 capacity, V13.3 mini lost by 6.6pp. The encoder
+change is per-param more efficient. Permutation augmentation hurt
+slightly: V13.2's residual token-id biases turned out to be useful
+heuristics ("advance token-0" empirically aligns with "advance most-
+advanced") and symmetrization washed them out. **Decision: future runs
+default to no perm augmentation.**
+
+### Full-size V13.5 SL (3.0M params, Mac MPS, 5M states, 2026-05-08)
+
+10×128 backbone, no perm augmentation, init from scratch. Eval climb:
+
+| States | Bot eval |
+|---|---|
+| 1M | 75.0% |
+| 2M | 78.5% |
+| 3M | 78.5% |
+| 4M | **81.5%** |
+
+Same plateau (80-82%) as every other architecture — confirming bot
+eval is teacher-bound. The verdict was always going to be H2H.
+
+### 4-way tournament (2026-05-08, 1000 games per pair, mirrored seeds)
+
+V13.4 RLfinal was loaded into the tournament alongside V13.2, V13.5_SL,
+V14_scalar. Result was wildly inconsistent with the V13.4 chain phase 3
+H2H (50/50 — see "V13.4 BN bug" below). Skipping V13.4 due to the bug,
+the 3-way result is the fairest measurement we have.
+
+**Final 3-way standings (V13.2 / V13.5_SL / V14_scalar, 2000 games each):**
+
+| Rank | Agent | Params | Wins/Games | WR | 95% CI |
+|---|---|---|---|---|---|
+| 1 | V13.2_latest | 3.0M | 1086/2000 | 54.3% | [52.1, 56.5] |
+| 2 | V13.5_SL_full | 3.0M | 1084/2000 | **54.2%** | [52.0, 56.4] |
+| 3 | V14_scalar_RL | 230K | 830/2000 | 41.5% | [39.3, 43.7] |
+
+**Per-pair:**
+
+| Pair | Result | Δ |
+|---|---|---|
+| V13.2 vs V13.5_SL | **484 / 516** | **V13.5 +3.2pp**, z = 1.45 |
+| V13.2 vs V14_scalar | 602 / 398 | V13.2 +20.4pp |
+| V13.5_SL vs V14_scalar | 568 / 432 | V13.5 +13.6pp |
+
+**This is the first time any model has matched or edged V13.2 in H2H.**
+V13.5_SL alone (no RL phase) is statistically tied with V13.2_latest
+(which had SL + RL), and won the head-to-head pair 51.6 / 48.4 — borderline
+significance at p ≈ 0.07 one-tailed.
+
+The symmetric encoder hypothesis is **validated at the SL phase**. The
+V13.5 RL run on VM (launched 2026-05-08, 20M states target on cuda) is
+now the most important active experiment — if RL pushes V13.5 above
+52-54% H2H, it's a clear new SOTA.
+
+### V13.4 BN bug — diagnosis (2026-05-08)
+
+When the 4-way tournament was first run (V13.2 / V13.4_RL / V13.5_SL /
+V14_scalar), V13.4 lost 90/10 to V13.2 in 200 games. Cross-checking
+with the chain's own `experiments/v134/h2h_v134.py` reproduced the
+result — and on cuda also showed V13.4 outputting near-uniform policies
+(max prob ≈ 0.38). Investigation:
+
+- V13.4 SL final checkpoint: `num_batches_tracked = 79` across all 21
+  BatchNorm layers. SL ran for 19,531 batches; **BN was updated on
+  0.4% of them.**
+- V13.4 RL final: nb = 384 (79 + 305 RL updates).
+- V13.5 SL final: nb = 19,532 ≈ exact expected count. **Healthy.**
+- V13.2 reference: nb = 855,419. **Healthy (years of training).**
+
+So V13.4 was running its forward path in train mode <0.5% of the time
+during SL training. The model's weights were being updated by gradient
+descent (loss dropped to 0.013), but BN's running mean/var stayed near
+default-init values, which means V13.4 in **eval mode** at inference
+time normalizes activations with garbage stats and outputs near-uniform
+policies regardless of input.
+
+**The chain phase 3 50/50 H2H result was a mirage.** With V13.4 producing
+near-uniform output, mirrored-seed protocol produces ~50/50 by symmetry
+alone — both V13.4_SL and V13.4_RL gave **identical 251/249 vs V13.2**,
+which is the smoking-gun signature of two models making identical
+near-random decisions. The bot evals (80-86%) also fooled us: the
+heuristic-bot mix includes RandomBot, and even a slightly biased policy
+beats the average bot ~80% of the time.
+
+**Bug origin is still unidentified.** V13.5 used a near-identical
+training script and got correct nb_tracked counts. The V13.3 mini's
+nb_tracked is also expected to be healthy (mini didn't show the
+near-uniform symptom in its H2H). Whatever happened to V13.4 was
+specific to its launch — likely something about how the chain.sh
+sequenced SL → RL or how the trainer's eval/train mode toggling
+interacted with the V13.4-scale model.
+
+**Implications.** The temporal-context hypothesis (V13.4) was **never
+properly tested**. Whether K=8 history transformer architecture would
+help in Ludo at matched capacity remains an open question. Decision
+points pending:
+
+1. **BN re-calibration**: load V13.4 weights, run ~500 train-mode
+   forward passes with momentum=1.0 to recompute running stats from
+   real game data, save, re-test H2H. ~5 min effort. May or may not
+   work — the weights themselves might have been trained against bad
+   stats and be uncalibrated for fresh ones.
+2. **V13.4 retrain**: ~10 hours on VM, after V13.5 RL completes.
+3. **Drop V13.4 entirely** and focus on V13.5.
+
+For now the open question goes on the post-V13.5-RL todo list.
+
+---
+
+## V15 — Per-Cell Triplet Input + 8-Frame History + GraphTransformer (2026-05-14 → ongoing)
+
+**Lineage hypothesis:** V13.5's 21-channel V18 encoding is mostly broadcast
+(~88% redundant, only ~12% real per-cell signal). It also lacks temporal
+context — every game is one frame to the model. V15 replaces the input
+with a per-cell-triplet × 8-frame-stack design (AlphaZero-chess style),
+keeping the rank-symmetric output but converting it from 4-rank to
+225-cell-source space.
+
+### Architecture
+
+| Component | V15 |
+|---|---|
+| Input shape | `(8, 15, 15, 3)` — 8 chronological frames × 15×15 grid × 3-feature triplet per cell |
+| Per-cell triplet `(a, b, c)` | a=own_count, b=opp_count, c=safety/playability flag |
+| Sentinel | `-1` means "this cell not on my route" (used in 5/6 sign-pattern categories) |
+| Globals | 4 repurposed cells: MD `(0,0)`, OD `(14,14)`, MS `(7,6)`, OS `(7,8)` |
+| Home base | **Option B spread-fill** — first N home cells in canonical order get `(1,-1,1)`, rest `(0,-1,1)` |
+| Padding (game start) | All-zero frames for missing history (AlphaZero convention) |
+| Trunk | GraphTransformer: 8 layers × d_model=256 × 8 heads × ffn=512 |
+| Param count | 4,392,278 (~4.4M, slightly above V13.5 teacher's 3.0M) |
+| Output | 225 source-cell logits (masked softmax) + sigmoid `win_prob` |
+| Aux heads | **None** (dropped V13.5's moves-remaining + per-rank progress) |
+
+### Why per-cell triplet over 21-channel V18
+
+V13.5's input plane had broadcast scalars (e.g. dice value duplicated
+across 225 cells) and many sparse channels. V15's input is **structurally
+homogeneous**: every cell carries the same 3-feature tuple, plus the
+4 global cells (MD/OD/MS/OS) get repurposed under a separable sign
+pattern. The "sign pattern" classification lets the network's first
+layer split cells into 6 categories by pure sign-bit reading:
+
+| Sign | Category | Count |
+|---|---|---|
+| `(+,+,+)` | Shared-path cell, both players can be here | ~52 |
+| `(+,-,+)` | My-only territory (home base or stretch) | 9 |
+| `(-,+,-)` | Opp-only territory | 9 |
+| `(-,-,+)` | MD or OD active with dice `c ∈ {1..6}` | 2 |
+| `(+,-,-)` | MS or OS (scored count in slot a) | 2 |
+| `(-,-,-)` | Blocked cell · OR · MD/OD when inactive | ~150 |
+
+### Why source-cell policy (225-way) over rank-indexed (4-way)
+
+V13.5's rank-indexed policy required per-token planes in the input (to
+identify which token has which rank). V15's input has no per-token
+identity — every cell is one tuple — so rank-indexed output isn't
+expressible. The natural action space for a per-cell input is
+**source-cell**: pick the cell you're moving FROM. Two of your tokens
+stacked on the same cell are state-equivalent (moving either yields
+identical resulting state), so the source-cell policy is the EXACT
+action space, not lossy.
+
+At apply-time, the engine deterministically picks the lowest-token-id
+at the chosen source cell.
+
+### Why drop aux heads
+
+V13.5's per-rank progress aux had the same rank-indexing problem as the
+old policy head. Moves-remaining was always low-signal for Ludo (game
+length dominated by dice). V15 ships with only policy + value to keep
+the architecture clean; aux heads can be added later if base
+performance plateaus.
+
+### SL training
+
+Cross-arch distillation from V13.5 RL teacher (V18 21-channel input,
+rank-indexed output → V15 per-cell input, source-cell output).
+Target projection: V13.5 policy → gather to per-token-id probs → sum
+probs of token-ids sharing a cell → V15 source-cell target. **Exact
+projection**, not lossy.
+
+**v1 (broken):** random-play state distribution + 1.3M params under-cap
++ single-counter home-base encoding bug. Plateaued at 52% bot-eval.
+
+**v2 (fixed, locked-in):**
+- Teacher-policy state generation (samples from V13.5's policy with
+  ε=0.05 exploration)
+- 4.4M params (d_model=256, n_layers=8)
+- Encoder switched to Option B spread-fill
+- 20M states, AdamW LR cosine 1e-3 → 1e-4
+- Final eval **83.0%** vs teacher's 82.0% on the same harness —
+  **matches or slightly exceeds teacher**.
+
+Checkpoints (local + VM): `td_ludo_v15/checkpoints/v15_sl_v2/`
+(model_sl.pt = final, sl_19M.pt = best-WR, sl_17M.pt = first crossover).
+
+### RL training (in progress)
+
+Full Phase-L-style pipeline built from scratch for V15
+(`td_ludo_v15/train_v15_rich.py`):
+- PPO clipped + MC discounted return + EMA return norm + win-prob BCE
+- 8-frame history per game (rollout)
+- 225-cell action conversion at apply-time
+- Opponent mix: SelfPlay + Hist_V13_5_RL + Hist_V13_5_SL + Hist_V13_2 + strong bots
+- Dashboard endpoints matching v13_dashboard.html (`/api/stats /api/metrics /api/elo /api/games /api/system /api/chain`)
+- 16 unit tests for trainer/player/dashboard — all pass
+
+Throughput optimization: settled at parallel=64, ppo_epochs=2,
+ppo_minibatch=256, opponents on cuda. **65 GPM** sustained.
+
+**Current state (2026-05-16):** running at ~30K games, evals 81.2 →
+81.5 → 80.2% (within noise of SL's 83% baseline). PPO dynamics
+(KL=0.0003, clip=0.003) show policy is barely moving — gradients
+too small to push past V15 SL ceiling. Will revisit with higher LR if
+overnight run doesn't break free.
+
+### V16 reservation
+
+V15 explicitly DEFERS the GNN option (Candidate 3 from V15_DESIGN_PLAN).
+If V15 plateaus at V13.5 ceiling, V16 = GNN with path-edge message
+passing (matches Ludo's 1D-loop topology natively, vs GraphTransformer's
+fully-connected attention).
+
+### Files
+
+- `td_ludo/V15_DESIGN_PLAN.md` — locked-in design spec
+- `td_ludo_v15/td_ludo_v15/game/encoder.py` — per-cell triplet encoder
+- `td_ludo_v15/td_ludo_v15/game/cells.py` — cell semantics + position_to_cell_in_pov
+- `td_ludo_v15/td_ludo_v15/game/graph.py` — edge-type matrix for GT attention bias
+- `td_ludo_v15/td_ludo_v15/models/v15.py` — V15GraphTransformer model
+- `td_ludo_v15/td_ludo_v15/rich/` — RL pipeline (trainer + player + bot_eval + dashboard)
+- `td_ludo_v15/train_v15_sl.py` — SL distillation script
+- `td_ludo_v15/train_v15_rich.py` — RL training entrypoint
+- `td_ludo_v15/tests/rich/*` — RL pipeline unit tests
+
+---
+
+## V15 — final outcome (2026-05-17)
+
+### Summary
+
+V15 was an architectural redesign (per-cell triplet input + 8-frame
+chronological history + GraphTransformer trunk + source-cell policy).
+After ~3 weeks of work it produced two findings:
+
+**Engineering success — V15 SL.** Cross-architecture distillation from
+V13.5 RL teacher → V15 GraphTransformer student: V15 SL achieves **83.0%
+bot eval (matches teacher's 82.0% on same harness)** despite radically
+different input and output contracts. 5-way H2H tournament confirms V15
+SL is statistically tied with V13.5_RL_pre and V13.5_exp (within ±2pp).
+Demonstrates that the cross-arch distillation recipe works as an
+engineering tool — you can re-encode an existing strong model into a
+fundamentally different network shape.
+
+**Scientific dead end — V15 RL.** Three hyperparameter configurations
+(entropy 0.03 + LR 1e-5, entropy 0.01 + LR 3e-5 + KL anchor, entropy 0.01
++ LR 3e-5 + no anchor) all failed to push V15 past V15 SL ceiling. RL
+training actively HURT the model: tournament shows V15 RL at 43.2%
+aggregate WR vs V15 SL at 51.4% (8pp regression). Trainer math audited
+against V13.5's trainer_v10.py — no bugs. Root cause: V15's
+GraphTransformer attention is more sensitive to entropy regularization
+than V13.5's ResNet trunk, AND the policy/value coherent equilibrium
+makes advantage signal weak.
+
+### What V15 demonstrated
+
+| Question | Answer |
+|---|---|
+| Can a fundamentally new input encoding match V13.5 from distillation alone? | **Yes** — V15 SL = V13.5 |
+| Does GraphTransformer architecture help past V13.5's plateau? | **No** — at parity at best |
+| Does temporal context (8-frame history) add value in Ludo? | **Inconclusive** — V15 SL matched V13.5 (no history) so history neither helped nor hurt |
+| Does the rich Phase-L-style RL pipeline transfer to a different arch? | **Yes** (engineering) but **doesn't break plateau** (research) |
+
+### Final V15 weights
+
+- **`td_ludo_v15/checkpoints/v15_sl_v2/model_sl.pt`** — production candidate.
+  83.0% bot eval, ties with V13.5_RL_pre and V13.5_exp in H2H. 4.4M params.
+- `td_ludo_v15/checkpoints/v15_rich_phase_l/model_latest.pt` — RL-degraded
+  variant, kept for diagnostic purposes only. Do not deploy.
+
+### Whether to use V15 SL in production
+
+V13.5_RL_pre and V13.5_exp are also at the same skill level. Choice
+between V13.5 (deployed) and V15 SL is therefore not a strength question
+but a deployment-cost question:
+
+- V13.5: 3.0M params, V18-production 21-channel input, ResNet trunk,
+  rank-indexed 4-way output. Currently deployed. Mature production
+  pipeline.
+- V15 SL: 4.4M params (~50% larger), per-cell-triplet 8-frame-history
+  input (5,400 floats vs V13.5's 4,725), GraphTransformer trunk, 225-cell
+  source policy. Slower inference. NEW production pipeline would need
+  building.
+
+**Recommendation: keep V13.5 deployed.** V15 didn't break the ceiling and
+its new I/O contract gives no measurable advantage. V15 work has value as
+an architectural exploration that ruled out two hypotheses (new input
+encoding, GraphTransformer trunk, 8-frame history) — important negative
+results to document.
+
+### Why V15 RL regressed (mechanism)
+
+V13.5's policy/value heads are co-trained → at saturation, value head
+correctly predicts win probability → advantage `(G - V)` ≈ 0. With weak
+advantage signal, the entropy bonus gradient dominates the policy
+gradient. Over many PPO updates, the policy slowly drifts toward higher
+entropy (uniform distribution) → less decisive moves → eval WR degrades.
+
+V13.5 Phase L used entropy=0.03 too and DIDN'T regress because its CNN
+trunk's gradient flow distributes entropy pressure differently than
+GraphTransformer's softmax attention. Same hyperparameters that work for
+CNN drift the GT.
+
+The fix isn't a hyperparameter tweak (we tried three combos). The fix
+would be either (a) explore more aggressively (e.g., higher temperature)
+to escape the coherent-equilibrium local optimum, or (b) treat V15 RL as
+unsupported and ship V15 SL.
+
+### V16 status
+
+V16 (GNN with explicit path-edge message passing) was reserved in
+V15_DESIGN_PLAN.md as the next-step. Given V15's failure to break the
+plateau via architecture, V16 is **paused**. If a future GNN attempt
+happens, it should pair with a fundamental rethink of RL approach (not
+just swap the trunk).

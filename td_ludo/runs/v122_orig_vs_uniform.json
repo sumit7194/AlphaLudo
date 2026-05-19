@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 2000,
+    "seed": 42,
+    "competitors": [
+      "V12_2_orig",
+      "V12_2_uniform"
+    ],
+    "elapsed_min": 4.57,
+    "total_games": 2000
+  },
+  "pairs": [
+    {
+      "a": "V12_2_orig",
+      "b": "V12_2_uniform",
+      "n_games": 2000,
+      "a_wins": 1041,
+      "b_wins": 959,
+      "draws": 0,
+      "a_wr_pct": 52.05,
+      "b_wr_pct": 47.949999999999996,
+      "avg_length": 158.938,
+      "seat_a_p0": [
+        530,
+        1000
+      ],
+      "seat_a_p2": [
+        511,
+        1000
+      ],
+      "pair": [
+        "V12_2_orig",
+        "V12_2_uniform"
+      ]
+    }
+  ]
+}

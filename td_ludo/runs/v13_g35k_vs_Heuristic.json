@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Heuristic",
+      "V13_G35K"
+    ],
+    "elapsed_min": 1.47,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Heuristic",
+      "b": "V13_G35K",
+      "n_games": 500,
+      "a_wins": 291,
+      "b_wins": 209,
+      "draws": 0,
+      "a_wr_pct": 58.199999999999996,
+      "b_wr_pct": 41.8,
+      "avg_length": 163.782,
+      "seat_a_p0": [
+        143,
+        250
+      ],
+      "seat_a_p2": [
+        148,
+        250
+      ],
+      "pair": [
+        "Heuristic",
+        "V13_G35K"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Defensive",
+      "V12_2_pre_encoderfixed"
+    ],
+    "elapsed_min": 0.59,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Defensive",
+      "b": "V12_2_pre_encoderfixed",
+      "n_games": 500,
+      "a_wins": 106,
+      "b_wins": 394,
+      "draws": 0,
+      "a_wr_pct": 21.2,
+      "b_wr_pct": 78.8,
+      "avg_length": 160.612,
+      "seat_a_p0": [
+        50,
+        250
+      ],
+      "seat_a_p2": [
+        56,
+        250
+      ],
+      "pair": [
+        "Defensive",
+        "V12_2_pre_encoderfixed"
+      ]
+    }
+  ]
+}

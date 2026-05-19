@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>V13.5 MCTS Distillation — Live</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0b1020; color: #e6e8ee; }
+  h1 { margin: 0 0 4px 0; font-size: 22px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 24px; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px;
+          font-weight: 600; }
+  .pill.gen { background: #1e293b; color: #fcd34d; }
+  .pill.train { background: #064e3b; color: #6ee7b7; }
+  .pill.done { background: #1e293b; color: #94a3b8; }
+  .pill.dead { background: #7f1d1d; color: #fecaca; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .panel { background: #131a32; border: 1px solid #1e2745; border-radius: 10px; padding: 16px; }
+  .panel h2 { margin: 0 0 12px 0; font-size: 13px; color: #94a3b8; text-transform: uppercase;
+              letter-spacing: 0.05em; }
+  .big { font-size: 32px; font-weight: 600; color: #fff; margin-bottom: 6px; }
+  .row { display: flex; justify-content: space-between; padding: 5px 0;
+         border-bottom: 1px solid #1e2745; font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row span:first-child { color: #94a3b8; }
+  .progress-wrap { background: #0b1020; border-radius: 6px; height: 12px; overflow: hidden; margin: 10px 0 8px 0; }
+  .progress { height: 100%; background: linear-gradient(90deg, #8b5cf6, #06b6d4); transition: width 0.6s; }
+  pre { background: #0b1020; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 11px; color: #94a3b8; }
+</style>
+</head>
+<body>
+<h1>V13.5 MCTS Distillation</h1>
+<div class="sub">
+  Searching <code>v135_shaping_exp</code> via 2-ply expectimax to relabel policy targets.
+  · refreshes every 3s
+</div>
+
+<div id="status_bar" style="margin-bottom: 16px;">
+  <span class="pill" id="status_pill">--</span>
+  <span id="status_text" style="color: #94a3b8; margin-left: 8px;">loading...</span>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Stage 1 — Generate Search Data</h2>
+    <div class="big" id="gen_states">— / —</div>
+    <div class="progress-wrap"><div class="progress" id="gen_bar" style="width: 0%;"></div></div>
+    <div class="row"><span>Rate</span><span id="gen_rate">—</span></div>
+    <div class="row"><span>Pending</span><span id="gen_pending">—</span></div>
+    <div class="row"><span>Elapsed</span><span id="gen_elapsed">—</span></div>
+    <div class="row"><span>ETA</span><span id="gen_eta">—</span></div>
+    <div class="row"><span>Teacher</span><span id="gen_teacher" style="font-size: 11px;">—</span></div>
+  </div>
+
+  <div class="panel">
+    <h2>Stage 2 — Distillation Training</h2>
+    <div class="big" id="train_states">— / —</div>
+    <div class="progress-wrap"><div class="progress" id="train_bar" style="width: 0%;"></div></div>
+    <div class="row"><span>Epoch</span><span id="train_epoch">—</span></div>
+    <div class="row"><span>Loss (policy KL)</span><span id="train_loss_pol">—</span></div>
+    <div class="row"><span>Loss (search-V MSE)</span><span id="train_loss_v">—</span></div>
+    <div class="row"><span>Loss (outcome BCE)</span><span id="train_loss_o">—</span></div>
+    <div class="row"><span>Eval WR</span><span id="train_eval">—</span></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Raw stats</h2>
+  <pre id="raw_json">{}</pre>
+</div>
+
+<script>
+const GEN_STATS = '/api/gen_stats';
+const SL_STATS = '/api/sl_stats';
+
+function fmtTime(s) {
+  if (!Number.isFinite(s) || s < 0) return '—';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return h > 0 ? `${h}h ${m}m` : (m > 0 ? `${m}m ${sec}s` : `${sec}s`);
+}
+
+async function fetchJSON(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
+  catch (e) { return null; }
+}
+
+async function tick() {
+  const gen = await fetchJSON(GEN_STATS);
+  const sl = await fetchJSON(SL_STATS);
+
+  if (gen) {
+    const f = gen.fraction || 0;
+    document.getElementById('gen_states').textContent =
+      `${(gen.finalized_states || 0).toLocaleString()} / ${(gen.target_states || 0).toLocaleString()}`;
+    document.getElementById('gen_bar').style.width = (f * 100).toFixed(1) + '%';
+    document.getElementById('gen_rate').textContent =
+      gen.rate_states_per_sec ? `${gen.rate_states_per_sec.toFixed(1)} states/sec` : '—';
+    document.getElementById('gen_pending').textContent = gen.pending ?? '—';
+    document.getElementById('gen_elapsed').textContent = fmtTime(gen.elapsed_sec);
+    document.getElementById('gen_eta').textContent = fmtTime(gen.eta_sec);
+    document.getElementById('gen_teacher').textContent = gen.teacher || '—';
+  }
+
+  if (sl) {
+    document.getElementById('train_states').textContent =
+      `${(sl.states ?? 0).toLocaleString()} / ${(sl.target ?? 0).toLocaleString()}`;
+    document.getElementById('train_bar').style.width =
+      sl.target ? ((sl.states / sl.target * 100).toFixed(1) + '%') : '0%';
+    document.getElementById('train_epoch').textContent = sl.epoch ?? sl.step ?? '—';
+    document.getElementById('train_loss_pol').textContent =
+      sl.loss_policy != null ? sl.loss_policy.toFixed(4) : '—';
+    document.getElementById('train_loss_v').textContent =
+      sl.loss_value != null ? sl.loss_value.toFixed(4) : '—';
+    document.getElementById('train_loss_o').textContent =
+      sl.loss_outcome != null ? sl.loss_outcome.toFixed(4) : '—';
+    const evs = sl.eval_history || [];
+    if (evs.length > 0) {
+      const [g, wr] = evs[evs.length - 1];
+      document.getElementById('train_eval').textContent =
+        `${wr.toFixed(1)}% @ ${(g/1000).toFixed(0)}K`;
+    }
+  }
+
+  // Status pill
+  const pill = document.getElementById('status_pill');
+  const txt = document.getElementById('status_text');
+  if (sl && sl.states > 0) {
+    pill.className = 'pill train';
+    pill.textContent = 'TRAINING';
+    txt.textContent = `Stage 2 in progress`;
+  } else if (gen && gen.finalized_states > 0 && gen.finalized_states < gen.target_states) {
+    pill.className = 'pill gen';
+    pill.textContent = 'GENERATING';
+    txt.textContent = `Stage 1 in progress`;
+  } else if (gen && gen.finalized_states >= gen.target_states) {
+    pill.className = 'pill done';
+    pill.textContent = 'GEN COMPLETE';
+    txt.textContent = `Stage 1 done. Awaiting Stage 2.`;
+  } else {
+    pill.className = 'pill dead';
+    pill.textContent = 'NO DATA';
+    txt.textContent = `Process may not be running.`;
+  }
+
+  const combined = { gen: gen, sl: sl };
+  document.getElementById('raw_json').textContent = JSON.stringify(combined, null, 2);
+}
+
+tick(); setInterval(tick, 3000);
+</script>
+</body>
+</html>

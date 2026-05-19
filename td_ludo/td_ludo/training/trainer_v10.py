@@ -15,11 +15,26 @@ Everything else (PPO clipping, return normalization, gradient clipping,
 entropy bonus) is unchanged from the base trainer.
 """
 
+import os
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from td_ludo.training.trainer import ActorCriticTrainer
+
+
+# Terminal-reward scaling. Default 1.0 (full ±1 win/loss). Set
+# LUDO_TERMINAL_COEFF=0.0 in the env for the pure-shaping experiment
+# (terminal signal removed entirely; only step rewards drive learning).
+# Any value in [0, 1] is valid for partial scaling.
+try:
+    _TERMINAL_COEFF = float(os.environ.get('LUDO_TERMINAL_COEFF', '1.0'))
+except ValueError:
+    _TERMINAL_COEFF = 1.0
+if _TERMINAL_COEFF != 1.0:
+    print(f"[trainer_v10] LUDO_TERMINAL_COEFF={_TERMINAL_COEFF} "
+          f"(terminal reward scaled; 0.0 = pure shaping)")
 
 
 class ActorCriticTrainerV10(ActorCriticTrainer):
@@ -42,7 +57,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
     def __init__(self, model, device, learning_rate=1e-5,
                  moves_aux_coeff=0.003, win_bce_coeff=0.5,
-                 alpha_search=0.0, **kwargs):
+                 alpha_search=0.0, progress_coeff=0.0, **kwargs):
         super().__init__(model, device, learning_rate=learning_rate, **kwargs)
         self.moves_aux_coeff = moves_aux_coeff
         self.win_bce_coeff = win_bce_coeff
@@ -53,6 +68,17 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         self.recent_search_loss = []
         self.recent_search_kl = []
         self.recent_search_coverage = []
+
+        # V13.5 progress aux head loss weight (the head predicts S(pos) per
+        # canonical rank). Triggered only when the model exposes a
+        # `has_progress_head` class attribute (V135Symmetric /
+        # V135ProductionAdapter set this True). 0 disables.
+        self.progress_coeff = float(progress_coeff)
+        self.has_progress_head = bool(
+            getattr(model, 'has_progress_head', False)
+            or getattr(getattr(model, 'inner', None), 'has_progress_head', False)
+        )
+        self.recent_progress_loss = []
 
     def train_on_game(self, trajectories, winner, model_player, aux_trajectory=None):
         """Buffer trajectory steps with own_moves_remaining + binary won target.
@@ -84,10 +110,17 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         if not trajectory:
             return {}
 
-        # Outcome from model's perspective
+        # Outcome from model's perspective. The terminal reward `z` is
+        # scaled by LUDO_TERMINAL_COEFF (default 1.0). Set to 0.0 for a
+        # pure-shaping experiment where ONLY step_reward drives learning.
         loss_penalty = -1.0 / max(1, (NUM_ACTIVE_PLAYERS - 1))
-        z = 1.0 if model_player == winner else loss_penalty
-        won_target = 1.0 if model_player == winner else 0.0  # for BCE
+        z_raw = 1.0 if model_player == winner else loss_penalty
+        z = z_raw * _TERMINAL_COEFF
+        # `won_target` for BCE on the win-probability head stays unscaled
+        # — the head still learns to PREDICT actual win/loss outcome
+        # (useful as a calibrated estimator for evals + diagnostics) even
+        # when the policy gradient ignores the terminal signal.
+        won_target = 1.0 if model_player == winner else 0.0
 
         # Discounted returns (same as before)
         gamma = 0.999
@@ -106,7 +139,8 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         # Own moves remaining for each step
         total_own_moves = len(trajectory)
 
-        # Buffer each step — ADDED: won_target (0/1), pi_search (optional)
+        # Buffer each step — ADDED: won_target (0/1), pi_search (optional),
+        # progress_target / progress_valid (V13.5 progress aux head, optional).
         for i, step in enumerate(trajectory):
             own_moves_remaining = float(total_own_moves - (i + 1))
             self._ppo_buffer.append({
@@ -119,6 +153,11 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 'moves_remaining_target': own_moves_remaining,
                 'won_target': won_target,
                 'pi_search': step.get('pi_search'),  # np.ndarray (4,) or None
+                # V13.5 progress aux: per-rank S(pos) target + valid mask.
+                # player_v11.py fills these when progress_target_enabled=True;
+                # otherwise zeros and they're effectively no-ops in loss.
+                'progress_target': step.get('progress_target'),
+                'progress_valid': step.get('progress_valid'),
             })
         self._ppo_games_buffered += 1
 
@@ -199,6 +238,30 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             all_pi_search = None
             all_search_mask = None
 
+        # V13.5 progress aux head: per-rank S(pos) targets + valid mask.
+        # Only stacked when both the model has the head AND progress_coeff > 0.
+        if self.has_progress_head and self.progress_coeff > 0.0:
+            prog_target_arrs = []
+            prog_valid_arrs = []
+            for s in self._ppo_buffer:
+                pt = s.get('progress_target')
+                pv = s.get('progress_valid')
+                if pt is None:
+                    prog_target_arrs.append(np.zeros(4, dtype=np.float32))
+                    prog_valid_arrs.append(np.zeros(4, dtype=np.float32))
+                else:
+                    prog_target_arrs.append(pt.astype(np.float32))
+                    prog_valid_arrs.append(pv.astype(np.float32))
+            all_progress_targets = torch.from_numpy(np.stack(prog_target_arrs)).to(
+                self.device, dtype=torch.float32,
+            )
+            all_progress_valid = torch.from_numpy(np.stack(prog_valid_arrs)).to(
+                self.device, dtype=torch.float32,
+            )
+        else:
+            all_progress_targets = None
+            all_progress_valid = None
+
         # Return normalization (identical to base)
         with torch.no_grad():
             batch_mean = all_returns_raw.mean().item()
@@ -227,7 +290,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
         # Precompute advantages using V10's win_prob → value transformation
         with torch.no_grad():
-            # V10 model returns (policy, win_prob, moves_remaining)
+            # V10 returns (policy, win_prob, moves_remaining); V13.5 returns
+            # (policy, win_prob, moves_remaining, progress). Index by [1] is
+            # win_prob in either case.
             fwd_result = self.model(all_states, all_masks)
             win_prob = fwd_result[1].view(-1)  # robust to batch_size=1 (.squeeze bug)
             all_values = 2.0 * win_prob - 1.0  # [0,1] → [-1,1]
@@ -259,8 +324,19 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     mb_pi_search = None
                     mb_search_mask = None
 
-                # V10: forward returns (policy, win_prob, moves_remaining)
-                policy, win_prob, moves_pred = self.model(mb_states, mb_masks)
+                if all_progress_targets is not None:
+                    mb_progress_targets = all_progress_targets[mb_idx]
+                    mb_progress_valid = all_progress_valid[mb_idx]
+                else:
+                    mb_progress_targets = None
+                    mb_progress_valid = None
+
+                # V10/V13.5: forward returns (policy, win_prob, moves_remaining)
+                # for V12.x and (policy, win_prob, moves_remaining, progress)
+                # for V13.5. Unpack robustly to support both.
+                fwd = self.model(mb_states, mb_masks)
+                policy, win_prob, moves_pred = fwd[0], fwd[1], fwd[2]
+                progress_pred = fwd[3] if len(fwd) > 3 else None
                 # Model already squeezes last dim. Use .view(-1) to guarantee
                 # 1D shape even when batch size is 1 (.squeeze(-1) on [1]
                 # collapses to 0-dim scalar, which breaks F.binary_cross_entropy
@@ -328,6 +404,25 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     coverage_frac = 0.0
                     kl_avg = torch.zeros((), device=self.device)
 
+                # V13.5 progress aux loss: per-rank S(pos) prediction.
+                # Uses BCE since both predicted and target are in [0, 1] with
+                # sigmoid output. Masked by progress_valid (1 where the rank
+                # corresponds to a real own-token position, 0 for unused
+                # ranks beyond the number of unique positions).
+                if (progress_pred is not None
+                        and mb_progress_targets is not None
+                        and mb_progress_valid.sum() > 0):
+                    pred = progress_pred.clamp(1e-6, 1 - 1e-6)
+                    tgt = mb_progress_targets.clamp(0.0, 1.0)
+                    # Element-wise BCE then average over valid slots only
+                    bce_per = -(
+                        tgt * torch.log(pred) + (1.0 - tgt) * torch.log(1.0 - pred)
+                    )
+                    n_valid = mb_progress_valid.sum().clamp_min(1.0)
+                    progress_loss = (bce_per * mb_progress_valid).sum() / n_valid
+                else:
+                    progress_loss = torch.zeros((), device=self.device)
+
                 # AUX value loss (BCE on win_prob from opp-turn states).
                 # Off-policy actions, so value-only — no policy grad path.
                 # Encoded canonically post encoder-fix → value head learns
@@ -346,7 +441,8 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     )
                     # Permissive mask — value head is mask-independent.
                     aux_masks = torch.ones((aux_mb, 4), dtype=torch.float32, device=self.device)
-                    _, aux_win_prob, _ = self.model(aux_states, aux_masks)
+                    aux_fwd = self.model(aux_states, aux_masks)
+                    aux_win_prob = aux_fwd[1]
                     # Use view(-1) instead of squeeze(-1) to handle batch=1 case.
                     # squeeze(-1) on shape (1,) yields scalar (), causing BCE
                     # to crash with 'target [1] vs input []' mismatch.
@@ -360,6 +456,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                         + self.moves_aux_coeff * moves_loss
                         + self.alpha_search * search_loss
                         + self.aux_value_loss_coeff * aux_value_loss
+                        + self.progress_coeff * progress_loss
                         - self.entropy_coeff * entropy)
 
                 # Safety net: skip NaN/Inf batches (belt-and-braces for MPS)
@@ -384,6 +481,10 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     total_search_loss += float(search_loss.item())
                     total_search_kl += float(kl_avg.item())
                     total_search_coverage += coverage_frac
+                if progress_pred is not None and self.progress_coeff > 0.0:
+                    self.recent_progress_loss.append(float(progress_loss.item()))
+                    if len(self.recent_progress_loss) > 1000:
+                        self.recent_progress_loss.pop(0)
 
                 with torch.no_grad():
                     clipped = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()

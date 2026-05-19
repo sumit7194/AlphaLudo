@@ -10,6 +10,9 @@ Select via env var:
     LUDO_MODEL=v11                   (loads model_weights/model_v11.pt)
     LUDO_MODEL=v12                   (loads model_weights/model_v12.pt)
     LUDO_MODEL=v12_2 (default)       (loads model_weights/v12_2/model_latest.pt)
+    LUDO_MODEL=v13_2                 (loads model_weights/v13_2/model_best.pt)
+    LUDO_MODEL=v13_5                 (loads model_weights/v13_5/model_latest.pt;
+                                      token-symmetric encoder + rank-indexed output)
 """
 
 import math
@@ -33,13 +36,18 @@ from model import AlphaLudoV5, AlphaLudoV63, AlphaLudoV11, AlphaLudoV12
 from td_ludo.models.v13_1 import MinimalCNN14Aux
 # V13.2 uses a 17-channel encoder = V14_minimal (14ch) + 3 static V11 channels.
 from td_ludo.game.encoder_v17 import encode_state_v17
+# V13.5: token-symmetric encoder (V18 base + rank masks + token_to_rank planes)
+# packed into a single 21-channel tensor, with rank-indexed inner output mapped
+# back to token-id-indexed via the production adapter.
+from td_ludo.models.v13_5_production import V135ProductionAdapter
+from td_ludo.game.encoder_v18_production import encode_state_v18_production
 
 # ── Configuration ──────────────────────────────────────────────
 MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12_2').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2'):
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
     raise ValueError(
         f"Unknown LUDO_MODEL='{MODEL_VERSION}'. "
-        "Use 'v6_1', 'v6_3', 'v11', 'v12', 'v12_2', or 'v13_2'."
+        "Use 'v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2', or 'v13_5'."
     )
 
 MODEL_FILES = {
@@ -49,6 +57,9 @@ MODEL_FILES = {
     'v12':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
     'v12_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v12_2', 'model_latest.pt'),
     'v13_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_2', 'model_best.pt'),
+    # V13.5: latest weight (RL on top of SL — replaceable; can also swap to
+    # play/model_weights/v13_5/model_sl.pt for the pure-SL baseline)
+    'v13_5': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_5', 'model_latest.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
 
@@ -77,10 +88,15 @@ HOME_RUN_P0 = [(7,1),(7,2),(7,3),(7,4),(7,5)]
 HOME_COORD = (7,7)  # Center
 
 BASE_COORDS = {
-    0: [(2,2),(2,3),(3,2),(3,3)],
-    1: [(2,11),(2,12),(3,11),(3,12)],
-    2: [(11,11),(11,12),(12,11),(12,12)],
-    3: [(11,2),(11,3),(12,2),(12,3)],
+    # token-id → home-base cell. MUST match the engine's V14 per-token home
+    # cells (encoder_v18_symmetric.py:_OWN_HOME_CELLS / _OPP_HOME_CELLS),
+    # otherwise the UI draws home tokens at different cells than the model
+    # encodes them in per-token planes — see docs/v13_5_input_visual_proof.html.
+    # Fixed 2026-05-14: P2 ordering was reversed for token-IDs 0/3 and 1/2.
+    0: [(2, 2),  (2, 3),  (3, 2),  (3, 3)],     # own (P0 canonical)
+    1: [(2, 11), (2, 12), (3, 11), (3, 12)],    # P1 base (inactive in 2P)
+    2: [(12, 12), (12, 11), (11, 12), (11, 11)],  # opp (P2 canonical) — match engine
+    3: [(11, 2), (11, 3), (12, 2), (12, 3)],    # P3 base (inactive in 2P)
 }
 
 SAFE_INDICES = {0, 8, 13, 21, 26, 34, 39, 47}
@@ -167,7 +183,17 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v13_2':
+    if MODEL_VERSION == 'v13_5':
+        # V13.5: token-symmetric V18 encoder (13ch base + 4 rank-mask + 4
+        # token_to_rank planes = 21ch packed) + V135ProductionAdapter
+        # wrapping V135Symmetric (10 ResBlocks × 128ch, rank-indexed inner
+        # output mapped back to token-id-indexed). Drop-in replacement for
+        # V13.2's interface — model(x, mask) returns (policy, win_prob, moves)
+        # in token-id space, with tokens at the same canonical rank getting
+        # equal probability (architectural invariance preserved through the
+        # wrapper).
+        model = V135ProductionAdapter(num_res_blocks=10, num_channels=128)
+    elif MODEL_VERSION == 'v13_2':
         # V13.2: pure CNN, 10 ResBlocks × 128ch, 17-channel input
         # (V14_minimal 14ch + 3 static V11 channels). No aux heads.
         # We reuse MinimalCNN14Aux (the V13.1 class) and load with strict=False
@@ -224,6 +250,16 @@ def load_model():
             raise RuntimeError(f"V13.2 missing non-aux keys: {non_aux_missing}")
         if unexpected:
             raise RuntimeError(f"V13.2 unexpected keys: {unexpected}")
+    elif MODEL_VERSION == 'v13_5':
+        # V135ProductionAdapter overrides load_state_dict to auto-detect
+        # both bare V135Symmetric checkpoints (saved by train_v135_*.py)
+        # AND adapter-format checkpoints (saved by trainer_v10 / future
+        # production saves). Load non-strict to be tolerant of either.
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            raise RuntimeError(f"V13.5 missing keys: {missing[:5]}...")
+        if unexpected:
+            raise RuntimeError(f"V13.5 unexpected keys: {unexpected[:5]}...")
     else:
         model.load_state_dict(state_dict)
 
@@ -524,7 +560,11 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION == 'v13_2':
+            if MODEL_VERSION == 'v13_5':
+                # V13.5 uses V18 production encoder (21ch packed: V18 base +
+                # rank masks + token_to_rank planes).
+                state_tensor = encode_state_v18_production(self.state)
+            elif MODEL_VERSION == 'v13_2':
                 # V13.2 uses V17 encoder (V14 minimal + 3 static V11 channels).
                 state_tensor = encode_state_v17(self.state)
             elif MODEL_VERSION == 'v12_2':
@@ -565,8 +605,8 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        if MODEL_VERSION in ('v11', 'v12', 'v12_2', 'v13_2'):
-            # V11/V12/V12.2/V13.2 win_prob head is sigmoid-output, BCE-trained
+        if MODEL_VERSION in ('v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
+            # V11/V12/V12.2/V13.2/V13.5 win_prob head is sigmoid-output, BCE-trained
             # on actual outcomes — already a calibrated probability in [0, 1].
             ai_win_prob = v
         else:
@@ -709,10 +749,10 @@ class GameManager:
         return response
 
     def _predict_human_policy(self, legal):
-        """Run the loaded V11/V12 model on the current state and return a
+        """Run the loaded V11/V12/V13.x model on the current state and return a
         dict with policy / argmax / win_prob / moves_remaining. Returns
         None for older models (different encoder, not supported)."""
-        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
             return None
 
         legal_mask = np.zeros(4, dtype=np.float32)
@@ -720,7 +760,9 @@ class GameManager:
             legal_mask[int(m)] = 1.0
 
         try:
-            if MODEL_VERSION == 'v13_2':
+            if MODEL_VERSION == 'v13_5':
+                state_tensor = encode_state_v18_production(self.state)
+            elif MODEL_VERSION == 'v13_2':
                 state_tensor = encode_state_v17(self.state)
             elif MODEL_VERSION == 'v12_2':
                 state_tensor = ludo_cpp.encode_state_v11(self.state)
@@ -983,7 +1025,9 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': rolled_for_ai}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION == 'v13_2':
+        if MODEL_VERSION == 'v13_5':
+            state_tensor = encode_state_v18_production(self.state)
+        elif MODEL_VERSION == 'v13_2':
             state_tensor = encode_state_v17(self.state)
         elif MODEL_VERSION == 'v12_2':
             state_tensor = ludo_cpp.encode_state_v11(self.state)
@@ -1080,6 +1124,10 @@ MODEL_INFO = {
     'v13_2': {
         'label': 'V13.2 (minimal CNN)',
         'subtitle': 'V13.2 distilled CNN (10×128, 17ch) · 82.3% eval · 3M params',
+    },
+    'v13_5': {
+        'label': 'V13.5 (token-symmetric)',
+        'subtitle': 'V13.5 ResNet (10×128, 21ch packed, rank-indexed) · 84.55% eval · 3M params',
     },
 }
 

@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Expert",
+      "Distill14_v1"
+    ],
+    "elapsed_min": 1.44,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Distill14_v1",
+      "n_games": 500,
+      "a_wins": 121,
+      "b_wins": 379,
+      "draws": 0,
+      "a_wr_pct": 24.2,
+      "b_wr_pct": 75.8,
+      "avg_length": 161.726,
+      "seat_a_p0": [
+        61,
+        250
+      ],
+      "seat_a_p2": [
+        60,
+        250
+      ],
+      "pair": [
+        "Expert",
+        "Distill14_v1"
+      ]
+    }
+  ]
+}

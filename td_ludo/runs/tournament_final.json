@@ -1,0 +1,247 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "V6_1",
+      "V6_3",
+      "V10",
+      "V12_2",
+      "Distill_Final"
+    ],
+    "elapsed_min": 30.06,
+    "total_games": 5000
+  },
+  "pairs": [
+    {
+      "a": "V6_1",
+      "b": "V6_3",
+      "n_games": 500,
+      "a_wins": 229,
+      "b_wins": 271,
+      "draws": 0,
+      "a_wr_pct": 45.800000000000004,
+      "b_wr_pct": 54.2,
+      "avg_length": 191.704,
+      "seat_a_p0": [
+        113,
+        250
+      ],
+      "seat_a_p2": [
+        116,
+        250
+      ],
+      "pair": [
+        "V6_1",
+        "V6_3"
+      ]
+    },
+    {
+      "a": "V6_1",
+      "b": "V10",
+      "n_games": 500,
+      "a_wins": 220,
+      "b_wins": 280,
+      "draws": 0,
+      "a_wr_pct": 44.0,
+      "b_wr_pct": 56.00000000000001,
+      "avg_length": 178.546,
+      "seat_a_p0": [
+        101,
+        250
+      ],
+      "seat_a_p2": [
+        119,
+        250
+      ],
+      "pair": [
+        "V6_1",
+        "V10"
+      ]
+    },
+    {
+      "a": "V6_1",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 180,
+      "b_wins": 320,
+      "draws": 0,
+      "a_wr_pct": 36.0,
+      "b_wr_pct": 64.0,
+      "avg_length": 174.71,
+      "seat_a_p0": [
+        90,
+        250
+      ],
+      "seat_a_p2": [
+        90,
+        250
+      ],
+      "pair": [
+        "V6_1",
+        "V12_2"
+      ]
+    },
+    {
+      "a": "V6_1",
+      "b": "Distill_Final",
+      "n_games": 500,
+      "a_wins": 189,
+      "b_wins": 311,
+      "draws": 0,
+      "a_wr_pct": 37.8,
+      "b_wr_pct": 62.2,
+      "avg_length": 179.336,
+      "seat_a_p0": [
+        94,
+        250
+      ],
+      "seat_a_p2": [
+        95,
+        250
+      ],
+      "pair": [
+        "V6_1",
+        "Distill_Final"
+      ]
+    },
+    {
+      "a": "V6_3",
+      "b": "V10",
+      "n_games": 500,
+      "a_wins": 210,
+      "b_wins": 290,
+      "draws": 0,
+      "a_wr_pct": 42.0,
+      "b_wr_pct": 57.99999999999999,
+      "avg_length": 167.708,
+      "seat_a_p0": [
+        111,
+        250
+      ],
+      "seat_a_p2": [
+        99,
+        250
+      ],
+      "pair": [
+        "V6_3",
+        "V10"
+      ]
+    },
+    {
+      "a": "V6_3",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 189,
+      "b_wins": 311,
+      "draws": 0,
+      "a_wr_pct": 37.8,
+      "b_wr_pct": 62.2,
+      "avg_length": 165.416,
+      "seat_a_p0": [
+        92,
+        250
+      ],
+      "seat_a_p2": [
+        97,
+        250
+      ],
+      "pair": [
+        "V6_3",
+        "V12_2"
+      ]
+    },
+    {
+      "a": "V6_3",
+      "b": "Distill_Final",
+      "n_games": 500,
+      "a_wins": 221,
+      "b_wins": 279,
+      "draws": 0,
+      "a_wr_pct": 44.2,
+      "b_wr_pct": 55.800000000000004,
+      "avg_length": 164.906,
+      "seat_a_p0": [
+        109,
+        250
+      ],
+      "seat_a_p2": [
+        112,
+        250
+      ],
+      "pair": [
+        "V6_3",
+        "Distill_Final"
+      ]
+    },
+    {
+      "a": "V10",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 198,
+      "b_wins": 302,
+      "draws": 0,
+      "a_wr_pct": 39.6,
+      "b_wr_pct": 60.4,
+      "avg_length": 161.208,
+      "seat_a_p0": [
+        107,
+        250
+      ],
+      "seat_a_p2": [
+        91,
+        250
+      ],
+      "pair": [
+        "V10",
+        "V12_2"
+      ]
+    },
+    {
+      "a": "V10",
+      "b": "Distill_Final",
+      "n_games": 500,
+      "a_wins": 212,
+      "b_wins": 288,
+      "draws": 0,
+      "a_wr_pct": 42.4,
+      "b_wr_pct": 57.599999999999994,
+      "avg_length": 163.676,
+      "seat_a_p0": [
+        105,
+        250
+      ],
+      "seat_a_p2": [
+        107,
+        250
+      ],
+      "pair": [
+        "V10",
+        "Distill_Final"
+      ]
+    },
+    {
+      "a": "V12_2",
+      "b": "Distill_Final",
+      "n_games": 500,
+      "a_wins": 240,
+      "b_wins": 260,
+      "draws": 0,
+      "a_wr_pct": 48.0,
+      "b_wr_pct": 52.0,
+      "avg_length": 160.702,
+      "seat_a_p0": [
+        117,
+        250
+      ],
+      "seat_a_p2": [
+        123,
+        250
+      ],
+      "pair": [
+        "V12_2",
+        "Distill_Final"
+      ]
+    }
+  ]
+}

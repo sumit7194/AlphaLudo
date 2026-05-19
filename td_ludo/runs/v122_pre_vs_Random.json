@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Random",
+      "V12_2_pre"
+    ],
+    "elapsed_min": 0.55,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Random",
+      "b": "V12_2_pre",
+      "n_games": 500,
+      "a_wins": 34,
+      "b_wins": 466,
+      "draws": 0,
+      "a_wr_pct": 6.800000000000001,
+      "b_wr_pct": 93.2,
+      "avg_length": 144.932,
+      "seat_a_p0": [
+        21,
+        250
+      ],
+      "seat_a_p2": [
+        13,
+        250
+      ],
+      "pair": [
+        "Random",
+        "V12_2_pre"
+      ]
+    }
+  ]
+}

@@ -74,6 +74,10 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
     from td_ludo.models.v6_3 import AlphaLudoV63
     from td_ludo.models.v10 import AlphaLudoV10
     from td_ludo.models.v12 import AlphaLudoV12
+    from experiments.distillation_14ch.model_14ch import MinimalCNN14
+    from td_ludo.models.v13_5_production import V135ProductionAdapter
+    from td_ludo.game.encoder_v17 import encode_state_v17
+    from td_ludo.game.encoder_v18_production import encode_state_v18_production
 
     return {
         "Hist_V6_big": _OpponentSpec(
@@ -128,6 +132,31 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
             in_channels=33,
             needs_consecutive_sixes=False,
         ),
+        "Hist_V13_2": _OpponentSpec(
+            # V13.2: 17ch V17 encoder (V14_minimal + 3 V11 statics) +
+            # MinimalCNN14 (10 ResBlocks × 128, no attention). Strong
+            # external opponent for V13.5 RL training.
+            tag="Hist_V13_2",
+            arch_class=MinimalCNN14,
+            arch_kwargs=dict(num_res_blocks=10, num_channels=128, in_channels=17),
+            encoder_fn=encode_state_v17,
+            in_channels=17,
+            needs_consecutive_sixes=False,
+        ),
+        "Hist_V13_5_SL": _OpponentSpec(
+            # V13.5 SL: 21ch V18 production encoder (token-symmetric V18 +
+            # rank masks + token_to_rank planes) + V135ProductionAdapter
+            # (10×128 V135Symmetric inside). Same backbone scale as V13.2
+            # but with rank-indexed output. Used as a "different DNA"
+            # external opponent for V13.5 RL training, since its policy
+            # surface differs from V13.2's despite similar SL eval band.
+            tag="Hist_V13_5_SL",
+            arch_class=V135ProductionAdapter,
+            arch_kwargs=dict(num_res_blocks=10, num_channels=128),
+            encoder_fn=encode_state_v18_production,
+            in_channels=21,
+            needs_consecutive_sixes=False,
+        ),
     }
 
 
@@ -139,6 +168,10 @@ _DEFAULT_CKPTS = {
     # V12.2: lives at the production path it was trained into; the user
     # snapshots a final V12.2 checkpoint here when starting a V13 run.
     "Hist_V12_2":  "play/model_weights/v12_2/model_latest.pt",
+    # V13.2 latest: snapshot of best V13.2 weights at chain phase 3 final.
+    "Hist_V13_2":  "checkpoints/v132/model_latest.pt",
+    # V13.5 SL final: post-2026-05-08 SL distillation, 5M states.
+    "Hist_V13_5_SL": "checkpoints/v135_full/model_latest.pt",
 }
 
 # Repo-root-relative paths. The runner resolves them against the

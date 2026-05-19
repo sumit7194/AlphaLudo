@@ -1,0 +1,157 @@
+{
+  "games_per_pair": 500,
+  "total_sec": 2340.8476860523224,
+  "device": "mps",
+  "ts": 1778265863,
+  "agents": [
+    {
+      "name": "V13.2_latest"
+    },
+    {
+      "name": "V13.5_SL"
+    },
+    {
+      "name": "V14_scalar_RL"
+    },
+    {
+      "name": "V12.2_latest"
+    },
+    {
+      "name": "V13.5_RL_VM"
+    }
+  ],
+  "pairs": [
+    {
+      "a": "V13.2_latest",
+      "b": "V13.5_SL",
+      "a_wins": 259,
+      "b_wins": 241,
+      "draws": 0,
+      "wr_a": 51.8,
+      "wr_b": 48.2,
+      "elapsed_sec": 199.5953071117401
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V14_scalar_RL",
+      "a_wins": 295,
+      "b_wins": 205,
+      "draws": 0,
+      "wr_a": 59.0,
+      "wr_b": 41.0,
+      "elapsed_sec": 280.804710149765
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V12.2_latest",
+      "a_wins": 281,
+      "b_wins": 219,
+      "draws": 0,
+      "wr_a": 56.2,
+      "wr_b": 43.8,
+      "elapsed_sec": 239.9863362312317
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V13.5_RL_VM",
+      "a_wins": 246,
+      "b_wins": 254,
+      "draws": 0,
+      "wr_a": 49.2,
+      "wr_b": 50.8,
+      "elapsed_sec": 195.0246226787567
+    },
+    {
+      "a": "V13.5_SL",
+      "b": "V14_scalar_RL",
+      "a_wins": 286,
+      "b_wins": 214,
+      "draws": 0,
+      "wr_a": 57.2,
+      "wr_b": 42.8,
+      "elapsed_sec": 266.6851279735565
+    },
+    {
+      "a": "V13.5_SL",
+      "b": "V12.2_latest",
+      "a_wins": 267,
+      "b_wins": 233,
+      "draws": 0,
+      "wr_a": 53.4,
+      "wr_b": 46.6,
+      "elapsed_sec": 216.71191596984863
+    },
+    {
+      "a": "V13.5_SL",
+      "b": "V13.5_RL_VM",
+      "a_wins": 253,
+      "b_wins": 247,
+      "draws": 0,
+      "wr_a": 50.6,
+      "wr_b": 49.4,
+      "elapsed_sec": 195.98149919509888
+    },
+    {
+      "a": "V14_scalar_RL",
+      "b": "V12.2_latest",
+      "a_wins": 214,
+      "b_wins": 286,
+      "draws": 0,
+      "wr_a": 42.8,
+      "wr_b": 57.2,
+      "elapsed_sec": 301.822793006897
+    },
+    {
+      "a": "V14_scalar_RL",
+      "b": "V13.5_RL_VM",
+      "a_wins": 203,
+      "b_wins": 297,
+      "draws": 0,
+      "wr_a": 40.6,
+      "wr_b": 59.4,
+      "elapsed_sec": 246.77260208129883
+    },
+    {
+      "a": "V12.2_latest",
+      "b": "V13.5_RL_VM",
+      "a_wins": 235,
+      "b_wins": 265,
+      "draws": 0,
+      "wr_a": 47.0,
+      "wr_b": 53.0,
+      "elapsed_sec": 197.46265816688538
+    }
+  ],
+  "standings": [
+    {
+      "name": "V13.2_latest",
+      "wins": 1081,
+      "games": 2000,
+      "wr": 54.05
+    },
+    {
+      "name": "V13.5_RL_VM",
+      "wins": 1063,
+      "games": 2000,
+      "wr": 53.15
+    },
+    {
+      "name": "V13.5_SL",
+      "wins": 1047,
+      "games": 2000,
+      "wr": 52.35
+    },
+    {
+      "name": "V12.2_latest",
+      "wins": 973,
+      "games": 2000,
+      "wr": 48.65
+    },
+    {
+      "name": "V14_scalar_RL",
+      "wins": 836,
+      "games": 2000,
+      "wr": 41.8
+    }
+  ]
+}

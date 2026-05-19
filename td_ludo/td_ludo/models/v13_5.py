@@ -88,6 +88,14 @@ class V135Symmetric(nn.Module):
         self.moves_fc1 = nn.Linear(num_channels, head_hidden)
         self.moves_fc2 = nn.Linear(head_hidden, 1)
 
+        # Progress aux head — predicts per-rank S(pos) ∈ [0, 1] (sigmoid).
+        # Applied per rank like the policy head, via einsum-extracted features.
+        # This lets the trunk learn features useful for predicting how far
+        # advanced each unique own-token position is. Used as auxiliary loss
+        # during training; not consumed by inference policy directly.
+        self.progress_fc1 = nn.Linear(num_channels, head_hidden)
+        self.progress_fc2 = nn.Linear(head_hidden, 1)
+
     # ── Backbone ────────────────────────────────────────────────────────
     def _backbone(self, x: torch.Tensor) -> torch.Tensor:
         out = F.relu(self.bn_input(self.conv_input(x)))
@@ -109,13 +117,24 @@ class V135Symmetric(nn.Module):
             )
         return logits
 
+    # Class-level marker so trainer code can detect progress-head support
+    # without importing the class.
+    has_progress_head: bool = True
+
     # ── Forward ─────────────────────────────────────────────────────────
     def forward(
         self,
         x: torch.Tensor,                     # (B, 13, 15, 15)
         rank_masks: torch.Tensor,            # (B, 4, 15, 15) — 1.0 at rank-k's cell
         legal_mask: Optional[torch.Tensor] = None,  # (B, 4) — rank-indexed
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns (policy, win_prob, moves, progress) — all rank-indexed.
+
+        progress: (B, 4) sigmoid output in [0, 1], predicted per-rank S(pos).
+        Tokens at ranks beyond the number of unique own-token positions still
+        produce predictions, but their loss is masked by the rank-validity
+        mask in the trainer.
+        """
         cnn = self._backbone(x)              # (B, C, 15, 15)
 
         # Per-rank feature extraction via einsum (rank-indexed analogue of
@@ -130,7 +149,12 @@ class V135Symmetric(nn.Module):
         pooled = F.adaptive_avg_pool2d(cnn, 1).flatten(1)            # (B, C)
         win_prob = torch.sigmoid(self.win_fc2(F.relu(self.win_fc1(pooled)))).squeeze(-1)
         moves    = F.softplus(self.moves_fc2(F.relu(self.moves_fc1(pooled)))).squeeze(-1)
-        return policy, win_prob, moves
+
+        # Progress head — per-rank, sigmoid → [0, 1]
+        ph = F.relu(self.progress_fc1(per_rank))
+        progress = torch.sigmoid(self.progress_fc2(ph).squeeze(-1))   # (B, 4)
+
+        return policy, win_prob, moves, progress
 
     def forward_policy_only(
         self,

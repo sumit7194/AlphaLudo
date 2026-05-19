@@ -1,0 +1,147 @@
+{
+  "label": "V15.1 SL (smoke)",
+  "model_path": "/Users/sumit/Github/AlphaLudo/td_ludo_v15/checkpoints/v151_sl/model_sl.pt",
+  "arch": {
+    "d_model": 128,
+    "n_heads": 4,
+    "n_layers": 4,
+    "ffn_dim": 256,
+    "history_len": 2
+  },
+  "num_games_requested": 50,
+  "num_games_played": 50,
+  "num_states": 7375,
+  "states_per_game": 147.5,
+  "elapsed_sec": 8.689401865005493,
+  "calibration": {
+    "num_bins": 10,
+    "num_states": 7375,
+    "brier_score": 0.22925801575183868,
+    "ece_pp": 8.793119422156932,
+    "max_bin_deviation_pp": 11.801502108573914,
+    "bins": [
+      {
+        "bin_idx": 0,
+        "v_pred_mean": 0.11205070465803146,
+        "v_pred_range": [
+          0.0015825234586372972,
+          0.21853378415107727
+        ],
+        "empirical_wr": 0.21573948860168457,
+        "deviation_pp": 10.36887839436531,
+        "wr_stderr_pp": 1.5151696156448113,
+        "n_samples": 737
+      },
+      {
+        "bin_idx": 1,
+        "v_pred_mean": 0.27258047461509705,
+        "v_pred_range": [
+          0.21865062415599823,
+          0.32348671555519104
+        ],
+        "empirical_wr": 0.3685636818408966,
+        "deviation_pp": 9.598320722579956,
+        "wr_stderr_pp": 1.7757951548042563,
+        "n_samples": 738
+      },
+      {
+        "bin_idx": 2,
+        "v_pred_mean": 0.3646750748157501,
+        "v_pred_range": [
+          0.3235360085964203,
+          0.40273648500442505
+        ],
+        "empirical_wr": 0.47218453884124756,
+        "deviation_pp": 10.750946402549744,
+        "wr_stderr_pp": 1.8389215031412876,
+        "n_samples": 737
+      },
+      {
+        "bin_idx": 3,
+        "v_pred_mean": 0.4361855089664459,
+        "v_pred_range": [
+          0.40287086367607117,
+          0.46771588921546936
+        ],
+        "empirical_wr": 0.5542005300521851,
+        "deviation_pp": 11.801502108573914,
+        "wr_stderr_pp": 1.8296796650566212,
+        "n_samples": 738
+      },
+      {
+        "bin_idx": 4,
+        "v_pred_mean": 0.4980998635292053,
+        "v_pred_range": [
+          0.46805039048194885,
+          0.5264682769775391
+        ],
+        "empirical_wr": 0.5169606804847717,
+        "deviation_pp": 1.8860816955566406,
+        "wr_stderr_pp": 1.8407137402397404,
+        "n_samples": 737
+      },
+      {
+        "bin_idx": 5,
+        "v_pred_mean": 0.5595033764839172,
+        "v_pred_range": [
+          0.5265424847602844,
+          0.5903781056404114
+        ],
+        "empirical_wr": 0.4674796760082245,
+        "deviation_pp": 9.202370047569275,
+        "wr_stderr_pp": 1.8366283343626177,
+        "n_samples": 738
+      },
+      {
+        "bin_idx": 6,
+        "v_pred_mean": 0.6218440532684326,
+        "v_pred_range": [
+          0.5903948545455933,
+          0.6544491052627563
+        ],
+        "empirical_wr": 0.510176420211792,
+        "deviation_pp": 11.166763305664062,
+        "wr_stderr_pp": 1.8413921657712713,
+        "n_samples": 737
+      },
+      {
+        "bin_idx": 7,
+        "v_pred_mean": 0.6896906495094299,
+        "v_pred_range": [
+          0.6544575691223145,
+          0.7293654680252075
+        ],
+        "empirical_wr": 0.6002709865570068,
+        "deviation_pp": 8.94196629524231,
+        "wr_stderr_pp": 1.8031353649615798,
+        "n_samples": 738
+      },
+      {
+        "bin_idx": 8,
+        "v_pred_mean": 0.7755097150802612,
+        "v_pred_range": [
+          0.729580819606781,
+          0.8268865942955017
+        ],
+        "empirical_wr": 0.6824966073036194,
+        "deviation_pp": 9.301310777664185,
+        "wr_stderr_pp": 1.7147100356659177,
+        "n_samples": 737
+      },
+      {
+        "bin_idx": 9,
+        "v_pred_mean": 0.9095574617385864,
+        "v_pred_range": [
+          0.82705157995224,
+          0.9983818531036377
+        ],
+        "empirical_wr": 0.8604335784912109,
+        "deviation_pp": 4.912388324737549,
+        "wr_stderr_pp": 1.2756189607435295,
+        "n_samples": 738
+      }
+    ]
+  },
+  "verdict": "FAIL",
+  "verdict_reason": "ECE=8.79pp, max_bin_dev=11.80pp, Brier=0.229. Value head is poorly calibrated. For MCTS purposes: GOOD news \u2014 search has lots of room to correct the value estimates. Proceed."
+}

@@ -1,0 +1,15 @@
+{
+  "model": "checkpoints/v135_shaping_exp/model_latest.pt",
+  "n_states": 64,
+  "n_sims": 500,
+  "c_puct": 1.5,
+  "temperature": 1.0,
+  "mean_kl": 0.00905092885578962,
+  "median_kl": 0.0016571508022025228,
+  "max_kl": 0.0751345306634903,
+  "top1_agreement_pct": 84.375,
+  "mean_entropy_mcts": 0.44050289240840357,
+  "mean_entropy_v135": 0.45560184421070105,
+  "elapsed_sec": 136.3151412010193,
+  "verdict": "RED \u2014 search and V13.5 agree. Step 2 unlikely to help."
+}

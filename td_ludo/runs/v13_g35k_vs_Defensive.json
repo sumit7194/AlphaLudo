@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Defensive",
+      "V13_G35K"
+    ],
+    "elapsed_min": 1.32,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Defensive",
+      "b": "V13_G35K",
+      "n_games": 500,
+      "a_wins": 290,
+      "b_wins": 210,
+      "draws": 0,
+      "a_wr_pct": 57.99999999999999,
+      "b_wr_pct": 42.0,
+      "avg_length": 162.902,
+      "seat_a_p0": [
+        152,
+        250
+      ],
+      "seat_a_p2": [
+        138,
+        250
+      ],
+      "pair": [
+        "Defensive",
+        "V13_G35K"
+      ]
+    }
+  ]
+}

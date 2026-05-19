@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 2000,
+    "seed": 42,
+    "competitors": [
+      "Distill14",
+      "V12_2"
+    ],
+    "elapsed_min": 7.64,
+    "total_games": 2000
+  },
+  "pairs": [
+    {
+      "a": "Distill14",
+      "b": "V12_2",
+      "n_games": 2000,
+      "a_wins": 994,
+      "b_wins": 1006,
+      "draws": 0,
+      "a_wr_pct": 49.7,
+      "b_wr_pct": 50.3,
+      "avg_length": 160.121,
+      "seat_a_p0": [
+        512,
+        1000
+      ],
+      "seat_a_p2": [
+        482,
+        1000
+      ],
+      "pair": [
+        "Distill14",
+        "V12_2"
+      ]
+    }
+  ]
+}

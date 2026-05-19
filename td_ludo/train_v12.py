@@ -396,13 +396,16 @@ def main():
     parser.add_argument('--curriculum-window', type=int, default=3,
                         help='How many recent evals must all clear the threshold.')
     parser.add_argument('--model-arch', default='v12',
-                        choices=['v12', 'v13_minimal', 'v131_aux', 'v132', 'v14_scalar'],
+                        choices=['v12', 'v13_minimal', 'v131_aux', 'v132', 'v14_scalar', 'v13_5'],
                         help="Model architecture. 'v12' = AlphaLudoV12 "
                              "(CNN+attn, 33ch encoder). 'v13_minimal' = "
                              "MinimalCNN14 (10×128 pure CNN, 14ch raw). "
                              "'v14_scalar' = V14ScalarDeepSets (no CNN, no "
                              "attention; per-token MLPs + DeepSets pool over "
-                             "V12.2-equivalent scalar features).")
+                             "V12.2-equivalent scalar features). 'v13_5' = "
+                             "V135ProductionAdapter wrapping V135Symmetric "
+                             "(10×128, V18 token-symmetric encoder, "
+                             "rank-indexed output mapped back to token-id).")
     parser.add_argument('--num-res-blocks', type=int, default=4)
     parser.add_argument('--num-channels', type=int, default=96)
     parser.add_argument('--num-attn-layers', type=int, default=2)
@@ -444,7 +447,7 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122', 'v122_hist', 'v122_hist_v2', 'v123', 'v13'],
+                        choices=['default', 'v122', 'v122_hist', 'v122_hist_v2', 'v123', 'v13', 'v13_5_no_bots'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
@@ -457,7 +460,11 @@ def main():
                              "Hist_V6_1 4 / Hist_V6_big 3 (no Random). "
                              "'v13' = V13-tuned mix with V12.2 as strong "
                              "external opponent: SelfPlay 55 / Hist_V12_2 "
-                             "20 / Hist_V10 15 / Hist_V6_3 10. No bots.")
+                             "20 / Hist_V10 15 / Hist_V6_3 10. No bots. "
+                             "'v13_5_no_bots' = V13.5-tuned mix targeting "
+                             "DNA diversity for V13.5 RL: SelfPlay 50 + "
+                             "ghost rotation / Hist_V13_2 25 / Hist_V13_5_SL "
+                             "10 / Hist_V12_2 10 / Hist_V10 5. No bots.")
 
     # Exp 24: search-during-training (depth-1 expectimax → aux policy target).
     parser.add_argument('--search-enabled', action='store_true',
@@ -475,7 +482,44 @@ def main():
                              '(default 0.1; argmax gets 0.9, rest legal share '
                              '0.1 uniformly).')
 
+    # Progress shaping (Exp 39). Per-step shaping reward = α * (ΔΦ_own − ΔΦ_opp)
+    # where Φ = total progress score (Σ S(pos) over a player's tokens, with
+    # S(pos) the non-linear curve in td_ludo.game.progress_score). The shaping
+    # is potential-based and policy-invariant in expectation, but provides
+    # much denser per-step signal than the +1/-1 terminal reward alone.
+    parser.add_argument('--shaping-coeff', type=float, default=0.0,
+                        help='Per-step potential-based shaping coefficient α. '
+                             '0 disables shaping. Reasonable starting values: '
+                             '0.02-0.05. Bigger = more weight on per-step '
+                             'progress vs terminal outcome.')
+
+    # V13.5 progress aux head loss (only meaningful when --model-arch=v13_5,
+    # since other archs don't expose a progress head).
+    parser.add_argument('--progress-coeff', type=float, default=0.0,
+                        help='V13.5 progress aux loss coefficient. >0 trains '
+                             "the per-rank progress head against player_v11's "
+                             'progress_target (S(pos) per canonical rank). '
+                             '0 disables. Recommended start: 0.05-0.1.')
+
+    # Eval cadence overrides (default comes from src.config — usually
+    # 25000/2500). Lower interval = more frequent feedback at the cost of
+    # more eval-game throughput. Lower per-eval games = noisier WR estimate.
+    parser.add_argument('--eval-interval', type=int, default=0,
+                        help='Run evaluation every N training games. '
+                             '0 = use config default (typically 25000).')
+    parser.add_argument('--eval-games', type=int, default=0,
+                        help='Number of games per evaluation round. '
+                             '0 = use config default (typically 2500).')
+
     args = parser.parse_args()
+
+    # CLI overrides for eval cadence. Shadow the imported config constants so
+    # the bucket / eval-call sites use the user-specified values when given.
+    global EVAL_INTERVAL, EVAL_GAMES
+    if args.eval_interval > 0:
+        EVAL_INTERVAL = args.eval_interval
+    if args.eval_games > 0:
+        EVAL_GAMES = args.eval_games
 
     # Fresh start: wipe run dir but keep model_sl.pt
     if args.fresh and os.path.exists(CHECKPOINT_DIR):
@@ -558,6 +602,30 @@ def main():
         print(f"[V12 Train]   DeepSets, no CNN/attn, "
               f"input shape ({FLAT_DIM}, 1, 1) flat tensor")
         encoder_fn = encode_state_v14_scalar_flat
+    elif args.model_arch == 'v13_5':
+        # V13.5: token-symmetric V18 encoder + V135Symmetric backbone
+        # (10×128, rank-indexed output). The production-pipeline adapter
+        # packs (V18 base + rank masks + token_to_rank) into a single 21ch
+        # tensor and exposes the standard token-id-indexed forward signature
+        # so trainer_v10 / VectorACGamePlayer can drive it unchanged. Tokens
+        # at the same canonical rank get equal probability (architectural
+        # invariance preserved through the wrapper).
+        from td_ludo.models.v13_5_production import V135ProductionAdapter
+        from td_ludo.game.encoder_v18_production import (
+            encode_state_v18_production, V18_PROD_CHANNELS,
+        )
+        v135_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 10
+        v135_channels = args.num_channels if args.num_channels != 96 else 128
+        model_factory = lambda: V135ProductionAdapter(
+            num_res_blocks=v135_blocks, num_channels=v135_channels,
+        )
+        model = model_factory()
+        print(f"[V12 Train] Model: V135ProductionAdapter (V13.5) "
+              f"({model.count_parameters():,} params)")
+        print(f"[V12 Train]   {v135_blocks} ResBlocks × {v135_channels}ch, "
+              f"{V18_PROD_CHANNELS}ch packed input (V18 base + rank masks + "
+              f"token_to_rank), rank-indexed inner output")
+        encoder_fn = encode_state_v18_production
     elif args.model_arch == 'v131_aux':
         # V13.1: MinimalCNN14Aux (12×160 default, 14ch raw + 3 aux heads).
         # During RL we use the same forward_policy_only path as V13 — aux
@@ -603,6 +671,7 @@ def main():
     trainer = ActorCriticTrainerV10(
         model, device, learning_rate=LEARNING_RATE,
         alpha_search=alpha_search_eff,
+        progress_coeff=args.progress_coeff,
     )
 
     # Load weights with multi-backup fallback
@@ -749,6 +818,28 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V13_MIX
         print(f"[V12 Train] Game composition: V13 mix → {V13_MIX}")
+    elif args.game_composition == 'v13_5_no_bots':
+        # V13.5-tuned mix: target DNA diversity by mixing in models from
+        # different lineages (V13.2/V12.2 = "old DNA from teacher chain";
+        # Hist_V13_5_SL = "different SL endpoint of same architecture";
+        # SelfPlay+ghost = "current student / past selves"). NO bots —
+        # they're saturated and don't push the policy past V12.2 lineage.
+        V13_5_NO_BOTS_MIX = {
+            # Phase L (2026-05-13): "tough-opponents" rebalance after search-
+            # teacher experiment damaged the model. Less self-play (50 → 20)
+            # so the policy doesn't drift into self-overfit; more weight on
+            # the toughest external opponents (V13_2 and V13_5_SL) to
+            # extract whatever discriminative signal remains in the pool.
+            "Hist_V13_2":       0.40,    # tough — V13-line, different arch family
+            "Hist_V13_5_SL":    0.30,    # toughest (different SL endpoint, same arch)
+            "SelfPlay":         0.20,    # cut from 0.50 — less self-overfit
+            "Hist_V12_2":       0.10,    # legacy, kept for DNA diversity
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V13_5_NO_BOTS_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V13_5_NO_BOTS_MIX
+        print(f"[V12 Train] Game composition: v13_5_no_bots mix → {V13_5_NO_BOTS_MIX}")
     else:
         from src.config import GAME_COMPOSITION as _gc_default
         print(f"[V12 Train] Game composition: PROD default → {_gc_default}")
@@ -780,9 +871,15 @@ def main():
     # Initial composition uses what the user passed; curriculum mode also
     # enables historicals upfront so the registry is loaded before the swap.
     historical_opponents_enabled = (
-        args.game_composition in ('v123', 'v13', 'v122_hist', 'v122_hist_v2')
+        args.game_composition in ('v123', 'v13', 'v122_hist', 'v122_hist_v2', 'v13_5_no_bots')
         or (args.curriculum_mode == 'auto'
-            and args.curriculum_target in ('v123', 'v13', 'v122_hist', 'v122_hist_v2'))
+            and args.curriculum_target in ('v123', 'v13', 'v122_hist', 'v122_hist_v2', 'v13_5_no_bots'))
+    )
+    # Progress aux is only meaningful for V13.5 (it has the per-rank progress
+    # head). For other archs the player still passes the kwarg but the trainer
+    # ignores `progress_target` since the model doesn't return a 4th tensor.
+    progress_target_enabled_eff = (
+        args.progress_coeff > 0.0 and args.model_arch == 'v13_5'
     )
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
@@ -793,6 +890,8 @@ def main():
         search_label_smoothing=args.search_label_smoothing,
         historical_opponents_enabled=historical_opponents_enabled,
         encoder_fn=encoder_fn,
+        shaping_coeff=args.shaping_coeff,
+        progress_target_enabled=progress_target_enabled_eff,
     )
     _player = player
 

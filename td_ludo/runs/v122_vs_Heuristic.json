@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Heuristic",
+      "V12_2"
+    ],
+    "elapsed_min": 0.61,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Heuristic",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 97,
+      "b_wins": 403,
+      "draws": 0,
+      "a_wr_pct": 19.400000000000002,
+      "b_wr_pct": 80.60000000000001,
+      "avg_length": 158.564,
+      "seat_a_p0": [
+        53,
+        250
+      ],
+      "seat_a_p2": [
+        44,
+        250
+      ],
+      "pair": [
+        "Heuristic",
+        "V12_2"
+      ]
+    }
+  ]
+}

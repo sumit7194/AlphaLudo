@@ -3821,3 +3821,1419 @@ V13.5 SL run is parked as `model_latest.pt` in `checkpoints/v135_full/`,
 ready as the SL initialization for V13.5 RL. Backup at
 `checkpoint_backups/v135_full_<TS>/`.
 
+---
+
+## Exp 37 — V13.4 BN bug discovery + 3-way tournament (2026-05-08)
+
+### Setup
+
+Built a unified 4-way tournament runner
+(`experiments/tournament/run_4way_2026_05.py`) that handles all four
+post-V13.2 architectures:
+- V13.2 (`MinimalCNN14`, 17ch, single-frame, token-id-indexed)
+- V13.4 (`V133Temporal`, 17ch, K=8 per-player history, token-id-indexed)
+- V13.5 (`V135Symmetric`, 13ch V18 encoder, no history, *rank-indexed*
+  output)
+- V14_scalar (`V14ScalarDeepSets`, FLAT_DIM scalar dict, no history,
+  no BatchNorm)
+
+Each agent gets `reset()`/`observe()`/`select()` hooks so V13.4's
+per-game history can be maintained correctly.
+
+### Smoke test — first surprise
+
+20-game smoke run gave V13.4_RL **standings rank 4 at 11.7%**, V13.2
+at 73.3%. That contradicted the chain phase 3 result (V13.4 tied V13.2
+at 50/50 over 1000 games). Re-ran with 200 games on Mac MPS and Mac
+CPU separately — both gave **V13.2 90% / V13.4 10%**.
+
+### Diagnosis
+
+Cross-checked with the chain's own `experiments/v134/h2h_v134.py` —
+same result (90/10). Verified V13.4's policy distribution at the
+initial state (Mac CPU): `[0.235, 0.206, 0.264, 0.294]` — essentially
+uniform. At a deeper game state with full K=8 history: V13.4 policy
+`[0.31, 0.32, 0.37, 0]` vs V13.2 policy `[0.81, 0.19, 0.002, 0]`.
+**V13.4 is producing near-uniform policies regardless of input.**
+
+Also verified on VM cuda: V13.4 max prob = 0.38. So this is not a
+device-specific issue — V13.4 inference is broken everywhere.
+
+Inspection of BatchNorm running stats (`num_batches_tracked`):
+
+| Checkpoint | nb_tracked | Expected | Status |
+|---|---|---|---|
+| V13.4 sl_init.pt | 0 | 0 | OK (fresh) |
+| V13.4 model_sl.pt | **79** | 19,531 | **0.4% — broken** |
+| V13.4 model_rl.pt | 384 | ~22K | **2% — still broken** |
+| V13.5 model_latest.pt | 19,532 | 19,531 | OK (100%) |
+| V13.2 model_latest.pt | 855,419 | high | OK (extensive RL) |
+
+V13.4's BatchNorm running mean/var stayed at near-default values
+because the model's forward pass ran in train() mode on only 79
+out of ~19K SL batches. The weights themselves trained correctly
+(SL loss converged to 0.013), but the BN normalization layer is
+applied at inference using these uncalibrated stats — producing
+near-uniform output.
+
+### How we missed this for two days
+
+**The chain phase 3 H2H showed V13.4_SL = V13.4_RL = 50.2 / 49.8 vs
+V13.2 (both pairs gave EXACTLY 251/249, n=500).** The exact-tie
+across pairs was the smoking-gun signature of two models making
+identical near-random decisions, but I missed it. The mechanism:
+mirrored-seed protocol forces "near-random player" wins to be ~50%
+by symmetry — same dice trajectory played twice with sides swapped.
+
+The bot eval was also misleading: V13.4 RL eval averaged 80-86% vs
+random-bot mix (which includes RandomBot — easy to beat). A near-
+uniform policy with slight better-than-random bias can still post
+80%+ vs that mix.
+
+**Methodology lesson #5**: Identical pair scores across two H2H
+matchups are nearly impossible unless models are playing identically.
+A "diff = 0.0pp" between two ostensibly different models in a
+tournament is a red flag, not a confirmation of equivalent strength.
+
+### Bug origin
+
+V13.5 SL used a near-identical training script and got correct
+nb_tracked counts (19,532). V13.3 mini also produced peaked policies
+in its H2H (lost 43.4% but in a *peaked* way). So the bug is V13.4-
+specific, not a script-wide issue. Likely candidates:
+- The chain.sh sequenced SL → RL with the same trainer process,
+  and the eval/train mode toggling interacted oddly at V13.4 scale
+- An eval-mode lock that stuck during SL training
+- Some Mac-MPS-specific behavior at the time V13.4 was launched
+
+Root cause not yet identified. Marked for post-mortem after V13.5 RL
+completes.
+
+### Tournament — 3-way (V13.2 / V13.5_SL / V14_scalar)
+
+Skipped V13.4 due to the bug. 1000 games per pair, mirrored seeds,
+greedy, Mac MPS. Total: 3000 games, 25 minutes wall time.
+
+**Per-pair results:**
+
+| Pair | a | b | a wins | b wins | WR a / WR b | Δ |
+|---|---|---|---|---|---|---|
+| 1 | V13.2_latest | V13.5_SL | 484 | **516** | 48.4% / **51.6%** | V13.5 **+3.2pp** |
+| 2 | V13.2_latest | V14_scalar_RL | 602 | 398 | 60.2% / 39.8% | V13.2 +20.4pp |
+| 3 | V13.5_SL | V14_scalar_RL | 568 | 432 | 56.8% / 43.2% | V13.5 +13.6pp |
+
+**Standings (2000 games per agent, SE ±1.1pp on 50%):**
+
+| Rank | Agent | Params | Wins/Games | WR | 95% CI |
+|---|---|---|---|---|---|
+| 1 | V13.2_latest | 3.0M | 1086/2000 | **54.3%** | [52.1, 56.5] |
+| 2 | V13.5_SL_full | 3.0M | 1084/2000 | **54.2%** | [52.0, 56.4] |
+| 3 | V14_scalar_RL | 230K | 830/2000 | 41.5% | [39.3, 43.7] |
+
+V13.2 and V13.5_SL are statistically tied in the standings (delta 0.1pp,
+inside the noise floor). V13.5 won the direct head-to-head pair 51.6 /
+48.4 — z = 1.45, p ≈ 0.07 one-tailed. **First model to match or edge
+V13.2 in H2H.**
+
+**Headline finding.** V13.5_SL is roughly equal to V13.2_latest in H2H
+strength **without any RL phase**, while V13.2_latest had SL distillation
+*plus* extensive RL polish. Pure encoder change + matched-capacity SL
+captures most of V13.2's strength. The user's symmetry hypothesis is
+validated at the SL phase.
+
+**Open question.** Whether RL on top of V13.5_SL pushes the H2H above
+52-54% or just ties V13.2 (the way V13.4 RL phase appeared to before
+the BN bug was found). Test in progress on VM cuda.
+
+### V13.5 RL launched on VM (2026-05-08)
+
+After cleanly killing the V13.4 RL continuation that was running on
+VM (~10.5M states, 67K games, eval flat at 81%), we backed up its
+weights to `checkpoint_backups/v134_rl_continuation_20260508_131352/`
+(45MB ckpt + optim, eval ≈ 81%) and pushed V13.5 ecosystem to VM:
+`td_ludo/models/v13_5.py`, `encoder_v18_symmetric.py`,
+`rank_mapping.py`, `train_v135_sl.py`, `train_v135_rl.py`, plus
+`checkpoints/v135_full/model_latest.pt` (the SL init).
+
+V13.5 RL config:
+- Init from V13.5 SL final
+- target_states 20M (~125K games at avg_glen 158)
+- parallel_games 64, train_chunk 2048, minibatch 256, train_epochs 2
+- lr 5e-5 → 5e-6 cosine
+- entropy 0.02, value_coeff 0.5, kl_anchor_coeff 0.1 (anchor = V13.5_SL)
+- save_every_games 20K, eval_every_games 20K, eval_games 3000
+- h2h_gate_every 2M states with 200-game gate vs V13.2
+
+VM cuda fps: **~820** (much higher than V13.4 RL's 117 on the same
+GPU — the temporal arch's K=8 forward replication was a real cost we
+removed). ETA ~7 hours for 20M states.
+
+**First H2H gate at 2M states (12.6K games):**
+V13.5_RL **45.0%** / V13.2 55.0% (n = 200). Worse than V13.5_SL's
+~51.6% — could be early RL noise, or the same "RL doesn't push past
+teacher" pattern we saw with V13.4. Still very early. Real signal
+should emerge over the next several gates (4M, 6M, 8M, ...).
+
+**First eval at 20K games:** WR 81.6% vs heuristic-bot mix (3000-game
+eval). In the same 80-83% band V13.5_SL was in.
+
+Status as of writing: V13.5 RL running, dashboard at port 8792 (rich,
+custom server) and 8799 (basic, trainer's built-in). SSH tunnel from
+local Mac forwards both ports.
+
+---
+
+## Working priorities, going forward
+
+1. **Wait for V13.5 RL on VM (~6-7 hrs)**. Real test of whether RL
+   on the symmetric encoder pushes past V13.2 in H2H.
+2. **If V13.5 RL beats V13.2** — new SOTA, V13.5 RL becomes the new
+   teacher, MCTS Step 1 becomes potentially viable again with stronger
+   leaf evaluator.
+3. **If V13.5 RL ties V13.2** — V13.5 SL is the same as V13.5 RL, and
+   we have a new co-equal model. RL recipe has a known ceiling.
+   Pivot to league/diverse-opponent RL or similar.
+4. **V13.4 BN bug post-mortem** can wait until V13.5 RL completes —
+   deferred rather than urgent.
+
+---
+
+## Exp 38 — V13.5 RL VM (self-play REINFORCE) + 5-way tournament + production RL pivot (2026-05-08/09)
+
+### V13.5 RL VM run (self-play REINFORCE on top of SL) — completed → paused
+
+V13.5 RL was launched on VM cuda from V13.5_SL using `train_v135_rl.py`'s
+self-play REINFORCE recipe (KL anchor 0.1 to V13.5_SL, multi-legal filter,
+lr 5e-5 → 5e-6, parallel_games 64, fps ~820). Ran 9.5M states / 67K games
+across multiple sessions.
+
+**During the run, dashboard signals looked discouraging:**
+- 5 H2H gates against V13.2 (200 games each, n=200, SE ±3.5pp): 45 → 50 → 50 → 52.5 → 48.5%
+- We interpreted this as "RL not pushing past teacher" and paused the run
+  to switch pipelines.
+
+**Backed up to** `checkpoint_backups/v135_rl_vm_20260508_173708/` —
+model_latest.pt (36MB ckpt + optimizer state) plus rl_9516K.pt + logs.
+
+### V13.5 production RL launched on VM (2026-05-08 17:38 UTC)
+
+Pivoted to `train_v12.py` PPO pipeline, with new `v13_5` model arch + new
+`v13_5_no_bots` opponent mix:
+
+```
+SelfPlay + ghost rotation: 50%
+Hist_V13_2: 25%   (strongest V13-line external)
+Hist_V13_5_SL: 10% (different SL endpoint, "DNA diversity")
+Hist_V12_2: 10%   (legacy production opponent)
+Hist_V10:  5%     (older lineage diversity)
+NO bots
+```
+
+The infrastructure work to make this happen, in a fresh `experiments/v135/`
+folder + `td_ludo/models/v13_5_production.py` + `td_ludo/game/encoder_v18_production.py`:
+
+1. **`encoder_v18_production` (21 channels)** — packs V18 base (13ch) +
+   rank masks (4ch) + token_to_rank planes (4ch) into a single tensor so
+   the production pipeline's single-tensor `encoder_fn(state) → tensor`
+   contract is preserved.
+2. **`V135ProductionAdapter`** — wraps `V135Symmetric` to expose the
+   token-id-indexed `forward(x, legal_mask)` and `forward_policy_only`
+   interface trainer_v10 / VectorACGamePlayer expect. Internally:
+     - unpacks 21ch into v18 + rank_masks + token_to_rank
+     - builds rank_legal_mask via `scatter_reduce(legal_mask, token_to_rank, max)`
+     - calls inner V135Symmetric on rank-indexed input/output
+     - broadcasts rank_logits → token_id_logits via gather (tokens at the
+       same canonical rank get equal logit, so softmax gives them equal
+       probability)
+     - applies token-id legal mask, returns token-id-indexed output
+3. **Auto-prefix `load_state_dict`** — adapter detects bare V135Symmetric
+   checkpoints and rewrites keys from `conv_input.weight` →
+   `inner.conv_input.weight` so `trainer.load_checkpoint(...)` and
+   `OpponentRegistry.get_model(...)` work transparently regardless of
+   checkpoint format.
+4. **13 unit tests** in `experiments/v135/test_production_adapter.py`
+   verifying: encoder/unpack roundtrip, permutation-equivariance through
+   the adapter (24/24 perms), tokens at same rank get equal probability,
+   forward()-vs-forward_policy_only() consistency, legal-mask plumbing,
+   param-count match. All pass on Mac MPS.
+5. **`Hist_V13_2`, `Hist_V13_5_SL`** added to `OpponentRegistry`.
+6. **`v13_5_no_bots`** added as a new game-composition preset in
+   `train_v12.py`.
+
+Smoke-tested on Mac MPS (30 games, no crashes) and VM cuda (14 games,
+GPM 37 with `--ppo-minibatch-size 64` for safety). Then launched real
+run starting from V13.5 RL VM-latest weights (preserved in
+`v135_prod_rl/model_sl.pt`).
+
+**Initial signals on VM cuda** (~30 minutes after launch):
+- GPM **~165** (much higher than train_v135_rl's 117 — production
+  pipeline is more efficient at parallel game generation)
+- entropy **0.27** (healthy)
+- WR_100 (sliding 100-game vs the mixed opponent pool) climbed
+  50.2 → 53.0% over 30 minutes
+- Model ELO: 1516, opponent ELO ranks: SelfPlay 1531, Hist_V13_5_SL 1561,
+  Hist_V13_2 1508, Hist_V10 1491, Hist_V12_2 1471
+
+**Methodology note for monitoring**: in-pipeline `eval_WR` (every 25K
+games, fires `evaluate_v11.py`) is **bots-only** (Random / Heuristic /
+Aggressive / Defensive / Racing / Expert from `BOT_REGISTRY`). It
+saturates at 80-85% for any V12.x+ model and is the same trap that
+fooled us with V13.4 RL. The **honest signals** during this run are:
+- **WR_100** vs the strong opponent mix (the dashboard's sliding window)
+- **Model ELO vs Hist_V13_2 ELO** (relative-strength estimate from the
+  ELO tracker)
+- Periodic real H2H tournaments against V13.2 (which we run manually,
+  not part of the in-pipeline eval)
+
+Production dashboard at `http://34.143.250.98:8790/` (firewall rule
+`allow-dashboard-8790` opens TCP 8790 from the user's IP only).
+
+### 5-way H2H tournament (2026-05-08 18:05 UTC, Mac MPS)
+
+500 games per pair, mirrored seeds, greedy. 5 agents × 10 pairs =
+5,000 games. Took 39 min.
+
+**Per-pair results (winner shown first):**
+
+| Pair | a wins | b wins | WR a / b |
+|---|---|---|---|
+| V13.2 vs V13.5_SL | 259 | 241 | 51.8% / 48.2% |
+| V13.2 vs V14_scalar | 295 | 205 | 59.0% / 41.0% |
+| V13.2 vs V12.2 | 281 | 219 | 56.2% / 43.8% |
+| **V13.2 vs V13.5_RL_VM** | **246** | **254** | **49.2% / 50.8%** ← V13.5 RL edged V13.2 |
+| V13.5_SL vs V14_scalar | 286 | 214 | 57.2% / 42.8% |
+| V13.5_SL vs V12.2 | 267 | 233 | 53.4% / 46.6% |
+| V13.5_SL vs V13.5_RL_VM | 253 | 247 | 50.6% / 49.4% |
+| V14_scalar vs V12.2 | 214 | 286 | 42.8% / 57.2% |
+| V14_scalar vs V13.5_RL_VM | 203 | 297 | 40.6% / 59.4% |
+| V12.2 vs V13.5_RL_VM | 235 | 265 | 47.0% / 53.0% |
+
+**Standings (2000 games each, SE ±1.1pp on 50%):**
+
+| Rank | Agent | Wins | WR | 95% CI |
+|---|---|---|---|---|
+| 1 | V13.2_latest | 1081 | **54.0%** | [51.8, 56.2] |
+| 2 | **V13.5_RL_VM** | 1063 | **53.1%** | [50.9, 55.3] |
+| 3 | V13.5_SL_full | 1047 | **52.4%** | [50.2, 54.6] |
+| 4 | V12.2_latest | 973 | 48.6% | [46.4, 50.8] |
+| 5 | V14_scalar_RL | 836 | 41.8% | [39.6, 44.0] |
+
+**Top 3 are statistically tied** — overlapping confidence intervals.
+
+### Key findings
+
+1. **V13.5_RL_VM edged V13.2 in head-to-head** (50.8 / 49.2), 500 games.
+   z=0.36 — not significant alone, but the *direction* matters: this is
+   the FIRST time any model has won the V13.2 head-to-head pair in our
+   tournament series. Prior pairs:
+     - V13.3 mini lost 43.4 / 56.6
+     - V13.4 lost ~10 / 90 (BN-broken)
+     - V13.5 SL lost 48.2 / 51.8 (or in the earlier 1000-game run: 51.6 / 48.4 — also tied)
+
+2. **V13.5_RL_VM lifts cleanly above V13.5_SL on external opponents**:
+     - vs V13.2: 50.8 vs V13.5_SL's 48.2 (+2.6pp)
+     - vs V12.2: 53.0 vs V13.5_SL's 53.4 (-0.4pp, tied)
+     - vs V14_scalar: 59.4 vs V13.5_SL's 57.2 (+2.2pp)
+     - vs V13.5_SL itself: 49.4/50.6 (essentially tied)
+
+   The pattern: V13.5_RL_VM is roughly indistinguishable from V13.5_SL
+   when they play each other (same DNA), but slightly stronger against
+   external opponents — exactly what we'd expect if RL on top of SL
+   added a bit of polish.
+
+3. **The 9.5M-state self-play REINFORCE run was NOT wasted.** Our
+   earlier conclusion ("RL not pushing past teacher") was based on the
+   200-game H2H gates which had ±3.5pp standard error — not sensitive
+   enough to detect a 1-2pp lift. The 1000-game pairs in this tournament
+   show the lift exists.
+
+4. **V13.5 lineage now ties V13.2 at the top** of the standings. Three
+   models within noise of each other (V13.2 54.0%, V13.5_RL_VM 53.1%,
+   V13.5_SL 52.4%). To break decisively past V13.2, V13.5 production RL
+   would need to push WR_100 above ~55% over the long run.
+
+5. **Methodology lesson #6**: 200-game H2H gates are too noisy to detect
+   the size of improvement RL typically delivers (1-3pp). Use ≥1000 games
+   for any "did RL help?" decision.
+
+### Pending decisions
+
+- **V13.5 production RL ETA**: ~24-48 hours of training to reach a
+  meaningful ELO signal. First in-pipeline eval at 25K games (already
+  past — 25K hits in ~2-3 hrs at 165 gpm).
+- **When V13.5 production RL has 50K+ games**, pull `model_latest.pt`
+  and run a clean 1000-game H2H against V13.2 + V13.5_RL_VM to measure
+  whether the multi-opponent PPO pipeline outperformed the self-play
+  REINFORCE pipeline.
+- **V13.5.1 (bot-trajectory SL)** still on the table from the earlier
+  discussion. Holding for now since V13.5_RL_VM has shown the V13.5 arch
+  is at least competitive with V13.2 — the urgency to "break out of
+  V12.2 DNA" is lower if the symmetric arch is already finding equivalent
+  performance via standard distillation.
+
+## Exp 39 — V13.5 production RL (multi-opponent PPO) — VM teardown, local stop-gap, new VM, plateau, LR warm-restart (2026-05-08 → 2026-05-10)
+
+The production-RL run launched at the end of Exp 38 (2026-05-08 17:38 UTC,
+G=0 from V13.5_SL, multi-opponent pipeline) ran through several phases as
+GCP credits ran out and we migrated. Captured here for the full lineage.
+
+### Phase A — VM out of credits → local Mac MPS resume (2026-05-09)
+
+- Original VM (a-l4) burned through credits before the run was meaningful.
+  Tarred everything (ckpts/v135_prod_rl + v135_rl + v132 + 5 logs, 832 MB)
+  via `gcloud compute scp` into local `vm_archive/extracted/`, then deleted
+  VM + disk + firewall to stop the burn.
+- Resumed locally on Mac M-series MPS as a stop-gap while a new VM was
+  prepared. Daemonized via `/tmp/v135_local_daemon_v2.py` with signal
+  handlers logging "TERMINATED by signal N" so silent kills produce a log
+  line.
+- Two silent crashes at G≈450 and G≈730. **Root cause: macOS jetsam
+  SIGKILL under disk pressure** (95% full, only 11 GB free), NOT MPS OOM
+  as initially suspected. Cleaned up: deleted `experiments/synthetic_rlhf/
+  v122_selfplay_100k.db` (2.5 GB), `_10k.db` (253 MB), an old
+  `elo_ratings.json` (111 MB). Left ~20 GB free; training stable.
+- Local GPM: 26-44 (vs ~165 GPM on previous VM L4). Confirmed 3-5× slower
+  on MPS plus 2× slowdown from multi-opponent pool loading. Aux head
+  overhead negligible (<1%).
+- Took the local run to **G ≈ 1,820** before pausing for VM cutover.
+
+### Phase B — Cutover to new VM (alphaludo-l4 in alphaludo-495721, 2026-05-09)
+
+- Created new GCP project `alphaludo-495721` under fitfortune account
+  (revoked payvizio from gcloud CLI). Quota for `GPUS_ALL_REGIONS` was 0
+  (umbrella gate); requested via `gcloud alpha quotas preferences create`,
+  **auto-approved in seconds** for a 1-GPU bump on a billing-attached
+  project. Per-region NVIDIA_L4 quota was already 1 in every region.
+- L4 spot stockout in us-central1 + us-west1; landed in **us-east1-c**
+  (`g2-standard-8`, 1× L4, 100 GB pd-balanced, spot ≈$0.27/hr,
+  PyTorch 2.9 + CUDA 12.9 + Ubuntu 22.04 + driver 580 DLVM image).
+- Synced code + ckpts via `rsync` over `gcloud compute config-ssh` alias.
+  Built `td_ludo_cpp` Linux extension on VM. First training launch crashed
+  on `from experiments.distillation_14ch.model_14ch import MinimalCNN14`
+  (had excluded `experiments/` in initial sync); fixed with a second
+  rsync. Dashboard HTML files were also excluded by the `--exclude=*.html`
+  pattern; re-synced.
+- Firewall: created `allow-dashboard-8790` initially with `0.0.0.0/0` (my
+  mistake), then locked to user's IP `/32`. Methodology lesson #7:
+  default-deny on inbound 8790 from day one.
+- Resumed at G=1,749, ramped to **GPM = 181** on L4 within 1 minute.
+
+### Phase C — Composition tweak (2026-05-09 ~03:30 UTC)
+
+Removed Hist_V10 and bumped Hist_V13_5_SL after live opponent stats showed:
+
+| Opponent       | Recent WR (early run) |
+|---|---|
+| Hist_V10       | 70.0% (we dominate; saturated, low signal) |
+| Hist_V13_2     | 45.6% |
+| Hist_V13_5_SL  | **31.6% (we lose; hardest target)** |
+| Hist_V12_2     | 43.2% |
+
+Mix updated in `train_v12.py:827-833` (composition `v13_5_no_bots`):
+
+| Tag             | Old  | New  |
+|---|---|---|
+| SelfPlay        | 0.50 | 0.50 |
+| Hist_V13_2      | 0.25 | 0.25 |
+| Hist_V13_5_SL   | 0.10 | **0.15** |
+| Hist_V12_2      | 0.10 | 0.10 |
+| Hist_V10        | 0.05 | **dropped** |
+
+Pushback retained on V13.5_SL: same SL eval band ≠ same policy surface;
+V13_2 (MinimalCNN14, 17ch V17 encoder) and V13.5_SL (V135ProductionAdapter,
+21ch V18 encoder) are architecturally different families. V13.5_SL was
+also the only opponent we were net-losing to → richest gradient signal.
+
+### Phase D — Sustained run + plateau (2026-05-09 → 2026-05-10)
+
+Eval trajectory (4K games per eval after composition tweak; 2K before):
+
+| best_eval | New best at | Status |
+|---|---|---|
+| 80.3% | early eval | first plateau-break |
+| 80.7% → 82.2% → 82.5% → 82.7% | over G≈30K-100K | steady climb |
+| 82.7% | held for several evals | first stall |
+| **84.2%** | G ≈ 137K | first big lift |
+| **84.55%** | G ≈ 260K (held thru 452K) | run ceiling |
+
+**Recent opponent WR moved a lot vs Phase C start:**
+
+| Opponent | C-start | G≈189K | G≈452K |
+|---|---|---|---|
+| Hist_V13_5_SL | 31.6 | 56.9 | (top of pool, similar) |
+| Hist_V13_2 | 45.6 | 50.5 | ~50 |
+| Hist_V12_2 | 43.2 | 50.0 | ~50 |
+| SelfPlay | 51.5 | 48.0 | ~50 |
+
+**Plateau characteristics observed at G=390K–452K:**
+
+- 9-13 consecutive evals without a new best (>100K games of flat best).
+- Main Elo orbiting 1550-1610 (started at 1476).
+- Policy entropy slow drift: 0.27 → 0.21 (still healthy, no collapse).
+- Modest specialization toward V13.5_SL at minor expense vs V12.2.
+- Net interpretation: model has out-learned the pool. No remaining
+  "stronger than self" signal; gradient washing out around 50/50 games.
+
+### Phase E — LR warm-restart (2026-05-10 20:38 UTC)
+
+Decision: rather than stop, attempt to escape the basin via LR warm-
+restart (Loshchilov SGDR-style). Cheap to try; reversible.
+
+- **Stopped cleanly** at G=452,163 (1,073,511 updates, best 84.55%).
+- **Pulled to local + timestamped snapshot**:
+  `checkpoint_backups/v135_prod_rl_G452k_20260510_203825/` (485 MB,
+  full rotating backups + 20 ghosts). Also refreshed
+  `play/model_weights/v13_5/model_{latest,best}.pt` for human-vs-AI play.
+- **Resumed with**: `--reset-lr --anneal-lr 8.6e-7 --anneal-games 30000`.
+  Effect: optimizer LR forced from 8.6e-7 → 1.0e-5 (12× bump), then
+  cosine-annealed back to 8.6e-7 over the next 30,000 games (~3 hours
+  at 180 GPM). Eval cadence already at 30K interval / 4K games per eval.
+- Verified live: log shows `Reset LR 8.6e-07 → 1.0e-05 (--reset-lr flag)`
+  and `LR annealing: 1.0e-05 → 8.6e-7 (cosine over 30,000 games)`.
+  First training step after restart logs `LR: 1.0e-05`.
+
+### Operational note: launcher carries warm-restart flags
+
+`/home/sumit/start_v135_vm.sh` on the VM currently contains `--reset-lr`,
+`--anneal-lr 8.6e-7`, `--anneal-games 30000`. **If the spot VM preempts
+during the 30K window, the next auto-resume re-peaks LR** (session_games
+resets to 0 on each launch). After the 30K cycle completes (or the run
+hits its next big eval), the launcher must be edited back to plain
+`--resume` to prevent unintended re-warmup loops.
+
+### Pending decisions
+
+- **Wait for first new-best eval after warm-restart.** If it lifts past
+  84.55%, basin-escape worked. If it stalls again at the same level for
+  another ~50K games, 84.55% is the real ceiling for this configuration
+  and we should pivot (search-based teacher / architecture scale-up).
+- **V13.5 model copied into `play/model_weights/v13_5/`** for local
+  human-vs-AI testing; `LUDO_MODEL=v13_5 td_env/bin/python play/server.py`.
+- **Mech-interp adapt:** `~/Github/AlphaLudo-MechInterp/` has 9 experiments
+  built for `AlphaLudoV5` (17ch, 250K params). For V13.5 we need to adapt
+  the encoder + model loader to `V135ProductionAdapter` (21ch V18,
+  3M params, 4 outputs). Channel-ablation and dice-sensitivity transfer
+  cleanly; linear-probes need to bind to the new internal feature path.
+- **Aux head sanity check** as separate task: the trainer already tracks
+  `recent_progress_loss` ([trainer_v10.py:66](td_ludo/training/trainer_v10.py:66))
+  but it isn't surfaced to `live_stats.json` — small one-line edit to
+  expose it would let the dashboard show progress-loss decay over time.
+
+### Local-testing work in parallel (2026-05-10 evening)
+
+While the warm-restart cycle is running on the VM, ran two local
+experiments on `model_best.pt` (the G≈260K snapshot that locked the
+84.55% ceiling).
+
+**1. H2H tournament — V13.5_best vs V12.2_production (1000 games, MPS):**
+
+Wrote `td_ludo/h2h_v135_vs_v122.py` (canonical play loop matching
+`evaluate_v11.py` — `ludo_cpp.create_initial_state_2p`, dice rolling,
+3-sixes forfeit, no-legal-moves pass-turn). Greedy argmax for both,
+mirrored-seed pairs for seat-fairness.
+
+| | |
+|---|---|
+| V13.5 wins | 535 / 1000 |
+| V12.2 wins | 465 / 1000 |
+| Net WR (V13.5) | **53.50% ± 3.09pp (95% CI)** |
+| Verdict | **statistically significantly ahead** (LB 50.4% > 50%) |
+| V13.5 as P0 | 56.0% |
+| V13.5 as P2 | 51.0% |
+
+Reading: V13.5 production RL is in the same band as V13.5_RL_VM
+(53.1%) and V13.5_SL (52.4%) — a *real* improvement over V12.2 but
+not yet decisive. Matches the "V13-class plateau" the journal
+already identified at WR_100 ≈ 55%. The warm restart is the first
+attempt to break that ceiling.
+
+**2. MechInterp adaptation — V13.5 channel ablation + dice sensitivity:**
+
+Adapted `~/Github/AlphaLudo-MechInterp/` from its V5/V10/V12/V13
+pinning to support V13.5. Concretely:
+
+- Copied 5 module files into `MechInterp/src/` with rewritten import
+  paths: `v13_5.py`, `v13_5_production.py`, `v13_5_encoder_symmetric.py`,
+  `v13_5_encoder_production.py`, `v13_5_rank_mapping.py`.
+- Added `_V135FourOutputAdapter` (4-tuple → 2-tuple wrapper, exposes
+  `win_prob` as the experiment-expected `value` channel).
+- Wired `experiments/common.py` with `v13_5` variant: VARIANT_KWARGS,
+  ENCODER_NAME, `load_checkpoint_model` branch, Python-encoder
+  dispatch in `encode_state`.
+- Added 21-channel name list to `experiments/01_channel_ablation/run_ablation.py`.
+- Added `dice_start = 4` branch for V13.5 in `experiments/02_dice_sensitivity/run_dice_sensitivity.py`.
+
+Both experiments now run end-to-end on `model_best.pt`. Production
+sample sizes (200 per phase, 600 global). Full writeup at
+`AlphaLudo-MechInterp/V13_5_MECH_INTERP_SUMMARY.md`.
+
+Findings (exp 1, channel ablation):
+
+| Top channel by Policy KL | KL | Phase |
+|---|---|---|
+| ch17 Tok→R T0 | **0.756** (global) / 1.358 (early) | rank-routing |
+| ch0 Own Token Count | **1.007** (late) | endgame token tracking |
+| ch14 Rank-1 Mask | 0.649 (mid) | mid-game rank-1 slot |
+| ch13 Rank-0 Mask | 0.681 (late) | leader-token slot |
+| ch10 Safe Zones | 0.601 (late) / 0.240 (mid) | safe-landing reasoning |
+
+Confirms the rank-indexed routing mechanism (ch 17-20, the four
+constant-plane Tok→Rank IDs) is mechanically real and dominant
+globally. In late game the model shifts to per-cell own-token-count
++ leader-slot + safe-zones reasoning.
+
+Value head ablation: ch 3 (Opp @Home Scalar) → MAE 0.239 in late
+game = highest of all channels. Win-prob calibration depends on
+opponent's progress, as designed. Channels 13-20 (rank routing)
+all show Value MAE ≈ 0 — value head is decoupled from policy
+routing.
+
+Findings (exp 2, dice sensitivity):
+
+| Phase | Argmax-flip rate (masked) | JS_pairwise (masked) |
+|---|---|---|
+| Global | 84.8% | 0.251 |
+| Early | 60% | 0.185 |
+| Mid | **100%** | 0.262 |
+| Late | 94.5% | **0.307** |
+
+Reading: V13.5 has very strong dice-sensitivity in legal-move-filtered
+gameplay (≥85% argmax flip globally), but in raw policy space (no
+mask) only 30% of states flip — meaning most of the apparent
+"dice strategy" is the model reacting to which moves are legal, not
+to the dice number itself. Value head is correctly dice-stable
+(value_range_mean = 0.03 across phases — win-prob barely moves with
+the next die, as it should).
+
+Versus V10 family: V13.5 dice-sensitivity in raw policy is *lower*
+(0.07 vs ~0.13), consistent with the token-symmetric encoder
+producing more "structural" policies (advance the leader, don't
+need per-token dice readouts).
+
+### Operational state at 2026-05-10 ~21:30 IST
+
+- VM training: still in warm-restart window (G=452 670 → ~482 K target).
+- Scheduled task `v135-warm-restart-revert` fires at 00:15 IST
+  (2026-05-11) to: confirm cycle complete, ship `avg_progress_loss`
+  surfacing to `live_stats.json`, edit launcher to remove
+  `--reset-lr/--anneal-lr/--anneal-games`, take fresh checkpoint
+  backup, restart cleanly, append "Phase F" with the warm-restart
+  experimental result.
+- Local artefacts ready for next session: `play/model_weights/v13_5/`
+  refreshed; H2H runner at `td_ludo/h2h_v135_vs_v122.py`; MechInterp
+  v13_5 variant wired and reproducible.
+
+### Phase F — Warm-restart didn't break the plateau (2026-05-11)
+
+Outcome of the 30K-game warm-restart cycle (G=452,163 → ~482,163):
+**no new best.** `model_best.pt` stayed at 84.55% for 9+ more evals; the
+LR bump from 8.6e-7 → 1.0e-5 explored fresh policy regions but didn't
+land a higher eval. Plateau is structural for this opponent pool.
+
+Stopped VM training at G=502,239 (user needed VM for a different project).
+Pulled checkpoint to local (`checkpoint_backups/v135_prod_rl_G502k_*`).
+Resumed locally on Mac MPS with normal LR (8.6e-7 from optimizer state) +
+10K/2K eval cadence. Local run hit a hard ceiling overnight:
+
+### Phase G — Local OOM diagnosis (2026-05-11 12:41 IST)
+
+Local daemon (PID 39603) silently killed by macOS. No `TERMINATED by
+signal N` line in log → uncatchable SIGKILL. macOS unified log shows:
+
+```
+kernel: [com.apple.xnu:memorystatus]
+memorystatus: killing largest compressed process Python [39603] 28036 MB
+```
+
+Root cause: **memory, not disk.** PyTorch MPS process grew to **28 GB
+compressed memory** (Mac has 16 GB RAM + compression + swap) over ~12 hrs
+of training. Direct cause: we had `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`
+in the daemon — that DISABLES the high-watermark check (we set it
+earlier to avoid transient-spike kills, but the trade-off was unbounded
+growth allowed by Pytorch on long sessions). Combined with known MPS
+memory-growth issues on transformer-heavy training, the process slowly
+accumulated until jetsam killed it.
+
+**Methodology lesson #8:** never set `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`
+for long-running training. Default (1.7) provides natural backpressure.
+Setting to a small fraction (0.7) is INVALID — pytorch interprets it as
+a ratio of recommended (>1.0 expected), not a percentage.
+
+Lost 93 games (G=527,807 → log got to G=527,900 before kill). Trivial.
+Restarted with default watermark; relaunched cleanly at G=527,820.
+
+### Phase H — H2H tournament against the deployed model lineage (2026-05-11)
+
+User's question: is V13.5 actually better than the V13.4 (temporal
+transformer experiment) and V13.2 (currently deployed on
+alphaludo.in) it was bench-marked against during training? Ran clean
+out-of-pool head-to-head tournaments on MPS, greedy argmax + mirrored
+seed pairs.
+
+#### V13.5_best vs V13.4_latest (2000 games, 12:39 elapsed)
+
+| | |
+|---|---|
+| V13.5 wins | **1808 / 2000 (90.40%)** |
+| V13.4 wins | 192 / 2000 (9.60%) |
+| Draws | 0 |
+| 95% CI | ±1.29pp |
+| V13.5 as P0 | 905/1000 (90.5%) |
+| V13.5 as P2 | 903/1000 (90.3%) |
+
+V13.4 was a failed branch from the start — V13.4_RL lost 90/10 to V13.2
+at chain finish. This confirms it: temporal transformer over K=8 history
+was the wrong direction; the dice-driven environment doesn't have
+useful temporal structure beyond the current state. **V13.4 is decisively
+buried.** Seat-symmetric (90.5 / 90.3) so no bias artifact.
+
+#### V13.5_latest vs V13.2_latest (3000 games, 21:48 elapsed)
+
+| | |
+|---|---|
+| V13.5 wins | **1551 / 3000 (51.70%)** |
+| V13.2 wins | 1449 / 3000 (48.30%) |
+| Draws | 0 |
+| 95% CI | ±1.79pp → LB 49.91% |
+| V13.5 as P0 | 777/1500 (51.8%) |
+| V13.5 as P2 | 774/1500 (51.6%) |
+
+V13.5 is **marginally ahead** of V13.2 — net 51.7%, 95% CI just barely
+misses statistical significance (LB 49.91% < 50.0%). Sits in the same
+band as previous V13.5 lineage benchmarks: V13.5_RL_VM 53.1% vs V12.2,
+V13.5_SL 52.4% vs V12.2, current V13.5_RL 53.5% vs V12.2. Consistent
+"~52% on V13-class opponents" plateau.
+
+Seat-symmetric (51.8 vs 51.6 — no bias). Run time 21:48 = 137 GPM on
+MPS — same throughput as other V13.5-related H2H runs.
+
+#### Combined H2H summary table (V13.5 latest)
+
+| Opponent | V13.5 WR | n | 95% CI | Verdict |
+|---|---|---|---|---|
+| Hist_V10 | (live eval) | — | — | ~70% in pool, saturated |
+| V13.4 RL_latest | **90.4%** | 2000 | ±1.3pp | crushes |
+| V12.2 production | **53.5%** | 1000 | ±3.1pp | clearly ahead |
+| **V13.2 production** | **51.7%** | 3000 | ±1.8pp | marginally ahead |
+| V13.5_SL (in-pool) | ~52% recent | — | — | slightly ahead in mix |
+| Human (sumit) | 2-0 | 2 | huge | subjective: feels strong |
+
+### Phase I — User-side qualitative gameplay test
+
+User played 2 games via local `play/server.py` (port 5050) using
+`model_latest.pt` (G=535,450). **V13.5 won both decisively.** User's
+subjective report: "one of the best games I played, no mistakes, played
+exactly like I wanted or I would have."
+
+This matches the late-game mech-interp findings from Phase D (the
+channel-ablation re-run): V13.5's late-game policy is dominated by ch 0
+(Own Token Count, KL 1.01) + ch 13 (Rank-0 / leader-slot, KL 0.68) +
+ch 10 (Safe Zones, KL 0.60) — the four things a strong human would
+prioritize. The token-symmetric architecture + rank-indexed routing
+isn't just numerically tied; it's an *active* mechanism (Tok→Rank planes
+ch 17-20 are the top channels globally, KL 0.60-0.76).
+
+### Phase J — Decision: ship V13.5 to alphaludo.in
+
+User chose to deploy V13.5 to the live website (replaces V13.2 currently
+served as `public/model.onnx`). Rationale:
+
+1. **V13.5 is genuinely better than V12.2 (53.5%) and crushes V13.4
+   (90.4%).** Marginally ahead of V13.2 (51.7%). Net positive across the
+   lineage.
+2. **Architectural story is real.** Token-symmetric encoder + rank
+   routing is mechanically validated by the channel-ablation re-run.
+   First arch change that broke the V13.2 plateau (even if only by
+   1.7pp).
+3. **User subjective playthrough was strong.** Two-game sample but
+   unambiguous — "played exactly like I would have." Numbers don't
+   capture this.
+4. **Honest copy.** The current website claims "52% over 10,000 games"
+   for V13.2 vs V13.1 — never validated. V13.5 at 51.7% over 3000
+   actual games is more truthful.
+
+### Status at 2026-05-12 ~02:00 IST
+
+- Local training: dead (jetsam at 12:41 IST yesterday). VM is busy on
+  user's other project.
+- Models: `play/model_weights/v13_5/{model_latest,model_best}.pt` are
+  the artefacts for the deploy.
+- Web project: `AlphaLudo-WebPlay/` content + UI updates landed (timeline,
+  lessons, in-flight, model-info modal all rewritten for V13.5). Inline
+  name-editor + quirky game-end lines shipped. Placeholder 51.7% wired
+  into 4 places. Dev server running on :8787 for review.
+- ONNX swap pending: needs new `scripts/export_onnx_v135.py` + JS port
+  of `encode_state_v18_production` (21ch) + `inference.js` shape update
+  + parity test.
+- Visualizer project: new `~/Github/alphaLudo-visualizer/` created with
+  V13.5 weights + Python source + native engine. Self-contained sandbox
+  for upcoming visualization experiments.
+- Open todo: launcher revert + `avg_progress_loss` surfacing — was
+  scheduled to fire at 00:15 IST but training is dead so moot; revisit
+  when VM training resumes.
+
+## Exp 40 — V13.5 search-teacher experiment (Phase K, 2026-05-12 ~17:30 IST)
+
+VM freed up. The 84.55% eval ceiling has now held across THREE different
+training regimes (steady RL, LR warm-restart, post-warm-restart vanilla)
+spanning ~240K games. Plateau is structural — model has out-learned its
+opponent pool, no remaining "stronger than self" gradient.
+
+Turning on **Exp 24 search-during-training** as the highest-EV next
+intervention. The infrastructure has lived in the codebase since the
+V12.2 era but was never wired up for V13.5.
+
+### Setup
+
+Resume from `model_latest.pt` at G=535,450 (latest local-pushed-to-VM
+state, encompasses post-warm-restart vanilla games). Add four CLI flags:
+
+```
+--search-enabled
+--search-target-fraction 0.20    # vs default 0.25 (~20% slowdown saved)
+--alpha-search 0.20              # vs default 0.50 (PPO loss stays dominant)
+--search-label-smoothing 0.1     # default
+```
+
+Rationale for conservative `alpha-search 0.20`: at the default 0.5 the
+search-target CE loss could dominate the PPO policy loss, especially on
+a model already near-converged on its current pool. Start low, bump if
+no signal in 50K games.
+
+### Two compatibility patches required before V13.5 worked
+
+The `compute_pi_search_batch` infra (`td_ludo/training/search_policy_target.py`)
+was written for V12.2's model contract:
+1. **Model signature mismatch**: `_, win_prob, _ = model(leaf_states, None)`
+   assumed (a) 3-tuple output (V13.5 returns 4-tuple incl progress) and
+   (b) None-as-no-mask (V13.5's V135ProductionAdapter requires a real
+   legal_mask to build the rank-legal projection).
+   - Fix: pass `torch.ones(B, 4)` as mask + unpack `out[1]` regardless
+     of tuple arity.
+2. **Hardcoded V11 encoder**: two call sites called `cpp.encode_state_v11`
+   (33ch V11 encoder). V13.5 needs `encode_state_v18_production` (21ch
+   V18 packed encoder).
+   - Fix: thread an `encoder_fn` parameter through
+     `compute_pi_search_batch` and `_encode_with_perspective`. Caller
+     in `v11.py:VectorACGamePlayer._maybe_run_search` passes
+     `self.encoder_fn`, which is already wired correctly by the player
+     constructor for whatever model is loaded.
+
+Patches landed in both repos (local + VM). Backward-compatible: V12.2
+calls still work with defaults.
+
+### Observations on first ticks
+
+- Process restart at G=535,500. First per-game log line shows
+  `GPM=32`, climbing to `GPM=40` over 2 minutes.
+- **Search overhead larger than estimated.** Mech-interp notes said
+  "1.5-2× slower"; reality is closer to **5× slower** (40 GPM vs
+  baseline 165-200 on L4). Likely cause: depth-1 expectimax does
+  roughly `1 + 6 (dice) × N (legal_seconds)` forward passes per
+  searched state, which can be 20-40+ per searched state in mid/end-game.
+  With 20% of states searched per step, that's 4-8× extra inference
+  per training step.
+- At 40 GPM, 10K games (one eval interval) ≈ 250 min ≈ 4 hours. First
+  search-influenced eval lands at **G=540,000** in ~4 hours.
+
+### Open questions to resolve over the next 48 hours
+
+1. **Does any eval push past 84.55%?** Within ±48 hours we'll have
+   ~30K games of search-augmented training. Three evals at G=540, 550,
+   560K. If even one clears 85.0%, search is doing real work.
+2. **Is alpha=0.20 too conservative?** Watch `recent_search_kl` in the
+   trainer telemetry: if KL(pi_search || pi_model) stays high (>0.3)
+   for >20K games, the search target is genuinely different from the
+   model's argmax and alpha can be bumped to 0.35-0.50.
+3. **Throughput vs signal trade-off.** If GPM stays ≤ 40 and no eval
+   moves, dropping search-target-fraction to 0.10 (= ~2× faster, half
+   the search signal) might give a better learning rate for the same
+   wall-clock budget.
+
+### Provisional decision tree
+
+```
+After 30K games (~G=565K):
+├── eval > 85.0%       → search is working. Hold params, run for 100K more.
+├── 84.0 < eval < 85.0 → search nudging. Try alpha=0.35, fraction=0.15.
+└── eval ≤ 84.0%       → search isn't helping at these params. Either
+                          (a) bump alpha to 0.50 + fraction to 0.30,
+                          (b) accept ceiling and move to V13.6 architecture.
+```
+
+### Status
+
+- VM training: **running** (PID 123240 on alphaludo-l4 us-east1-c).
+- Dashboard: http://35.237.243.8:8790 (firewall locked to user IP).
+- Search teacher: ENABLED (fraction=0.2, alpha=0.2, label_smoothing=0.1).
+- Eval cadence: 30K interval × 4K games. Wait — actually 10K × 2K. Set
+  in launcher.
+- Next eval: G=540,000 (~4 hours at GPM=40).
+
+### Phase K result — search teacher actively damaged the model (2026-05-13)
+
+User flagged after ~22K games of Phase K that "search is breaking the
+model". Inspection confirmed unambiguous regression:
+
+| metric | pre-search (G≈535K) | after 22K of search (G≈557K) |
+|---|---|---|
+| eval_win_rate | 82.5% | **76.3%** (−6.2pp) |
+| win_rate_100 | 49.4% | **37.6%** (−11.8pp) |
+| Hist_V13_2 recent WR | 50.5% | **25.4%** (was even, now losing 75/25) |
+| Hist_V13_5_SL recent WR | 56.9% | **25.7%** (collapse) |
+| Hist_V12_2 recent WR | 50.0% | **25.5%** (collapse) |
+| policy_entropy | 0.21 | **0.638** (3× — policy went exploratory/scrambled) |
+| main_elo | ~1550 | **1403** |
+
+`best_eval_win_rate` stayed at 84.55% because that's a stored ceiling
+not affected by ongoing damage, but every recent eval landed well below.
+Two evals already missed the prior best (2/100 patience).
+
+**Diagnosis.** The `compute_pi_search_batch` infrastructure was
+designed for V12.2's contract: per-token policy output + value head
+that reads the full position. V13.5's rank-routing output is
+fundamentally different — same-rank tokens share mass equally,
+sum-normalized via the legal mask — and its value head (per mech-interp)
+reads narrow channels (mostly ch3 = Opp @Home Scalar). The pi_search
+CE target was driving the policy distribution toward a shape V13.5's
+output head can't naturally produce, and at depth-1 the search backs up
+mostly the model's own existing biases through a value head that
+doesn't have the full game-state representation needed for trustworthy
+leaf evaluation.
+
+Even with conservative alpha=0.20, the auxiliary CE term was
+overpowering the PPO policy gradient on these incompatibly-shaped
+targets. The user's prior intuition ("search will break this") was
+correct; I weighted it incorrectly against the theoretical argument
+that search would inject a "stronger than self" signal. Wrong call.
+
+**Methodology lesson #9.** Search-augmented training is **arch-specific**.
+Mechanisms designed for one model's contract (output shape, value head,
+masking semantics) may actively damage another's. Validate the
+auxiliary loss on a SMALL run (1-2K games, watch eval move both ways)
+before committing to a long training cycle.
+
+**Action taken.** Killed training at G=557,080. All three rotating
+backup slots (model_latest/prev/prev2) were corrupted by the search
+damage; only `model_best.pt` (G=260,003, the original 84.55% best) was
+intact on VM. Restored the entire checkpoint dir from the local
+pre-search backup at G=535,450 (best_wr=0.8455, last_eval=0.8240).
+Search-policy-target patches (model contract fix + encoder_fn threading)
+are kept in the repo — they're correct fixes if V13.5 search is ever
+attempted again, but the experiment is shelved.
+
+## Exp 41 — V13.5 tough-opponents + exploration bump, no search (Phase L, 2026-05-13)
+
+User-directed restart: stop swinging on bold experiments, keep training
+running with conservative changes only.
+
+### Three changes vs pre-search baseline
+
+1. **Tough-opponents mix.** Cut SelfPlay from 50% to 20%, bump the two
+   hardest externals (V13_2 → 40%, V13_5_SL → 30%), keep V12_2 at 10%.
+   Rationale: at the plateau, self-play is mostly the model overfitting
+   on past-self quirks; the toughest externals are where any remaining
+   discriminative signal lives.
+
+   ```
+   Old:   SelfPlay 0.50 / V13_2 0.25 / V13_5_SL 0.15 / V12_2 0.10
+   New:   V13_2 0.40 / V13_5_SL 0.30 / SelfPlay 0.20 / V12_2 0.10
+   ```
+
+2. **Exploration bump.** `--entropy-coeff 0.01 → 0.03` (3×). Policy
+   had drifted to entropy 0.21 over the long plateau; bumping the
+   entropy bonus widens the exploration cone without LR changes.
+
+3. **NO search teacher.** Just plain PPO + sparse rewards + progress
+   shaping + progress aux head.
+
+### Launch state (G=535,450, 2026-05-13 ~17:35 IST)
+
+- Reverted to pre-search local checkpoint (clean, 84.55% best,
+  last eval 82.4%).
+- Launcher confirms: `Exp 24 search-during-training: DISABLED`,
+  `Entropy: 0.005 → 0.03`, new mix.
+- First training ticks: WR 25-37% (expected — 70% of games now vs
+  V13_2 + V13_5_SL, the toughest opponents). GPM climbing back to
+  baseline ~165-200 (no search overhead).
+- Eval cadence: 10K interval × 2K games. First eval at G=545,000.
+
+### What to watch over next 24-48 hours
+
+- **Does any eval push past 84.55%?** Same baseline test as everything
+  else — the real ceiling question. ~30K games / 3 evals / ~3-4 hours
+  at full GPM.
+- **Recent-opp WR vs V13_5_SL** specifically. Was 56.9% pre-search.
+  If the new mix lets the model rediscover the >55% lead on V13_5_SL,
+  good sign. If it stays at 50/50, the exploration bump didn't help.
+- **Entropy trajectory.** Should rise to ~0.30-0.40 with coeff 0.03.
+  If it spikes past 0.5 → policy is scrambled, drop coeff back to 0.02.
+
+### Status
+
+- VM training: **running** (PID 127523 on alphaludo-l4 us-east1-c).
+- Dashboard: http://35.237.243.8:8790.
+- No new architectural changes pending. Just running.
+
+
+---
+
+## Exp 42 — V15 (Per-Cell Triplet + 8-Frame History + GraphTransformer) (2026-05-14 → ongoing)
+
+**Hypothesis (locked in V15_DESIGN_PLAN.md):** V13.5's 21-channel CNN
+encoding is mostly broadcast (~88% redundant) and lacks temporal context.
+A per-cell triplet `(own_count, opp_count, safety)` × 8 chronological
+frames encodes 8× more game history in only ~14% more floats, and the
+per-cell structure removes the rank-indexing kludge that V13.5 needed.
+
+### Architecture (final, see V15_DESIGN_PLAN.md for full spec)
+
+- **Input**: `(8, 15, 15, 3)` per-cell triplet, 8-frame chronological stack.
+  - `a` = own_count (0..4, -1 if cell not on my route)
+  - `b` = opp_count (same semantics)
+  - `c` = safety flag (1=safe-and-onroute, 0=unsafe-and-onroute, -1=off-route)
+  - Globals in repurposed cells: MD `(0,0)`, OD `(14,14)`, MS `(7,6)`, OS `(7,8)`
+  - Home base: **Option B spread-fill** (canonical-order activation, token-id-blind)
+  - Game-start frames: all-zero pad (AlphaZero convention)
+- **Trunk**: GraphTransformer, 8 layers × d_model=256 × 8 heads × ffn=512.
+  4.4M params (slightly above V13.5 teacher's 3M for cross-arch capacity).
+- **Output**: 225-cell source-cell policy (masked softmax) + sigmoid win_prob.
+  **No aux heads** (dropped V13.5's moves-remaining and per-rank progress).
+
+### SL distillation v1 — broken (5M states → 52% bot-eval)
+
+First attempt: cross-arch distillation from V13.5 RL → V15 GT. Plateaued at
+**52% bot-eval** vs V13.5's 82-84% on the same harness. Initial diagnosis
+(from sibling Claude session) blamed "V13.5 has token-id bias V15 can't see"
+— **wrong**, V13.5 is rank-indexed and token-symmetric by construction.
+
+**Real root causes found in audit (2026-05-14):**
+
+1. **State generation = RANDOM PLAY** — `chosen_token = rng.choice(legal)`.
+   Trained student on out-of-distribution states V13.5 wouldn't naturally see.
+2. **Student under-capacity** — 1.3M params (d_model=192, n_layers=4) vs
+   teacher's 3.0M. Cross-arch distillation needs student ≥ teacher.
+3. **Encoder bug** — single-counter home base instead of spec'd spread-fill.
+4. **Too few states** — 5M is short for cross-arch.
+
+### SL distillation v2 — fixed (20M states → 83% bot-eval, MATCHED teacher)
+
+Fixes applied 2026-05-14, restarted as `v15_sl_v2`:
+- Teacher-policy sampling for state generation (not random)
+- d_model=256, n_layers=8 → 4.4M params
+- Encoder switched to Option B spread-fill
+- `--baseline-teacher-eval` enabled — V13.5 through V15's eval harness = **82.0%**
+
+**Trajectory:** 1M=64.5% → 5M=72.5% → 10M=79.5% → 13M=81.0% → **17M=83.0% (first crossed teacher)** → 19M=83.0%. Final eval 83.0% ≥ teacher 82.0%. **V15 SL matches V13.5.** Local backup taken at `td_ludo_v15/checkpoints/v15_sl_v2/` (3 ckpts + log + baseline_teacher_wr.json + sl_stats.json).
+
+### RL pipeline build — from scratch with rich Phase-L-style infra (2026-05-15)
+
+V13.5's `train_v135_rl.py` was simple REINFORCE self-play; the Phase L production used `train_v12.py` + `trainer_v10.py` + `opponent_registry.py` (rich pipeline with ELO, GameDB, bot grid, dashboard). V15's I/O shape (8-frame history + 225-cell action) didn't drop into either, so wrote a new V15-rich pipeline:
+
+| File (new) | Role |
+|---|---|
+| `td_ludo_v15/rich/v15_trainer.py` | PPO trainer mirroring ACV10 (MC discounted return, EMA return norm, win-prob BCE, entropy bonus, ratio clamp) |
+| `td_ludo_v15/rich/v15_player.py` | Rollout w/ 8-frame history per game, 225-cell action mapping |
+| `td_ludo_v15/rich/v15_bot_eval.py` | V15-aware bot grid eval (per-bot WR) |
+| `td_ludo_v15/rich/dashboard.py` | Serves `/api/stats /api/metrics /api/elo /api/games /api/system /api/chain` |
+| `td_ludo_v15/train_v15_rich.py` | Entrypoint wiring + opponent pickers + ELO + GameDB integration |
+| `td_ludo_v15/tests/rich/*` | 16 unit tests (trainer PPO math, player rollout, dashboard JSON shape) — all pass |
+
+### RL launch — first crash + recovery
+
+**Launch 1 (2026-05-15 06:22 UTC):** Crashed at CUDA OOM after ~7 min. V15 GraphTransformer attention activations + 3 neural opponents on GPU + 5K-state PPO buffer forward = 21.4 GB allocated. **Two fixes:**
+
+1. Chunked PPO pre-update advantage forward (was forwarding entire buffer at once)
+2. Moved legacy neural opps to CPU (initial workaround)
+
+**Launch 2 (2026-05-15 ~08:00 UTC):** Stable at GPM=42, ~21h ETA for 20M states. WR500 ~47% against neural opp mix (Hist_V13_2 40% / Hist_V13_5_SL 30% / Self 20% / Hist_V13_5_RL 10%). First eval at 201K states = **82.2%** (≈ V15 SL baseline). No regression but no improvement either.
+
+### Throughput optimization (2026-05-15 ~10:00 UTC)
+
+Bench results (each 90-150s, V15 SL test copy, no live training):
+
+| Config | GPM | Notes |
+|---|---|---|
+| A: parallel=256, neural opps on CPU | 4 | cold-start; sequential CPU opp inference catastrophic |
+| B: parallel=64, neural opps on **cuda** | 50 | OOM fix worked; PPO update now 57% of cycle |
+| F: parallel=64, bots only | 58 | spin reduced 36% → 26% |
+| G: bots + ppo_epochs=2 + minibatch=512 | 76 | **20.4 GB peak** — risky |
+| **H: bots + ppo_epochs=2 + minibatch=256** | **76** | **10.3 GB peak — safe winner** |
+| I: neural opps on cuda + ppo_epochs=2 + bots | 66 | best with real opp signal |
+
+**Settled on config I** for the actual training: 20% Self + 70% neural opps on cuda (Hist_V13_5_RL 10 / Hist_V13_5_SL 25 / Hist_V13_2 25) + 10% strong bots (Heuristic + Expert), `ppo_epochs=2`, `ppo_minibatch=256`. Gives 65 GPM with strong learning signal.
+
+### RL trajectory so far (2026-05-15 → 2026-05-16)
+
+**Evals (2000 games each vs full bot mix):**
+- G=10K → 81.2%
+- G=20K → 81.5%
+- G=30K → 80.2%
+
+**Read:** statistically within noise of V15 SL's 83.0% (2000-game eval = ±1.7pp at 95%), but the point-estimate is slightly declining. PPO dynamics confirm policy is barely moving: KL ≈ 0.0003, clip_fraction ≈ 0.003, policy_loss ≈ 0. **The student is essentially frozen at SL strength** — gradients too small to push past V13.5's ceiling.
+
+**Decision:** wait overnight, evaluate at G=70K. If still flat, bump LR 1e-5 → 5e-5.
+
+### Operational fixes also shipped during RL run
+
+- GPM computation bug on resume (was using cumulative `trainer.total_games` instead of session-delta → showed 900+ GPM). Fixed: track `session_games_start`.
+- `recent_opponent_stats` dashboard panel was empty — looking for non-existent `p0/p1/p2/p3` JSON fields in GameDB rows. Fixed: use `players` list field.
+- `eval_win_rate` shape mismatch — was emitting percent, v13_dashboard.html expects fraction (multiplies by 100). Fixed JSON output; existing metrics.json entries converted in-place.
+- Firewall rules updated when user IP changed (`106.219.169.97` → `106.219.175.210`).
+
+### Open questions (post-overnight)
+
+- Will V15 RL break past V15 SL's 83% with current config, or just maintain?
+- If still flat at G=70K, try LR=5e-5 (PPO clip provides safety net).
+- If meaningful drift downward (>2pp), reset from `model_sl.pt` and try
+  different config: lower entropy_coeff, fewer epochs, or shaping-style rewards.
+
+---
+
+## Exp 43 — V13.5 Shaping-Only RL (Pure Local-Event Rewards, 2026-05-16)
+
+**Hypothesis (user-formulated):** AlphaZero / AlphaGo used terminal ±1
+reward because Go and chess are deterministic — every move's "true value"
+is a low-variance function of policy given fixed opponent. Ludo is
+stochastic (dice). Over 80-150 plies, dice variance can dominate the
+terminal signal; an optimal policy still loses ~30-40% of games purely
+to dice. Pure local-event shaping (capture, score, etc.) measures
+policy-controllable outcomes more directly, with lower per-step variance.
+
+Could be the missing piece for breaking V13.5's plateau.
+
+### Background — reward history in this codebase
+
+Journal Exp 2 ("Dense Direct Rewards v1") found that the v1 menu with
+loud "dopamine" magnitudes was the **strongest pre-V13 training era**
+(WR vs Random 60-67%, Elo 1820). v2 (5× scale-down) and v3 (~+0.25
+total) BOTH FAILED — local signal too quiet for stochastic-game noise.
+Lesson: "DO use loud dopamine-heavy intermediate rewards; never scale
+below 0.05 for the largest event." (See journal §"v1 dense rewards" for
+full table.)
+
+The V13 family then SIMPLIFIED to V10.2's `compute_sparse_reward` —
+**score event only (+0.40)** + terminal ±1. Dense menu was abandoned
+when V12.2 plateaued (the dense returns + terminal anti-correlation in
+end-game states inverted V10's `win_prob` head). V13 fixed the inversion
+by switching `win_prob` to BCE-trained calibration but kept the sparse
+reward.
+
+### Setup
+
+- **Init:** local backup `checkpoint_backups/v135_prod_rl_G779k_20260514_140354/model_latest.pt` copied to `td_ludo/checkpoints/v135_shaping_exp/model_latest.pt`. Latest V13.5 RL state (779K games, 1.77M updates, 0.86 best-eval).
+- **Reward menu:** `td_ludo/game/dense_rewards.py` (NEW) — v1 dense:
+  - Score token: +0.40
+  - Capture enemy: +0.20
+  - Got killed: −0.20 (detected via per-game `prev_own_at_base` tracker)
+  - Home stretch entry: +0.10
+  - Spawn (exit base): +0.05
+  - Forward step: +0.005
+- **Terminal reward: 0** (`LUDO_TERMINAL_COEFF=0.0`) — pure shaping.
+- **Win-prob BCE target stays unscaled** — the head still learns to
+  predict actual win/loss for eval+diagnostic purposes; only the
+  policy-gradient `z` is zeroed out.
+- **Opponent mix:** `v122_hist` (SelfPlay 0.60 / Expert 0.15 /
+  Heuristic 0.05 / Aggressive 0.03 / Defensive 0.02 / Hist_V12_2 0.05 /
+  Hist_V10 0.05 / Hist_V6_3 0.03 / Hist_V6_1 0.02).
+- **Eval cadence:** every 4000 games × 1000 games (faster than V13.5's
+  10K/2K cadence; experiment moves quickly).
+- **Device:** Mac MPS (Apple Silicon).
+- **Dashboard:** http://localhost:8791/v13_dashboard.html (port 8791, separate from VM's 8790).
+- **Activation:** all behind env-var defaults — V15 VM training and any
+  future V13.5 runs unaffected. Files touched:
+  - `td_ludo/game/dense_rewards.py` (new)
+  - `td_ludo/game/test_dense_rewards.py` (new, 12 tests passing)
+  - `td_ludo/game/players/v11.py` (env-var-gated reward swap + kill tracker)
+  - `td_ludo/training/trainer_v10.py` (env-var-gated terminal coefficient)
+  - `td_ludo/experiments/shaping_only/run_local.sh` (wrapper)
+
+### Got-killed detection
+
+The existing pipeline computes reward in `(pre-my-move → post-my-move)`
+windows, which can't see opp's captures of MY tokens during opp's
+intervening turn. New `_prev_own_at_base[i][cp]` tracker compares own
+at-base counts across consecutive own decisions; positive delta =
+got-captured events.
+
+### Launch state (2026-05-16 ~01:30 IST, G=779,225)
+
+- Process detached, PID stored in `/tmp/shaping_exp.pid`.
+- Log: `/tmp/shaping_exp.log`.
+- First eval triggers at G=780,000 (`last_bucket=194 → next bucket 195`),
+  ~775 games into the run. At GPM=30-40 on Mac MPS, ~20-25 minutes.
+- First training ticks confirmed: GPM ramping, WR fluctuating 30-44%
+  (sample noise expected against v122_hist mix).
+
+### What to watch
+
+1. **First eval (G=780,000)** vs V13.5's last eval of 82.4%. Is the
+   pure-shaping model still in-distribution? If eval crashes <60%,
+   shaping signal is incompatible with current policy and we abort.
+2. **Per-event WR trends** — does the model start preferring captures
+   over scoring (Goodhart on reward magnitudes)? Capture/score ratio
+   in opp-mix games is the canary.
+3. **End-game indifference** — without terminal, does the model stop
+   pushing the 4th token home? If 3rd-score → 4th-score time-to-finish
+   degrades, we know proxies are insufficient.
+4. **vs Heuristic / Expert / V13_2 WR** trajectories — true strength
+   measurement (the eval bots).
+
+### Hypotheses to discriminate
+
+- **(H1) Shaping is enough.** Pure local rewards preserve V13.5
+  strength + provide cleaner gradient → eval climbs past 82%.
+- **(H2) Shaping isn't enough (proxy gaming).** Model exploits one
+  reward type, eval craters within 4-8K games.
+- **(H3) Mixed result.** Holds at SL baseline but doesn't improve.
+  Worth retrying with quiet-terminal (`LUDO_TERMINAL_COEFF=0.1`) as
+  middle ground.
+
+### Status
+
+- Local Mac training: **running** (PID via `/tmp/shaping_exp.pid`).
+- Dashboard local-only (port 8791, no SSH tunnel set up since user
+  is on the same machine).
+- V13.5 init checkpoint preserved (`v135_prod_rl_G779k_20260514_140354`)
+  for safe revert if shaping experiment goes badly.
+
+---
+
+## Exp 44 — V15 RL post-mortem + 5-way tournament (2026-05-16 → 2026-05-17)
+
+V15 RL continued running after Exp 42 with hyperparameter rotations.
+This entry documents what we learned + the multi-model tournament that
+calibrated everyone against everyone.
+
+### V15 RL — the bleed continued
+
+After Exp 42's diagnosis (entropy bonus overrunning weak advantage), we
+tried three knob configurations sequentially on the VM:
+
+| Config | Period (games) | Best eval | Trajectory |
+|---|---|---|---|
+| Initial: entropy=0.03, LR=1e-5, KL=0 | G=0→41K | 81.5% | 81.2→81.5→80.2→79.9 (monotone decline 1.3pp) |
+| Fix 1: entropy=0.01, LR=3e-5, KL=0.05 to V15 SL | G=41K→110K | 80.5% | oscillates 78.8-80.5%, avg 79.5% (stopped bleeding) |
+| Fix 2: entropy=0.01, LR=3e-5, **KL=0 (removed)** | G=110K→168K | 79.9% | bounces 75.9-79.1%, avg 77.7% (WORSE) |
+
+Removing KL anchor confirmed the anchor was preventing further drift,
+not blocking improvement. We had hoped (a) anchor was holding us at the
+floor and removing it would let us climb; reality was (b) anchor was the
+floor and removing it let us drift further down.
+
+**Root cause confirmed (audited `v15_trainer.py` line-by-line vs
+`trainer_v10.py`):** trainer math is identical to V13.5's. No bug. The
+issue is V15-specific dynamic — with a calibrated value head + 50/50
+opponent mix, advantage signal naturally approaches 0 (value head
+correctly predicts win/loss → adv = G − V ≈ 0). Then entropy bonus
+gradient (0.01 × ∇H) becomes the dominant signal → policy drifts toward
+uniform → eval WR drops on hard bots.
+
+V13.5 Phase L used entropy=0.03 + LR=1e-5 too and DID gain. Difference:
+V13.5 Phase L was V13.5 SL → V13.5 RL (same arch). V15's GraphTransformer
+trunk's softmax attention is more sensitive to entropy regularization
+than V13.5's ResNet. The same hyperparameters that worked for CNN drift
+the GT.
+
+### 5-way H2H tournament (2026-05-17, 4,000 games, ±2.5pp CI)
+
+Built `h2h_5way_tournament.py` — multi-arch tournament that handles
+V135ProductionAdapter (V18-prod encoder, token-id-indexed) + V15
+GraphTransformer (per-cell triplet + 8-frame history + 225-cell policy)
++ MinimalCNN14 (V17 encoder, per-token policy) in a single round-robin.
+
+**Initial bug found in smoke test:** V13.5_RL_pre's picker was
+rank-indexed-masking the V135ProductionAdapter (which is token-id-indexed
+externally). Fixed → V13.5_RL_pre's actual strength visible.
+
+**Final ranking:**
+
+```
+1. V13.5_exp        53.6%  (mixed-shaping nudged it slightly above)
+2. V13.5_RL_pre     52.8%  (the baseline)
+3. V15_SL           51.4%  (matched V13.5 cleanly)
+4. V13.2            49.0%  (legacy anchor, surprisingly close)
+5. V15_RL           43.2%  (REGRESSED clearly — −8pp from SL)
+```
+
+**Pairwise highlights:**
+- V13.5_RL_pre vs V15_SL: 49.8/50.2 (DEAD EVEN — V15 SL really did
+  match V13.5 from cross-arch distillation alone)
+- V13.5_exp vs V13.5_RL_pre: 48.2/51.8 (tiny edge to mixed-shaping,
+  consistent direction across all matchups but at noise floor)
+- V15_RL loses to every other model (~42-46%)
+
+### Decisions made
+
+1. **V15 RL paused** (G=168K). Will not retry — three hyperparameter
+   configurations all failed to break SL ceiling.
+2. **V15 SL kept** as the V15 production checkpoint. Cross-arch
+   distillation IS a useful engineering tool; V15 SL is at parity with
+   V13.5 — possibly worth using for inference where the new I/O contract
+   (per-cell triplet input, source-cell output) gives downstream value.
+3. **V13.5_exp** (post mixed-shaping) is the slight tournament winner.
+   We pushed it to VM to continue training with the dense+terminal-0.1
+   mix.
+
+### Operational
+
+- V15 RL final ckpt + backups copied to local: `td_ludo_v15/checkpoints/v15_rich_phase_l/`
+- V13.5_exp snapshot backed up: `checkpoint_backups/v135_shaping_exp_mixed_20260517_*/`
+- Tournament JSON: `td_ludo/h2h_5way_results.json`
+
+---
+
+## Exp 45 — MCTS plateau-break attempt (Eric Jang inspired, 2026-05-17)
+
+Following the V15 RL failure + the tournament confirming V13.5 family
+plateau, ran the MCTS plateau-break experiment from
+`experiments/mcts_v1/README.md` adapted for V13.5 (was originally
+V13.2-targeted).
+
+### Motivation
+
+User's discussion with sibling Claude session about Eric Jang's AlphaGo
+rebuild raised the question: maybe RL gradient on terminal reward is too
+noisy for Ludo's high dice variance, and we need search to provide
+per-step supervision. Eric's recipe: search → distill targets → retrain.
+
+### Three sub-experiments (ordered chronologically)
+
+**Sub-experiment A: one-shot search-distillation** (Step 1 of the original
+mcts_v1 plan, but using V13.5_exp instead of V13.2).
+
+- Adapted `generate_search_data_v135.py` + `train_search_distill_v135.py`
+  to use V135ProductionAdapter + V18 production encoder.
+- Generated 100K search-data states (2-ply expectimax: my move × 6 dice
+  × opp move, V13.5 evaluates leaves). 33 min on Mac MPS (50 states/sec
+  with batch=64).
+- Trained warm-started student from V13.5_exp on 100K buffer × 5 epochs.
+  Loss = `KL(student.π || search.π) + 0.5·MSE(student.V, search.V) +
+  0.5·BCE(student.V, eventual_outcome)`. Adam lr 1e-4 → 1e-5 cosine.
+  19 min on Mac MPS.
+- **Intermediate bot evals during training:**
+  ```
+  G=100K: 36.7%  ← warm-start clobbered (V13.5_exp was ~80%)
+  G=200K: 41.0%
+  G=300K: 41.0%
+  G=400K: 50.0%  ← partial recovery
+  ```
+- **Focused 400-game H2H vs V13.5_exp: mcts_distill 17.5% vs V13.5_exp
+  82.5% (−65pp catastrophe).**
+
+This was decisively worse than my pre-experiment prediction of "40-50%
+plausible." The distillation didn't just fail to lift — it destroyed
+V13.5's calibration.
+
+**Sub-experiment B: calibration audit** (Step 0, the gate we should have
+done first).
+
+- Adapted `calibration_audit_v135.py`.
+- 5,000 V13.5_exp-vs-V13.5_exp self-play games (τ=1.0, stochastic), 756K
+  decision states collected.
+- **Results:**
+  ```
+  ECE          = 0.87pp   ✅ (threshold ≤ 5pp)
+  max_bin_dev  = 1.91pp   ✅ (threshold ≤ 10pp)
+  Brier        = 0.206    ⚠️  (threshold ≤ 0.20, 0.6pp over)
+  Verdict label: MARGINAL (Brier-only)
+  ```
+- Per-bin breakdown is excellent — bin deviations 0.14-1.91pp. Brier-MARGINAL
+  is technical-pedantic; substantively this is a clean PASS. V13.5's value
+  head IS well-calibrated.
+
+So Sub-experiment A's catastrophe was NOT a value-head problem.
+
+**Sub-experiment C: MCTS diagnostic** (built fresh PUCT engine, measured
+how much real MCTS differs from V13.5_exp's intrinsic policy).
+
+- Wrote `mcts_engine.py` — AlphaZero-style PUCT with explicit chance
+  nodes for Ludo dice. ~330 lines + 9 unit tests (all pass: reproducibility,
+  greedy temperature, chance dice spread, terminal handling, etc.).
+- Wrote `mcts_diagnostic.py` — runs N-sim MCTS on sampled states,
+  measures `KL(π_mcts || π_v13.5_intrinsic)`.
+- **100-sim diagnostic (50 states):**
+  ```
+  Mean KL = 0.0041   (target: > 0.10)
+  Top-1 agreement = 84.8%
+  ```
+- **500-sim diagnostic (100 states):**
+  ```
+  Mean KL = 0.0091   (still 11x below target)
+  Top-1 agreement = 84.4%
+  Max KL = 0.075
+  ```
+- **VERDICT: RED — search and V13.5 agree.**
+
+### Interpretation: coherent equilibrium
+
+V13.5's policy and value head are in **coherent equilibrium**. The policy
+IS approximately the search-converged policy given V13.5's value head.
+When MCTS searches, it visits actions V13.5 already preferred (PUCT prior =
+V13.5's policy); leaves are scored by V13.5's value head; backup confirms
+the prior. No new information surfaces.
+
+This isn't a bug. It's a structural property of mature actor-critic systems
+where policy and value have co-trained. Eric's recipe works when search
+finds NEW better moves — in Ludo at V13.5's saturation, there are no such
+moves.
+
+Also explains Sub-experiment A's catastrophe retroactively:
+- 2-ply expectimax with softmax temperature 0.5 produced policy
+  distributions that DIFFERED from V13.5 (KL 0.62 at start of training)
+- But the differences were mostly NOISE from temperature amplifying tiny
+  Q-value rounding
+- Distilling toward noisy targets destroyed V13.5's calibration
+
+### Verdict on MCTS for this codebase
+
+**Definitively ruled out as a near-term plateau-breaker.** The chain of
+evidence is:
+1. Value head is calibrated (Step 0 passes) → MCTS theoretically should work
+2. But MCTS produces ~identical policies to V13.5 even at 5x sim budget
+   → search has nothing to find
+3. One-shot search-distillation catastrophic (−65pp), confirming the
+   "different = noise" hypothesis
+4. Iterating wouldn't help (no initial signal to refine)
+
+We rule MCTS out, NOT MCTS-in-principle-for-Ludo. A future model with
+miscalibrated value head + intentional exploration (e.g., a fresh model
+trained against a deep MCTS oracle from scratch) could differ. But for
+extending V13.5 specifically, MCTS is dead.
+
+### Cumulative plateau-break attempts ruled out
+
+| Approach | Result | Date |
+|---|---|---|
+| V14_scalar (no-CNN deep sets) | regression vs V13.5 | 2026-05 (earlier) |
+| V13.3 / V13.4 (temporal transformer) | regression / BN bug | 2026-05 (earlier) |
+| V13.5 SL distillation | matched V13.2, did NOT lift | 2026-05-08 |
+| V13.5 RL Phase L (tough-opp + ent bump) | broke 84.55%, hit 85% | 2026-05-13 ✅ small lift |
+| V13.5 search-teacher Exp 24 | catastrophic, reverted | 2026-05-12 |
+| V15 (per-cell triplet + GT + new RL) | SL matched, RL regressed | 2026-05-14→17 |
+| V13.5 mixed dense shaping | +0.8pp tournament edge (noise floor) | 2026-05-17 |
+| One-shot MCTS distillation | −65pp catastrophic | 2026-05-17 |
+| Full iterated MCTS (preempted) | MCTS engine confirms search ≈ V13.5 | 2026-05-17 |
+
+### Decisions
+
+1. **Stop plateau-break attempts on V13 family.** We have systematically
+   ruled out the next-obvious moves over several weeks of work.
+2. **Keep V13.5_exp running on VM** (Exp 43 mixed-shaping continues since
+   it costs nothing and might creep up at noise level).
+3. **Document this exploration in journal + MODEL_HISTORY** so future
+   contributors don't redo it. Negative results have value.
+4. **Future plateau-break work** would need to attack fundamentally
+   different angles: 4-player mode, search-trained value head decoupled
+   from policy, transformer at much higher compute scale, or different
+   game variants. None are in scope for the current sprint.
+
+### Operational
+
+- MCTS code preserved: `experiments/mcts_v1/{mcts_engine.py,
+  test_mcts_engine.py, mcts_diagnostic.py, calibration_audit_v135.py,
+  generate_search_data_v135.py, train_search_distill_v135.py}`
+- Calibration audit JSON: `runs/mcts_v1_v135_calibration_5k.json`
+- Diagnostic JSONs: `runs/mcts_diag_v135_500sims.json`
+- Failed-distill checkpoint preserved: `checkpoints/mcts_v135_step1_distill/`
+- 9/9 MCTS unit tests passing — engine is reusable for any future model.

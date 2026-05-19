@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Aggressive",
+      "Distill14_v2"
+    ],
+    "elapsed_min": 1.42,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Aggressive",
+      "b": "Distill14_v2",
+      "n_games": 500,
+      "a_wins": 122,
+      "b_wins": 378,
+      "draws": 0,
+      "a_wr_pct": 24.4,
+      "b_wr_pct": 75.6,
+      "avg_length": 163.616,
+      "seat_a_p0": [
+        60,
+        250
+      ],
+      "seat_a_p2": [
+        62,
+        250
+      ],
+      "pair": [
+        "Aggressive",
+        "Distill14_v2"
+      ]
+    }
+  ]
+}

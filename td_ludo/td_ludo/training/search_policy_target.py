@@ -69,16 +69,21 @@ class _OppQuery:
     root_player: int
 
 
-def _encode_with_perspective(state, root_player: int) -> np.ndarray:
+def _encode_with_perspective(state, root_player: int, encoder_fn=None) -> np.ndarray:
     """Encode `state` as if `root_player` is the current player.
 
-    The V11 encoder uses state.current_player to decide which channels are
+    The encoder uses state.current_player to decide which channels are
     "own" vs opponent. We temporarily override to root_player so the
     win_prob output corresponds to P(root_player wins).
+
+    encoder_fn defaults to V11 (V12.2 family) for backward compat; pass
+    encode_state_v18_production for V13.5 etc.
     """
+    if encoder_fn is None:
+        encoder_fn = cpp.encode_state_v11
     saved = state.current_player
     state.current_player = root_player
-    enc = cpp.encode_state_v11(state).copy()
+    enc = np.asarray(encoder_fn(state)).copy()
     state.current_player = saved
     return enc
 
@@ -96,6 +101,7 @@ def compute_pi_search_batch(
     model,
     device,
     label_smoothing: float = 0.1,
+    encoder_fn=None,
 ):
     """Compute depth-1 expectimax search policy targets for a batch of games.
 
@@ -240,8 +246,9 @@ def compute_pi_search_batch(
 
     # ── Phase 2: resolve opponent-policy queries with one batched forward.
     if opp_queries:
+        _enc_fn = encoder_fn if encoder_fn is not None else cpp.encode_state_v11
         opp_states = np.stack([
-            cpp.encode_state_v11(q.s_prime) for q in opp_queries
+            np.asarray(_enc_fn(q.s_prime)) for q in opp_queries
         ])
         opp_masks = np.stack([
             _make_legal_mask(q.legal_seconds) for q in opp_queries
@@ -269,13 +276,21 @@ def compute_pi_search_batch(
     leaf_values: np.ndarray
     if leaf_specs:
         leaf_states = np.stack([
-            _encode_with_perspective(spec.leaf_state, spec.root_player)
+            _encode_with_perspective(spec.leaf_state, spec.root_player, encoder_fn)
             for spec in leaf_specs
         ])
         leaf_states_t = torch.from_numpy(leaf_states).to(device, dtype=torch.float32)
-        # No legal_mask needed for value-only forward; pass None.
+        # Value-only forward — we only need win_prob, but V13.5 returns a
+        # 4-tuple (policy, win_prob, moves, progress) and its
+        # V135ProductionAdapter requires a non-None legal_mask. Pass an
+        # all-ones mask (size 4) and accept the 3-tuple or 4-tuple shape
+        # transparently. Models that don't need the mask ignore it.
+        B = leaf_states_t.size(0)
+        dummy_mask = torch.ones(B, 4, dtype=torch.float32, device=device)
         with torch.no_grad():
-            _, win_prob, _ = model(leaf_states_t, None)
+            out = model(leaf_states_t, dummy_mask)
+        # out is (policy, win_prob, moves[, progress]) — index 1 is win_prob
+        win_prob = out[1]
         leaf_values = win_prob.detach().cpu().numpy().astype(np.float64)
     else:
         leaf_values = np.zeros(0, dtype=np.float64)

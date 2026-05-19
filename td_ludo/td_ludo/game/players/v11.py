@@ -16,6 +16,14 @@ import torch
 import torch.nn.functional as F
 import td_ludo_cpp as ludo_cpp
 
+# Progress-score helpers — used for reward shaping and the V13.5 progress
+# aux head's per-rank target. Both are no-ops when the corresponding
+# coefficient (shaping_coeff / progress_target_enabled) is zero/false.
+from td_ludo.game.progress_score import (
+    progress_score, total_progress_for_player,
+)
+from td_ludo.game.rank_mapping import state_to_rank_mapping, MAX_RANK_SLOTS
+
 from src.heuristic_bot import (
     HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
     ExpertBot,
@@ -57,6 +65,23 @@ else:
     compute_bias_penalties = None  # type: ignore
 
 
+# Reward-menu swap. When LUDO_REWARD_MENU=v1_dense is set in the env, the
+# trainer uses the v1 dense rewards from `td_ludo.game.dense_rewards`
+# (spawn / forward / home_stretch / score / capture / got_killed) instead
+# of the V10.2 sparse single-event reward. Designed for the
+# pure-shaping experiment (paired with LUDO_TERMINAL_COEFF=0.0 in trainer).
+# Default off → any in-flight training is unaffected.
+_DENSE_REWARDS_ENABLED = os.environ.get('LUDO_REWARD_MENU', '').lower() == 'v1_dense'
+if _DENSE_REWARDS_ENABLED:
+    from td_ludo.game.dense_rewards import (
+        compute_dense_reward_v1, compute_kill_penalty, BASE_POS as _BASE_POS,
+    )
+else:
+    compute_dense_reward_v1 = None  # type: ignore
+    compute_kill_penalty = None  # type: ignore
+    _BASE_POS = -1
+
+
 BOT_CLASSES = {
     'Heuristic': HeuristicLudoBot,
     'Aggressive': AggressiveBot,
@@ -74,7 +99,9 @@ class VectorACGamePlayer:
                  search_enabled=False, search_target_fraction=0.25,
                  search_label_smoothing=0.1,
                  historical_opponents_enabled=False,
-                 encoder_fn=None):
+                 encoder_fn=None,
+                 shaping_coeff=0.0,
+                 progress_target_enabled=False):
         # encoder_fn: ludo_cpp.encode_state_* callable for the main model's
         # input. Defaults to encode_state_v11 (33ch) for V11/V12 family;
         # V13 (MinimalCNN14) passes encode_state_v14_minimal (14ch).
@@ -102,6 +129,21 @@ class VectorACGamePlayer:
         # student architecture.
         self.encoder_fn = encoder_fn if encoder_fn is not None else ludo_cpp.encode_state_v11
 
+        # Reward shaping (potential-based on per-token progress score).
+        # When > 0, each step's step_reward gets an additive
+        # shaping_coeff * (ΔΦ_own - ΔΦ_opp) bonus, where Φ_p = Σ S(pos_i)
+        # over a player's tokens with S the non-linear progress curve from
+        # td_ludo.game.progress_score. Potential-based shaping is policy-
+        # invariant in expectation but provides much denser per-step signal
+        # than the +1/-1 terminal reward alone.
+        # When 0 (default), step_reward retains its original sparse semantics.
+        self.shaping_coeff = float(shaping_coeff)
+        # Whether to compute and store per-rank progress_target on each step
+        # for the V13.5 progress aux head. Cheap (~5 µs per state) so default
+        # ON whenever the trainer accepts it; safe to leave on for non-V13.5
+        # since the trainer simply ignores the extra field.
+        self.progress_target_enabled = bool(progress_target_enabled)
+
         # Phase 2: historical opponent registry. Lazy-loads prior-generation
         # V-model checkpoints (V6.3 / V10 / V11 / V12) and routes Hist_*
         # controller turns through them with the right encoder per arch.
@@ -114,6 +156,18 @@ class VectorACGamePlayer:
             self.opp_registry = OpponentRegistry(device=device)
         else:
             self.opp_registry = None
+
+        # Got-killed kill tracker for v1 dense rewards. Tracks per-game,
+        # per-player the own-at-base count "as of cp's last own decision"
+        # so we can detect captures by opp during opp's intervening turn.
+        # None entry = no prior baseline (first decision for that cp).
+        # Only allocated when LUDO_REWARD_MENU=v1_dense; otherwise unused.
+        if _DENSE_REWARDS_ENABLED:
+            self._prev_own_at_base = [
+                [None] * 4 for _ in range(batch_size)
+            ]
+        else:
+            self._prev_own_at_base = None
 
         two_player = (NUM_ACTIVE_PLAYERS == 2)
         self.env = ludo_cpp.VectorGameState(batch_size, two_player)
@@ -401,6 +455,25 @@ class VectorACGamePlayer:
 
                     if cp not in self.trajectories[idx]:
                         self.trajectories[idx][cp] = []
+
+                    # Per-rank progress target for V13.5's progress aux head.
+                    # 4-element float32 array: progress[k] = S(pos) for any
+                    # token at canonical rank k, 0 for unused rank slots.
+                    # The corresponding rank_valid_mask (1 where valid, 0
+                    # where unused) lets the aux loss skip unused slots.
+                    progress_target = np.zeros(MAX_RANK_SLOTS, dtype=np.float32)
+                    progress_valid = np.zeros(MAX_RANK_SLOTS, dtype=np.float32)
+                    if self.progress_target_enabled:
+                        game_for_target = self.env.get_game(idx)
+                        rank_positions, _ = state_to_rank_mapping(
+                            game_for_target.player_positions[cp]
+                        )
+                        for r, pos in enumerate(rank_positions):
+                            if r >= MAX_RANK_SLOTS:
+                                break
+                            progress_target[r] = progress_score(int(pos))
+                            progress_valid[r] = 1.0
+
                     self.trajectories[idx][cp].append({
                         'state': batch_states[j],
                         'action': action,
@@ -408,6 +481,8 @@ class VectorACGamePlayer:
                         'old_log_prob': float(old_lp_np[j]),
                         'temperature': float(sample_temperature),
                         'pi_search': None,  # filled by _maybe_run_search below
+                        'progress_target': progress_target,
+                        'progress_valid': progress_valid,
                     })
 
         # Phase 2: historical opponent resolution. Each Hist_* tag has its
@@ -502,7 +577,29 @@ class VectorACGamePlayer:
                 dummy_old = DummyState(pre_step_states[i], pre_step_scores[i], pre_step_active[i])
                 dummy_new = DummyState(next_game.player_positions, list(next_game.scores), list(next_game.active_players))
 
-                step_reward = compute_sparse_reward(dummy_old, dummy_new, cp)
+                if _DENSE_REWARDS_ENABLED:
+                    # v1 dense reward: spawn / forward / home_stretch /
+                    # score / capture (events DURING cp's move). Plus the
+                    # got-killed kill penalty (events DURING opp's
+                    # intervening turn since cp's last decision).
+                    step_reward = compute_dense_reward_v1(dummy_old, dummy_new, cp)
+                    current_own_at_base = sum(
+                        1 for p in pre_step_states[i][cp] if int(p) == _BASE_POS
+                    )
+                    step_reward += compute_kill_penalty(
+                        self._prev_own_at_base[i][cp],
+                        current_own_at_base,
+                    )
+                    # Update tracker to POST-move state (the state cp will see
+                    # when it makes its next own decision will reflect any
+                    # captures opp does between now and then).
+                    new_own_at_base = sum(
+                        1 for p in next_game.player_positions[cp]
+                        if int(p) == _BASE_POS
+                    )
+                    self._prev_own_at_base[i][cp] = new_own_at_base
+                else:
+                    step_reward = compute_sparse_reward(dummy_old, dummy_new, cp)
 
                 # Add bias-correction penalties (only when enabled + context).
                 # Penalty is ≤ 0; sums into step_reward.
@@ -511,6 +608,26 @@ class VectorACGamePlayer:
                         dummy_old, dummy_new, cp, pre_step_context[i],
                     )
                     step_reward += bias_total
+
+                # Potential-based progress shaping. Φ_p = total progress
+                # score for player p (sum over their tokens of S(pos)).
+                # Per-step bonus = α * (ΔΦ_own − ΔΦ_opp). When the cp's
+                # token advances, ΔΦ_own > 0; when cp captures an opp
+                # token, ΔΦ_opp < 0 (opp loses progress). Both contribute
+                # positively to the shaping reward.
+                if self.shaping_coeff > 0.0:
+                    opp_id = (cp + 2) % 4   # 2P: opp is across the board
+                    phi_own_before = total_progress_for_player(pre_step_states[i][cp])
+                    phi_own_after = total_progress_for_player(
+                        next_game.player_positions[cp]
+                    )
+                    phi_opp_before = total_progress_for_player(pre_step_states[i][opp_id])
+                    phi_opp_after = total_progress_for_player(
+                        next_game.player_positions[opp_id]
+                    )
+                    delta_own = phi_own_after - phi_own_before
+                    delta_opp = phi_opp_after - phi_opp_before
+                    step_reward += self.shaping_coeff * (delta_own - delta_opp)
 
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:
@@ -554,6 +671,11 @@ class VectorACGamePlayer:
                 self.consecutive_sixes[i] = 0
                 self.trajectories[i] = {}
                 self.aux_trajectories[i] = []
+                # Reset got-killed tracker on game restart so kill detection
+                # starts clean for the new game (no false-positives from
+                # carry-over of last game's tokens).
+                if self._prev_own_at_base is not None:
+                    self._prev_own_at_base[i] = [None] * 4
 
                 results.append({
                     'winner': winner,
@@ -614,6 +736,7 @@ class VectorACGamePlayer:
             candidate_games, candidate_roots,
             self.trainer.model, self.device,
             label_smoothing=self.search_label_smoothing,
+            encoder_fn=self.encoder_fn,
         )
         pi_search_np = pi_search.detach().cpu().numpy()
 

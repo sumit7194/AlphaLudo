@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Expert",
+      "V13_G35K"
+    ],
+    "elapsed_min": 1.4,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "V13_G35K",
+      "n_games": 500,
+      "a_wins": 277,
+      "b_wins": 223,
+      "draws": 0,
+      "a_wr_pct": 55.400000000000006,
+      "b_wr_pct": 44.6,
+      "avg_length": 164.184,
+      "seat_a_p0": [
+        135,
+        250
+      ],
+      "seat_a_p2": [
+        142,
+        250
+      ],
+      "pair": [
+        "Expert",
+        "V13_G35K"
+      ]
+    }
+  ]
+}

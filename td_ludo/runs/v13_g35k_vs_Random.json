@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Random",
+      "V13_G35K"
+    ],
+    "elapsed_min": 1.22,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Random",
+      "b": "V13_G35K",
+      "n_games": 500,
+      "a_wins": 101,
+      "b_wins": 399,
+      "draws": 0,
+      "a_wr_pct": 20.200000000000003,
+      "b_wr_pct": 79.80000000000001,
+      "avg_length": 151.784,
+      "seat_a_p0": [
+        49,
+        250
+      ],
+      "seat_a_p2": [
+        52,
+        250
+      ],
+      "pair": [
+        "Random",
+        "V13_G35K"
+      ]
+    }
+  ]
+}

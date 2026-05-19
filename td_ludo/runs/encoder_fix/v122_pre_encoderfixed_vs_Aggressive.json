@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Aggressive",
+      "V12_2_pre_encoderfixed"
+    ],
+    "elapsed_min": 0.65,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Aggressive",
+      "b": "V12_2_pre_encoderfixed",
+      "n_games": 500,
+      "a_wins": 128,
+      "b_wins": 372,
+      "draws": 0,
+      "a_wr_pct": 25.6,
+      "b_wr_pct": 74.4,
+      "avg_length": 161.872,
+      "seat_a_p0": [
+        70,
+        250
+      ],
+      "seat_a_p2": [
+        58,
+        250
+      ],
+      "pair": [
+        "Aggressive",
+        "V12_2_pre_encoderfixed"
+      ]
+    }
+  ]
+}

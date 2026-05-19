@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 25000,
+    "seed": 42,
+    "competitors": [
+      "V13_2_latest",
+      "Step1_Distill"
+    ],
+    "elapsed_min": 116.18,
+    "total_games": 25000
+  },
+  "pairs": [
+    {
+      "a": "V13_2_latest",
+      "b": "Step1_Distill",
+      "n_games": 25000,
+      "a_wins": 23049,
+      "b_wins": 1951,
+      "draws": 0,
+      "a_wr_pct": 92.196,
+      "b_wr_pct": 7.804,
+      "avg_length": 143.61708,
+      "seat_a_p0": [
+        11508,
+        12500
+      ],
+      "seat_a_p2": [
+        11541,
+        12500
+      ],
+      "pair": [
+        "V13_2_latest",
+        "Step1_Distill"
+      ]
+    }
+  ]
+}

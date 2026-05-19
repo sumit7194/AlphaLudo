@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Expert",
+      "V12_2"
+    ],
+    "elapsed_min": 0.64,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 111,
+      "b_wins": 389,
+      "draws": 0,
+      "a_wr_pct": 22.2,
+      "b_wr_pct": 77.8,
+      "avg_length": 158.914,
+      "seat_a_p0": [
+        52,
+        250
+      ],
+      "seat_a_p2": [
+        59,
+        250
+      ],
+      "pair": [
+        "Expert",
+        "V12_2"
+      ]
+    }
+  ]
+}

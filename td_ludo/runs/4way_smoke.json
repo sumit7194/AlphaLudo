@@ -1,0 +1,108 @@
+{
+  "games_per_pair": 20,
+  "total_sec": 37.75206398963928,
+  "device": "cpu",
+  "ts": 1778253603,
+  "agents": [
+    {
+      "name": "V13.2_latest"
+    },
+    {
+      "name": "V13.4_RLfinal"
+    },
+    {
+      "name": "V13.5_SL"
+    },
+    {
+      "name": "V14_scalar_RL"
+    }
+  ],
+  "pairs": [
+    {
+      "a": "V13.2_latest",
+      "b": "V13.4_RLfinal",
+      "a_wins": 18,
+      "b_wins": 2,
+      "draws": 0,
+      "wr_a": 90.0,
+      "wr_b": 10.0,
+      "elapsed_sec": 8.847912073135376
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V13.5_SL",
+      "a_wins": 11,
+      "b_wins": 9,
+      "draws": 0,
+      "wr_a": 55.0,
+      "wr_b": 45.0,
+      "elapsed_sec": 7.20589017868042
+    },
+    {
+      "a": "V13.2_latest",
+      "b": "V14_scalar_RL",
+      "a_wins": 15,
+      "b_wins": 5,
+      "draws": 0,
+      "wr_a": 75.0,
+      "wr_b": 25.0,
+      "elapsed_sec": 3.876642942428589
+    },
+    {
+      "a": "V13.4_RLfinal",
+      "b": "V13.5_SL",
+      "a_wins": 3,
+      "b_wins": 17,
+      "draws": 0,
+      "wr_a": 15.0,
+      "wr_b": 85.0,
+      "elapsed_sec": 9.132811784744263
+    },
+    {
+      "a": "V13.4_RLfinal",
+      "b": "V14_scalar_RL",
+      "a_wins": 2,
+      "b_wins": 18,
+      "draws": 0,
+      "wr_a": 10.0,
+      "wr_b": 90.0,
+      "elapsed_sec": 5.1917901039123535
+    },
+    {
+      "a": "V13.5_SL",
+      "b": "V14_scalar_RL",
+      "a_wins": 10,
+      "b_wins": 10,
+      "draws": 0,
+      "wr_a": 50.0,
+      "wr_b": 50.0,
+      "elapsed_sec": 3.4969398975372314
+    }
+  ],
+  "standings": [
+    {
+      "name": "V13.2_latest",
+      "wins": 44,
+      "games": 60,
+      "wr": 73.33333333333333
+    },
+    {
+      "name": "V13.5_SL",
+      "wins": 36,
+      "games": 60,
+      "wr": 60.0
+    },
+    {
+      "name": "V14_scalar_RL",
+      "wins": 33,
+      "games": 60,
+      "wr": 55.0
+    },
+    {
+      "name": "V13.4_RLfinal",
+      "wins": 7,
+      "games": 60,
+      "wr": 11.666666666666666
+    }
+  ]
+}

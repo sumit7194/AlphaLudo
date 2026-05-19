@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Racing",
+      "V12_2"
+    ],
+    "elapsed_min": 0.6,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Racing",
+      "b": "V12_2",
+      "n_games": 500,
+      "a_wins": 118,
+      "b_wins": 382,
+      "draws": 0,
+      "a_wr_pct": 23.599999999999998,
+      "b_wr_pct": 76.4,
+      "avg_length": 157.51,
+      "seat_a_p0": [
+        62,
+        250
+      ],
+      "seat_a_p2": [
+        56,
+        250
+      ],
+      "pair": [
+        "Racing",
+        "V12_2"
+      ]
+    }
+  ]
+}

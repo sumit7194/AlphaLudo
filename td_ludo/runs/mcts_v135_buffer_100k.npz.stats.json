@@ -1,0 +1,1 @@
+{"stage": "gen", "phase": "running", "finalized_states": 99874, "target_states": 100000, "fraction": 0.99874, "pending": 5086, "rate_states_per_sec": 49.89882792675778, "elapsed_sec": 2001.5299787521362, "eta_sec": 2.5251094110856593, "teacher": "checkpoints/v135_shaping_exp/model_latest.pt", "output": "runs/mcts_v135_buffer_100k.npz", "ts": 1779015922}

@@ -1,0 +1,146 @@
+{
+  "model_path": "checkpoints/v135_shaping_exp/model_latest.pt",
+  "num_games": 5000,
+  "batch_size": 128,
+  "temperature": 1.0,
+  "device": "mps",
+  "seed": 42,
+  "verdict": "MARGINAL",
+  "reasoning": "ECE=0.87pp, max_bin_dev=1.91pp, Brier=0.206. Calibration is suboptimal but MCTS may still help. Proceed with caution.",
+  "collection_meta": {
+    "num_games": 5000,
+    "num_states": 756874,
+    "states_per_game": 151.3748,
+    "elapsed_sec": 494.43580436706543
+  },
+  "calibration": {
+    "num_bins": 10,
+    "num_states": 756874,
+    "brier_score": 0.2059583216905594,
+    "ece_pp": 0.8696960531063487,
+    "max_bin_deviation_pp": 1.911860704421997,
+    "bins": [
+      {
+        "bin_idx": 0,
+        "v_pred_mean": 0.12591175734996796,
+        "v_pred_range": [
+          0.0013814877020195127,
+          0.23700441420078278
+        ],
+        "empirical_wr": 0.13241375982761383,
+        "deviation_pp": 0.6502002477645874,
+        "wr_stderr_pp": 0.12320043484072138,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 1,
+        "v_pred_mean": 0.2981302738189697,
+        "v_pred_range": [
+          0.23700451850891113,
+          0.3493683338165283
+        ],
+        "empirical_wr": 0.30030256509780884,
+        "deviation_pp": 0.21722912788391113,
+        "wr_stderr_pp": 0.1666188052726751,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 2,
+        "v_pred_mean": 0.3884807527065277,
+        "v_pred_range": [
+          0.34937071800231934,
+          0.42259496450424194
+        ],
+        "empirical_wr": 0.38983723521232605,
+        "deviation_pp": 0.13564825057983398,
+        "wr_stderr_pp": 0.1772764290823914,
+        "n_samples": 75688
+      },
+      {
+        "bin_idx": 3,
+        "v_pred_mean": 0.450318306684494,
+        "v_pred_range": [
+          0.42259499430656433,
+          0.4770049452781677
+        ],
+        "empirical_wr": 0.44606074690818787,
+        "deviation_pp": 0.42575597763061523,
+        "wr_stderr_pp": 0.1806830564170319,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 4,
+        "v_pred_mean": 0.5010636448860168,
+        "v_pred_range": [
+          0.4770052134990692,
+          0.5246090888977051
+        ],
+        "empirical_wr": 0.49352604150772095,
+        "deviation_pp": 0.7537603378295898,
+        "wr_stderr_pp": 0.18172726149865367,
+        "n_samples": 75688
+      },
+      {
+        "bin_idx": 5,
+        "v_pred_mean": 0.5500121712684631,
+        "v_pred_range": [
+          0.5246092677116394,
+          0.575812578201294
+        ],
+        "empirical_wr": 0.5414404273033142,
+        "deviation_pp": 0.8571743965148926,
+        "wr_stderr_pp": 0.18111840132973506,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 6,
+        "v_pred_mean": 0.6036575436592102,
+        "v_pred_range": [
+          0.5758128762245178,
+          0.6333706378936768
+        ],
+        "empirical_wr": 0.5845389366149902,
+        "deviation_pp": 1.911860704421997,
+        "wr_stderr_pp": 0.17912707778162362,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 7,
+        "v_pred_mean": 0.6681969165802002,
+        "v_pred_range": [
+          0.633371114730835,
+          0.7051937580108643
+        ],
+        "empirical_wr": 0.6557974815368652,
+        "deviation_pp": 1.239943504333496,
+        "wr_stderr_pp": 0.1726944495119571,
+        "n_samples": 75688
+      },
+      {
+        "bin_idx": 8,
+        "v_pred_mean": 0.7528449892997742,
+        "v_pred_range": [
+          0.7051940560340881,
+          0.8084713220596313
+        ],
+        "empirical_wr": 0.738369882106781,
+        "deviation_pp": 1.4475107192993164,
+        "wr_stderr_pp": 0.15976079372369523,
+        "n_samples": 75687
+      },
+      {
+        "bin_idx": 9,
+        "v_pred_mean": 0.8958314061164856,
+        "v_pred_range": [
+          0.8084718585014343,
+          0.9999935626983643
+        ],
+        "empirical_wr": 0.8852525949478149,
+        "deviation_pp": 1.0578811168670654,
+        "wr_stderr_pp": 0.11584879637687694,
+        "n_samples": 75688
+      }
+    ]
+  },
+  "ts": 1779019354
+}

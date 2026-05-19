@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "games_per_pair": 500,
+    "seed": 42,
+    "competitors": [
+      "Racing",
+      "V13_G35K"
+    ],
+    "elapsed_min": 1.36,
+    "total_games": 500
+  },
+  "pairs": [
+    {
+      "a": "Racing",
+      "b": "V13_G35K",
+      "n_games": 500,
+      "a_wins": 281,
+      "b_wins": 219,
+      "draws": 0,
+      "a_wr_pct": 56.2,
+      "b_wr_pct": 43.8,
+      "avg_length": 164.688,
+      "seat_a_p0": [
+        139,
+        250
+      ],
+      "seat_a_p2": [
+        142,
+        250
+      ],
+      "pair": [
+        "Racing",
+        "V13_G35K"
+      ]
+    }
+  ]
+}
