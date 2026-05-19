@@ -92,6 +92,10 @@ def _build_bot_registry() -> Dict[str, callable]:
         from td_ludo.game.strong_bots_adaptive import ADAPTIVE_REGISTRY
         return ADAPTIVE_REGISTRY[name]()
 
+    def _rule_factory(name):
+        from td_ludo.game.strong_bots_rule import RULE_BOT_REGISTRY
+        return RULE_BOT_REGISTRY[name]()
+
     return {
         # Scripted family
         "Heuristic":  lambda: _heuristic_factory("Heuristic"),
@@ -118,6 +122,11 @@ def _build_bot_registry() -> Dict[str, callable]:
         # Adaptive + ensemble (Phase 6 of plan)
         "AdaptiveExpectimax":  lambda: _adaptive_factory("AdaptiveExpectimax"),
         "VoteExpectimax":      lambda: _adaptive_factory("VoteExpectimax"),
+        # Rule-based variants (Phase 6 extension — pure heuristics, no search)
+        "MaxCapture":     lambda: _rule_factory("MaxCapture"),
+        "TwoStack":       lambda: _rule_factory("TwoStack"),
+        "HomeRush":       lambda: _rule_factory("HomeRush"),
+        "StackHomeRush":  lambda: _rule_factory("StackHomeRush"),
     }
 
 
