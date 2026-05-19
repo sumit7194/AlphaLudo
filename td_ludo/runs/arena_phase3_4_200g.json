@@ -352,6 +352,22 @@
         "Expectimax",
         "Depth2Expectimax"
       ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "Depth2AggressiveExpectimax",
+      "n_games": 200,
+      "a_wins": 101,
+      "b_wins": 99,
+      "draws": 0,
+      "a_wr_pct": 50.5,
+      "b_wr_pct": 49.5,
+      "avg_length": 155.855,
+      "elapsed_sec": 41.4282660484314,
+      "pair": [
+        "Expectimax",
+        "Depth2AggressiveExpectimax"
+      ]
     }
   ]
 }
