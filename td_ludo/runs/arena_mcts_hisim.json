@@ -7,7 +7,38 @@
       "Expectimax",
       "MCTSPure",
       "MCTSHighSim"
-    ]
+    ],
+    "elapsed_min": 18.39,
+    "leaderboard": {
+      "Expectimax": {
+        "rank": 1,
+        "wins": 69,
+        "games": 90,
+        "wr_pct": 76.66666666666667,
+        "elo": 1627.863935257242
+      },
+      "MCTSPure": {
+        "rank": 2,
+        "wins": 41,
+        "games": 90,
+        "wr_pct": 45.55555555555556,
+        "elo": 1445.565373821545
+      },
+      "MCTSHighSim": {
+        "rank": 3,
+        "wins": 37,
+        "games": 90,
+        "wr_pct": 41.11111111111111,
+        "elo": 1420.6998445325298
+      },
+      "Expert": {
+        "rank": 4,
+        "wins": 33,
+        "games": 90,
+        "wr_pct": 36.666666666666664,
+        "elo": 1395.4621119713377
+      }
+    }
   },
   "pairs": [
     {
@@ -87,6 +118,22 @@
       "elapsed_sec": 232.4532766342163,
       "pair": [
         "Expectimax",
+        "MCTSHighSim"
+      ]
+    },
+    {
+      "a": "MCTSPure",
+      "b": "MCTSHighSim",
+      "n_games": 30,
+      "a_wins": 15,
+      "b_wins": 15,
+      "draws": 0,
+      "a_wr_pct": 50.0,
+      "b_wr_pct": 50.0,
+      "avg_length": 150.1,
+      "elapsed_sec": 365.71534156799316,
+      "pair": [
+        "MCTSPure",
         "MCTSHighSim"
       ]
     }

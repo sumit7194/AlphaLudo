@@ -127,14 +127,24 @@ aggressive personality.
 **Hypothesis**: doubling MCTS sims (50→100) closes the gap to
 Expectimax.
 
-**Reality** (preliminary, 30 g/pair = ~10pp std error):
-MCTSHighSim (100 sims) lost to Expert 43% while MCTSPure (50 sims)
-won 63%. Even allowing for noise, more sims didn't help meaningfully —
-and Expectimax still beats both decisively (77% vs MCTSPure).
+**Reality** (`arena_mcts_hisim.json`, 30 g/pair = ~10pp std error):
+
+| Pair | Result |
+|---|---|
+| MCTSPure(50) vs Expert | 63% MCTSPure |
+| MCTSHighSim(100) vs Expert | 43% MCTSHighSim |
+| MCTSPure(50) vs Expectimax | 23% MCTSPure |
+| MCTSHighSim(100) vs Expectimax | 30% MCTSHighSim |
+| **MCTSPure(50) vs MCTSHighSim(100) direct h2h** | **50.0% / 50.0%** |
+
+The direct head-to-head is conclusive: **doubling sims provides zero
+measurable strength gain**. The vs-Expert and vs-Expectimax results are
+within noise; the direct h2h (the cleanest test) is exactly 15-15.
 
 **Lesson**: For Ludo's branching factor (≤4) and game length, raw
 random-rollout sims hit diminishing returns very fast. The informed
-prior is doing the real work in `MCTSExpectimaxPrior`.
+prior is doing the real work in `MCTSExpectimaxPrior`. Don't bother
+scaling sims further without changing the prior or value estimator.
 
 ## Cost-vs-strength frontier
 
