@@ -336,6 +336,22 @@
         "Expert",
         "MCTSExpectimaxPrior"
       ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "Depth2Expectimax",
+      "n_games": 200,
+      "a_wins": 85,
+      "b_wins": 115,
+      "draws": 0,
+      "a_wr_pct": 42.5,
+      "b_wr_pct": 57.49999999999999,
+      "avg_length": 151.3,
+      "elapsed_sec": 39.188416481018066,
+      "pair": [
+        "Expectimax",
+        "Depth2Expectimax"
+      ]
     }
   ]
 }
