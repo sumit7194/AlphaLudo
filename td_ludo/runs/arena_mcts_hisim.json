@@ -41,6 +41,22 @@
         "Expert",
         "MCTSPure"
       ]
+    },
+    {
+      "a": "Expert",
+      "b": "MCTSHighSim",
+      "n_games": 30,
+      "a_wins": 17,
+      "b_wins": 13,
+      "draws": 0,
+      "a_wr_pct": 56.666666666666664,
+      "b_wr_pct": 43.333333333333336,
+      "avg_length": 152.63333333333333,
+      "elapsed_sec": 260.3579423427582,
+      "pair": [
+        "Expert",
+        "MCTSHighSim"
+      ]
     }
   ]
 }
