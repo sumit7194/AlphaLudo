@@ -80,6 +80,18 @@ def _build_bot_registry() -> Dict[str, callable]:
         from td_ludo.game.strong_bots_v2 import EXPECTIMAX_V2_REGISTRY
         return EXPECTIMAX_V2_REGISTRY[name]()
 
+    def _depth2_factory(name):
+        from td_ludo.game.strong_bots_depth2 import DEPTH2_REGISTRY
+        return DEPTH2_REGISTRY[name]()
+
+    def _mcts_prior_factory(name):
+        from td_ludo.game.strong_bots_mcts_prior import MCTS_PRIOR_REGISTRY
+        return MCTS_PRIOR_REGISTRY[name]()
+
+    def _adaptive_factory(name):
+        from td_ludo.game.strong_bots_adaptive import ADAPTIVE_REGISTRY
+        return ADAPTIVE_REGISTRY[name]()
+
     return {
         # Scripted family
         "Heuristic":  lambda: _heuristic_factory("Heuristic"),
@@ -96,6 +108,16 @@ def _build_bot_registry() -> Dict[str, callable]:
         "DefensiveExpectimax":  lambda: _strong_v2_factory("DefensiveExpectimax"),
         "RacingExpectimax":     lambda: _strong_v2_factory("RacingExpectimax"),
         "MinimaxExpectimax":    lambda: _strong_v2_factory("MinimaxExpectimax"),
+        # Depth-2 expectimax variants (Phase 3 of plan)
+        "Depth2Expectimax":             lambda: _depth2_factory("Depth2Expectimax"),
+        "Depth2AggressiveExpectimax":   lambda: _depth2_factory("Depth2AggressiveExpectimax"),
+        "Depth2DefensiveExpectimax":    lambda: _depth2_factory("Depth2DefensiveExpectimax"),
+        # MCTS with informed prior (Phase 4 of plan)
+        "MCTSExpertPrior":     lambda: _mcts_prior_factory("MCTSExpertPrior"),
+        "MCTSExpectimaxPrior": lambda: _mcts_prior_factory("MCTSExpectimaxPrior"),
+        # Adaptive + ensemble (Phase 6 of plan)
+        "AdaptiveExpectimax":  lambda: _adaptive_factory("AdaptiveExpectimax"),
+        "VoteExpectimax":      lambda: _adaptive_factory("VoteExpectimax"),
     }
 
 
