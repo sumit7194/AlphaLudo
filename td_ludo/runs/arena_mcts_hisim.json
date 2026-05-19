@@ -25,6 +25,22 @@
         "Expert",
         "Expectimax"
       ]
+    },
+    {
+      "a": "Expert",
+      "b": "MCTSPure",
+      "n_games": 30,
+      "a_wins": 11,
+      "b_wins": 19,
+      "draws": 0,
+      "a_wr_pct": 36.666666666666664,
+      "b_wr_pct": 63.33333333333333,
+      "avg_length": 156.13333333333333,
+      "elapsed_sec": 125.27082896232605,
+      "pair": [
+        "Expert",
+        "MCTSPure"
+      ]
     }
   ]
 }
