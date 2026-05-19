@@ -1,0 +1,301 @@
+{
+  "meta": {
+    "games_per_pair": 200,
+    "seed": 42,
+    "bot_names": [
+      "Expert",
+      "Expectimax",
+      "AggressiveExpectimax",
+      "DefensiveExpectimax",
+      "RacingExpectimax",
+      "MinimaxExpectimax"
+    ],
+    "elapsed_min": 2.92,
+    "leaderboard": {
+      "AggressiveExpectimax": {
+        "rank": 1,
+        "wins": 580,
+        "games": 1000,
+        "wr_pct": 57.99999999999999,
+        "elo": 1539.8101491890511
+      },
+      "MinimaxExpectimax": {
+        "rank": 2,
+        "wins": 572,
+        "games": 1000,
+        "wr_pct": 57.199999999999996,
+        "elo": 1534.983215586908
+      },
+      "Expectimax": {
+        "rank": 3,
+        "wins": 559,
+        "games": 1000,
+        "wr_pct": 55.900000000000006,
+        "elo": 1527.169570690637
+      },
+      "DefensiveExpectimax": {
+        "rank": 4,
+        "wins": 545,
+        "games": 1000,
+        "wr_pct": 54.50000000000001,
+        "elo": 1518.78923853253
+      },
+      "RacingExpectimax": {
+        "rank": 5,
+        "wins": 416,
+        "games": 1000,
+        "wr_pct": 41.6,
+        "elo": 1441.691026252874
+      },
+      "Expert": {
+        "rank": 6,
+        "wins": 328,
+        "games": 1000,
+        "wr_pct": 32.800000000000004,
+        "elo": 1386.7250407750012
+      }
+    }
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Expectimax",
+      "n_games": 200,
+      "a_wins": 55,
+      "b_wins": 145,
+      "draws": 0,
+      "a_wr_pct": 27.500000000000004,
+      "b_wr_pct": 72.5,
+      "avg_length": 155.76,
+      "elapsed_sec": 9.86173963546753,
+      "pair": [
+        "Expert",
+        "Expectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "AggressiveExpectimax",
+      "n_games": 200,
+      "a_wins": 68,
+      "b_wins": 132,
+      "draws": 0,
+      "a_wr_pct": 34.0,
+      "b_wr_pct": 66.0,
+      "avg_length": 160.775,
+      "elapsed_sec": 10.03969407081604,
+      "pair": [
+        "Expert",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "DefensiveExpectimax",
+      "n_games": 200,
+      "a_wins": 60,
+      "b_wins": 140,
+      "draws": 0,
+      "a_wr_pct": 30.0,
+      "b_wr_pct": 70.0,
+      "avg_length": 155.255,
+      "elapsed_sec": 9.08143949508667,
+      "pair": [
+        "Expert",
+        "DefensiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "RacingExpectimax",
+      "n_games": 200,
+      "a_wins": 82,
+      "b_wins": 118,
+      "draws": 0,
+      "a_wr_pct": 41.0,
+      "b_wr_pct": 59.0,
+      "avg_length": 149.62,
+      "elapsed_sec": 7.059220314025879,
+      "pair": [
+        "Expert",
+        "RacingExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "MinimaxExpectimax",
+      "n_games": 200,
+      "a_wins": 63,
+      "b_wins": 137,
+      "draws": 0,
+      "a_wr_pct": 31.5,
+      "b_wr_pct": 68.5,
+      "avg_length": 157.94,
+      "elapsed_sec": 9.172832489013672,
+      "pair": [
+        "Expert",
+        "MinimaxExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "AggressiveExpectimax",
+      "n_games": 200,
+      "a_wins": 96,
+      "b_wins": 104,
+      "draws": 0,
+      "a_wr_pct": 48.0,
+      "b_wr_pct": 52.0,
+      "avg_length": 150.945,
+      "elapsed_sec": 13.762486696243286,
+      "pair": [
+        "Expectimax",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "DefensiveExpectimax",
+      "n_games": 200,
+      "a_wins": 93,
+      "b_wins": 107,
+      "draws": 0,
+      "a_wr_pct": 46.5,
+      "b_wr_pct": 53.5,
+      "avg_length": 148.56,
+      "elapsed_sec": 13.547470569610596,
+      "pair": [
+        "Expectimax",
+        "DefensiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "RacingExpectimax",
+      "n_games": 200,
+      "a_wins": 130,
+      "b_wins": 70,
+      "draws": 0,
+      "a_wr_pct": 65.0,
+      "b_wr_pct": 35.0,
+      "avg_length": 145.445,
+      "elapsed_sec": 11.95346713066101,
+      "pair": [
+        "Expectimax",
+        "RacingExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "MinimaxExpectimax",
+      "n_games": 200,
+      "a_wins": 95,
+      "b_wins": 105,
+      "draws": 0,
+      "a_wr_pct": 47.5,
+      "b_wr_pct": 52.5,
+      "avg_length": 149.01,
+      "elapsed_sec": 12.5869882106781,
+      "pair": [
+        "Expectimax",
+        "MinimaxExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "DefensiveExpectimax",
+      "n_games": 200,
+      "a_wins": 110,
+      "b_wins": 90,
+      "draws": 0,
+      "a_wr_pct": 55.00000000000001,
+      "b_wr_pct": 45.0,
+      "avg_length": 157.94,
+      "elapsed_sec": 14.730510950088501,
+      "pair": [
+        "AggressiveExpectimax",
+        "DefensiveExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "RacingExpectimax",
+      "n_games": 200,
+      "a_wins": 129,
+      "b_wins": 71,
+      "draws": 0,
+      "a_wr_pct": 64.5,
+      "b_wr_pct": 35.5,
+      "avg_length": 152.375,
+      "elapsed_sec": 13.540553092956543,
+      "pair": [
+        "AggressiveExpectimax",
+        "RacingExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "MinimaxExpectimax",
+      "n_games": 200,
+      "a_wins": 105,
+      "b_wins": 95,
+      "draws": 0,
+      "a_wr_pct": 52.5,
+      "b_wr_pct": 47.5,
+      "avg_length": 155.835,
+      "elapsed_sec": 14.019225835800171,
+      "pair": [
+        "AggressiveExpectimax",
+        "MinimaxExpectimax"
+      ]
+    },
+    {
+      "a": "DefensiveExpectimax",
+      "b": "RacingExpectimax",
+      "n_games": 200,
+      "a_wins": 125,
+      "b_wins": 75,
+      "draws": 0,
+      "a_wr_pct": 62.5,
+      "b_wr_pct": 37.5,
+      "avg_length": 144.275,
+      "elapsed_sec": 11.337300539016724,
+      "pair": [
+        "DefensiveExpectimax",
+        "RacingExpectimax"
+      ]
+    },
+    {
+      "a": "DefensiveExpectimax",
+      "b": "MinimaxExpectimax",
+      "n_games": 200,
+      "a_wins": 83,
+      "b_wins": 117,
+      "draws": 0,
+      "a_wr_pct": 41.5,
+      "b_wr_pct": 58.5,
+      "avg_length": 149.14,
+      "elapsed_sec": 13.182318449020386,
+      "pair": [
+        "DefensiveExpectimax",
+        "MinimaxExpectimax"
+      ]
+    },
+    {
+      "a": "RacingExpectimax",
+      "b": "MinimaxExpectimax",
+      "n_games": 200,
+      "a_wins": 82,
+      "b_wins": 118,
+      "draws": 0,
+      "a_wr_pct": 41.0,
+      "b_wr_pct": 59.0,
+      "avg_length": 146.605,
+      "elapsed_sec": 11.069506883621216,
+      "pair": [
+        "RacingExpectimax",
+        "MinimaxExpectimax"
+      ]
+    }
+  ]
+}
