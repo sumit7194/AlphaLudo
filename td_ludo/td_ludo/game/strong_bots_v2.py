@@ -139,6 +139,48 @@ def _score_racing(player: int, state) -> float:
     return own_progress + own_scored
 
 
+def _score_blockade(player: int, state) -> float:
+    """Blockade: bonus for own 2+ token stacks on safe squares
+    (blockades), strong penalty for breaking existing stacks.
+
+    Score = base + 25·(own_two_stacks) + own_progress − own_exposure
+            − 1.5·opp_progress
+
+    Style: tries to lock down chokepoints with paired tokens, slow but
+    hard to capture. Different play texture from Aggressive/Defensive
+    because blockades are about *position* not *count*.
+    """
+    positions = np.asarray(state.player_positions, dtype=np.int8)
+    active = np.asarray(state.active_players, dtype=bool)
+
+    own_progress = _token_progress_score(player, positions)
+    own_scored = int(state.scores[player]) * 60
+    own_exposure = _exposure_penalty(player, positions, active)
+
+    # Count own 2+ token stacks on safe squares.
+    pos_counts = {}
+    for t in range(4):
+        p = int(positions[player][t])
+        if p == _BASE_POS or p == _HOME_POS or p > 50:
+            continue
+        if not _is_safe(player, p):
+            continue
+        pos_counts[p] = pos_counts.get(p, 0) + 1
+    n_stacks = sum(1 for c in pos_counts.values() if c >= 2)
+
+    opp_progress = 0.0
+    for opp in range(4):
+        if opp == player or not active[opp]:
+            continue
+        opp_progress += _token_progress_score(opp, positions)
+        opp_progress += int(state.scores[opp]) * 60
+
+    return (
+        own_progress + own_scored + 25.0 * n_stacks
+        - own_exposure - 1.5 * opp_progress
+    )
+
+
 def _score_minimax(player: int, state) -> float:
     """Minimax: prefer states where OPP's progress is minimized.
 
@@ -289,6 +331,14 @@ class MinimaxExpectimaxBot(_BaseExpectimaxV2):
     NAME = "MinimaxExpectimax"
 
 
+class BlockadeExpectimaxBot(_BaseExpectimaxV2):
+    """Bonus for own 2-token stacks on safe squares — chokepoint
+    play. Was in the original Phase 6 plan; built as a bonus variant
+    to add positional diversity beyond Aggressive/Defensive."""
+    SCORE_FN = staticmethod(_score_blockade)
+    NAME = "BlockadeExpectimax"
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────
 
 
@@ -297,4 +347,5 @@ EXPECTIMAX_V2_REGISTRY = {
     "DefensiveExpectimax":  DefensiveExpectimaxBot,
     "RacingExpectimax":     RacingExpectimaxBot,
     "MinimaxExpectimax":    MinimaxExpectimaxBot,
+    "BlockadeExpectimax":   BlockadeExpectimaxBot,
 }

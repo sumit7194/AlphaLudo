@@ -1,0 +1,213 @@
+{
+  "meta": {
+    "games_per_pair": 50,
+    "seed": 42,
+    "bot_names": [
+      "Expert",
+      "Expectimax",
+      "AggressiveExpectimax",
+      "VoteExpectimax",
+      "BlockadeExpectimax"
+    ],
+    "elapsed_min": 0.98,
+    "leaderboard": {
+      "AggressiveExpectimax": {
+        "rank": 1,
+        "wins": 122,
+        "games": 200,
+        "wr_pct": 61.0,
+        "elo": 1550.8833640440275
+      },
+      "Expectimax": {
+        "rank": 2,
+        "wins": 118,
+        "games": 200,
+        "wr_pct": 59.0,
+        "elo": 1538.965899749124
+      },
+      "VoteExpectimax": {
+        "rank": 3,
+        "wins": 117,
+        "games": 200,
+        "wr_pct": 58.5,
+        "elo": 1536.0029414923654
+      },
+      "BlockadeExpectimax": {
+        "rank": 4,
+        "wins": 89,
+        "games": 200,
+        "wr_pct": 44.5,
+        "elo": 1454.0309689154565
+      },
+      "Expert": {
+        "rank": 5,
+        "wins": 54,
+        "games": 200,
+        "wr_pct": 27.0,
+        "elo": 1345.299353603354
+      }
+    }
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Expectimax",
+      "n_games": 50,
+      "a_wins": 10,
+      "b_wins": 40,
+      "draws": 0,
+      "a_wr_pct": 20.0,
+      "b_wr_pct": 80.0,
+      "avg_length": 155.58,
+      "elapsed_sec": 3.186192512512207,
+      "pair": [
+        "Expert",
+        "Expectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "AggressiveExpectimax",
+      "n_games": 50,
+      "a_wins": 13,
+      "b_wins": 37,
+      "draws": 0,
+      "a_wr_pct": 26.0,
+      "b_wr_pct": 74.0,
+      "avg_length": 170.8,
+      "elapsed_sec": 2.441869020462036,
+      "pair": [
+        "Expert",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "VoteExpectimax",
+      "n_games": 50,
+      "a_wins": 9,
+      "b_wins": 41,
+      "draws": 0,
+      "a_wr_pct": 18.0,
+      "b_wr_pct": 82.0,
+      "avg_length": 158.38,
+      "elapsed_sec": 9.248512506484985,
+      "pair": [
+        "Expert",
+        "VoteExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "BlockadeExpectimax",
+      "n_games": 50,
+      "a_wins": 22,
+      "b_wins": 28,
+      "draws": 0,
+      "a_wr_pct": 44.0,
+      "b_wr_pct": 56.00000000000001,
+      "avg_length": 161.44,
+      "elapsed_sec": 2.422086715698242,
+      "pair": [
+        "Expert",
+        "BlockadeExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "AggressiveExpectimax",
+      "n_games": 50,
+      "a_wins": 24,
+      "b_wins": 26,
+      "draws": 0,
+      "a_wr_pct": 48.0,
+      "b_wr_pct": 52.0,
+      "avg_length": 153.86,
+      "elapsed_sec": 3.669999122619629,
+      "pair": [
+        "Expectimax",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "VoteExpectimax",
+      "n_games": 50,
+      "a_wins": 26,
+      "b_wins": 24,
+      "draws": 0,
+      "a_wr_pct": 52.0,
+      "b_wr_pct": 48.0,
+      "avg_length": 147.96,
+      "elapsed_sec": 9.201282739639282,
+      "pair": [
+        "Expectimax",
+        "VoteExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "BlockadeExpectimax",
+      "n_games": 50,
+      "a_wins": 28,
+      "b_wins": 22,
+      "draws": 0,
+      "a_wr_pct": 56.00000000000001,
+      "b_wr_pct": 44.0,
+      "avg_length": 151.24,
+      "elapsed_sec": 3.401381015777588,
+      "pair": [
+        "Expectimax",
+        "BlockadeExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "VoteExpectimax",
+      "n_games": 50,
+      "a_wins": 30,
+      "b_wins": 20,
+      "draws": 0,
+      "a_wr_pct": 60.0,
+      "b_wr_pct": 40.0,
+      "avg_length": 158.9,
+      "elapsed_sec": 11.552931070327759,
+      "pair": [
+        "AggressiveExpectimax",
+        "VoteExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "BlockadeExpectimax",
+      "n_games": 50,
+      "a_wins": 29,
+      "b_wins": 21,
+      "draws": 0,
+      "a_wr_pct": 57.99999999999999,
+      "b_wr_pct": 42.0,
+      "avg_length": 157.12,
+      "elapsed_sec": 3.5657429695129395,
+      "pair": [
+        "AggressiveExpectimax",
+        "BlockadeExpectimax"
+      ]
+    },
+    {
+      "a": "VoteExpectimax",
+      "b": "BlockadeExpectimax",
+      "n_games": 50,
+      "a_wins": 32,
+      "b_wins": 18,
+      "draws": 0,
+      "a_wr_pct": 64.0,
+      "b_wr_pct": 36.0,
+      "avg_length": 152.14,
+      "elapsed_sec": 9.974361181259155,
+      "pair": [
+        "VoteExpectimax",
+        "BlockadeExpectimax"
+      ]
+    }
+  ]
+}

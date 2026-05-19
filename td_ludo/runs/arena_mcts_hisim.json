@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "games_per_pair": 30,
+    "seed": 42,
+    "bot_names": [
+      "Expert",
+      "Expectimax",
+      "MCTSPure",
+      "MCTSHighSim"
+    ]
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Expectimax",
+      "n_games": 30,
+      "a_wins": 5,
+      "b_wins": 25,
+      "draws": 0,
+      "a_wr_pct": 16.666666666666664,
+      "b_wr_pct": 83.33333333333334,
+      "avg_length": 157.3,
+      "elapsed_sec": 2.4202466011047363,
+      "pair": [
+        "Expert",
+        "Expectimax"
+      ]
+    }
+  ]
+}

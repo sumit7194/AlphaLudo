@@ -73,6 +73,13 @@ def _build_bot_registry() -> Dict[str, callable]:
 
     def _strong_factory(name):
         from td_ludo.game.strong_bots import ExpectimaxBot, MCTSPureBot
+        if name == "MCTSHighSim":
+            # Bonus variant: MCTSPureBot at 2× the default sims (100 vs
+            # 50). ~130ms/move (vs 67ms for MCTSPure default). Tests
+            # whether more search alone (no informed prior) closes the
+            # gap to Expectimax — a useful counterfactual for the
+            # MCTSExpertPrior / MCTSExpectimaxPrior comparison.
+            return MCTSPureBot(n_sims=100, rollouts_per_leaf=8)
         cls = {"Expectimax": ExpectimaxBot, "MCTSPure": MCTSPureBot}[name]
         return cls()
 
@@ -107,11 +114,13 @@ def _build_bot_registry() -> Dict[str, callable]:
         # Strong family (existing)
         "Expectimax": lambda: _strong_factory("Expectimax"),
         "MCTSPure":   lambda: _strong_factory("MCTSPure"),
+        "MCTSHighSim": lambda: _strong_factory("MCTSHighSim"),
         # Expectimax personalities (Phase 1 of plan)
         "AggressiveExpectimax": lambda: _strong_v2_factory("AggressiveExpectimax"),
         "DefensiveExpectimax":  lambda: _strong_v2_factory("DefensiveExpectimax"),
         "RacingExpectimax":     lambda: _strong_v2_factory("RacingExpectimax"),
         "MinimaxExpectimax":    lambda: _strong_v2_factory("MinimaxExpectimax"),
+        "BlockadeExpectimax":   lambda: _strong_v2_factory("BlockadeExpectimax"),
         # Depth-2 expectimax variants (Phase 3 of plan)
         "Depth2Expectimax":             lambda: _depth2_factory("Depth2Expectimax"),
         "Depth2AggressiveExpectimax":   lambda: _depth2_factory("Depth2AggressiveExpectimax"),

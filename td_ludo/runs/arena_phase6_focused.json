@@ -1,0 +1,525 @@
+{
+  "meta": {
+    "games_per_pair": 100,
+    "seed": 42,
+    "bot_names": [
+      "Expert",
+      "Expectimax",
+      "AggressiveExpectimax",
+      "AdaptiveExpectimax",
+      "MaxCapture",
+      "TwoStack",
+      "HomeRush",
+      "StackHomeRush"
+    ],
+    "elapsed_min": 1.08,
+    "leaderboard": {
+      "Expectimax": {
+        "rank": 1,
+        "wins": 527,
+        "games": 700,
+        "wr_pct": 75.28571428571429,
+        "elo": 1639.7911478599372
+      },
+      "AggressiveExpectimax": {
+        "rank": 2,
+        "wins": 513,
+        "games": 700,
+        "wr_pct": 73.28571428571429,
+        "elo": 1623.3436443950104
+      },
+      "AdaptiveExpectimax": {
+        "rank": 3,
+        "wins": 425,
+        "games": 700,
+        "wr_pct": 60.71428571428571,
+        "elo": 1528.9998070107033
+      },
+      "Expert": {
+        "rank": 4,
+        "wins": 379,
+        "games": 700,
+        "wr_pct": 54.142857142857146,
+        "elo": 1483.2434082249404
+      },
+      "StackHomeRush": {
+        "rank": 5,
+        "wins": 259,
+        "games": 700,
+        "wr_pct": 37.0,
+        "elo": 1365.0478583090294
+      },
+      "TwoStack": {
+        "rank": 6,
+        "wins": 250,
+        "games": 700,
+        "wr_pct": 35.714285714285715,
+        "elo": 1355.8671194342246
+      },
+      "MaxCapture": {
+        "rank": 7,
+        "wins": 225,
+        "games": 700,
+        "wr_pct": 32.142857142857146,
+        "elo": 1329.8410433326462
+      },
+      "HomeRush": {
+        "rank": 8,
+        "wins": 222,
+        "games": 700,
+        "wr_pct": 31.71428571428571,
+        "elo": 1326.6573517042007
+      }
+    }
+  },
+  "pairs": [
+    {
+      "a": "Expert",
+      "b": "Expectimax",
+      "n_games": 100,
+      "a_wins": 23,
+      "b_wins": 77,
+      "draws": 0,
+      "a_wr_pct": 23.0,
+      "b_wr_pct": 77.0,
+      "avg_length": 156.33,
+      "elapsed_sec": 5.44792103767395,
+      "pair": [
+        "Expert",
+        "Expectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "AggressiveExpectimax",
+      "n_games": 100,
+      "a_wins": 31,
+      "b_wins": 69,
+      "draws": 0,
+      "a_wr_pct": 31.0,
+      "b_wr_pct": 69.0,
+      "avg_length": 163.14,
+      "elapsed_sec": 4.768555641174316,
+      "pair": [
+        "Expert",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "AdaptiveExpectimax",
+      "n_games": 100,
+      "a_wins": 40,
+      "b_wins": 60,
+      "draws": 0,
+      "a_wr_pct": 40.0,
+      "b_wr_pct": 60.0,
+      "avg_length": 155.27,
+      "elapsed_sec": 3.966245412826538,
+      "pair": [
+        "Expert",
+        "AdaptiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "MaxCapture",
+      "n_games": 100,
+      "a_wins": 74,
+      "b_wins": 26,
+      "draws": 0,
+      "a_wr_pct": 74.0,
+      "b_wr_pct": 26.0,
+      "avg_length": 142.53,
+      "elapsed_sec": 0.8064754009246826,
+      "pair": [
+        "Expert",
+        "MaxCapture"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "TwoStack",
+      "n_games": 100,
+      "a_wins": 69,
+      "b_wins": 31,
+      "draws": 0,
+      "a_wr_pct": 69.0,
+      "b_wr_pct": 31.0,
+      "avg_length": 145.61,
+      "elapsed_sec": 0.8206260204315186,
+      "pair": [
+        "Expert",
+        "TwoStack"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 74,
+      "b_wins": 26,
+      "draws": 0,
+      "a_wr_pct": 74.0,
+      "b_wr_pct": 26.0,
+      "avg_length": 143.24,
+      "elapsed_sec": 0.8816654682159424,
+      "pair": [
+        "Expert",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "Expert",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 68,
+      "b_wins": 32,
+      "draws": 0,
+      "a_wr_pct": 68.0,
+      "b_wr_pct": 32.0,
+      "avg_length": 143.55,
+      "elapsed_sec": 0.7897260189056396,
+      "pair": [
+        "Expert",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "AggressiveExpectimax",
+      "n_games": 100,
+      "a_wins": 57,
+      "b_wins": 43,
+      "draws": 0,
+      "a_wr_pct": 56.99999999999999,
+      "b_wr_pct": 43.0,
+      "avg_length": 149.16,
+      "elapsed_sec": 6.746461868286133,
+      "pair": [
+        "Expectimax",
+        "AggressiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "AdaptiveExpectimax",
+      "n_games": 100,
+      "a_wins": 64,
+      "b_wins": 36,
+      "draws": 0,
+      "a_wr_pct": 64.0,
+      "b_wr_pct": 36.0,
+      "avg_length": 147.25,
+      "elapsed_sec": 5.265670537948608,
+      "pair": [
+        "Expectimax",
+        "AdaptiveExpectimax"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "MaxCapture",
+      "n_games": 100,
+      "a_wins": 89,
+      "b_wins": 11,
+      "draws": 0,
+      "a_wr_pct": 89.0,
+      "b_wr_pct": 11.0,
+      "avg_length": 133.86,
+      "elapsed_sec": 2.25376558303833,
+      "pair": [
+        "Expectimax",
+        "MaxCapture"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "TwoStack",
+      "n_games": 100,
+      "a_wins": 81,
+      "b_wins": 19,
+      "draws": 0,
+      "a_wr_pct": 81.0,
+      "b_wr_pct": 19.0,
+      "avg_length": 137.48,
+      "elapsed_sec": 2.4097020626068115,
+      "pair": [
+        "Expectimax",
+        "TwoStack"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 81,
+      "b_wins": 19,
+      "draws": 0,
+      "a_wr_pct": 81.0,
+      "b_wr_pct": 19.0,
+      "avg_length": 134.95,
+      "elapsed_sec": 2.040151834487915,
+      "pair": [
+        "Expectimax",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "Expectimax",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 78,
+      "b_wins": 22,
+      "draws": 0,
+      "a_wr_pct": 78.0,
+      "b_wr_pct": 22.0,
+      "avg_length": 136.63,
+      "elapsed_sec": 2.4779317378997803,
+      "pair": [
+        "Expectimax",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "AdaptiveExpectimax",
+      "n_games": 100,
+      "a_wins": 68,
+      "b_wins": 32,
+      "draws": 0,
+      "a_wr_pct": 68.0,
+      "b_wr_pct": 32.0,
+      "avg_length": 152.07,
+      "elapsed_sec": 6.050940275192261,
+      "pair": [
+        "AggressiveExpectimax",
+        "AdaptiveExpectimax"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "MaxCapture",
+      "n_games": 100,
+      "a_wins": 83,
+      "b_wins": 17,
+      "draws": 0,
+      "a_wr_pct": 83.0,
+      "b_wr_pct": 17.0,
+      "avg_length": 133.7,
+      "elapsed_sec": 2.3305904865264893,
+      "pair": [
+        "AggressiveExpectimax",
+        "MaxCapture"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "TwoStack",
+      "n_games": 100,
+      "a_wins": 81,
+      "b_wins": 19,
+      "draws": 0,
+      "a_wr_pct": 81.0,
+      "b_wr_pct": 19.0,
+      "avg_length": 139.97,
+      "elapsed_sec": 2.7878024578094482,
+      "pair": [
+        "AggressiveExpectimax",
+        "TwoStack"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 90,
+      "b_wins": 10,
+      "draws": 0,
+      "a_wr_pct": 90.0,
+      "b_wr_pct": 10.0,
+      "avg_length": 132.39,
+      "elapsed_sec": 2.247150421142578,
+      "pair": [
+        "AggressiveExpectimax",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "AggressiveExpectimax",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 79,
+      "b_wins": 21,
+      "draws": 0,
+      "a_wr_pct": 79.0,
+      "b_wr_pct": 21.0,
+      "avg_length": 139.21,
+      "elapsed_sec": 2.6563849449157715,
+      "pair": [
+        "AggressiveExpectimax",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "AdaptiveExpectimax",
+      "b": "MaxCapture",
+      "n_games": 100,
+      "a_wins": 71,
+      "b_wins": 29,
+      "draws": 0,
+      "a_wr_pct": 71.0,
+      "b_wr_pct": 28.999999999999996,
+      "avg_length": 136.84,
+      "elapsed_sec": 2.173635244369507,
+      "pair": [
+        "AdaptiveExpectimax",
+        "MaxCapture"
+      ]
+    },
+    {
+      "a": "AdaptiveExpectimax",
+      "b": "TwoStack",
+      "n_games": 100,
+      "a_wins": 73,
+      "b_wins": 27,
+      "draws": 0,
+      "a_wr_pct": 73.0,
+      "b_wr_pct": 27.0,
+      "avg_length": 138.94,
+      "elapsed_sec": 2.2446796894073486,
+      "pair": [
+        "AdaptiveExpectimax",
+        "TwoStack"
+      ]
+    },
+    {
+      "a": "AdaptiveExpectimax",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 77,
+      "b_wins": 23,
+      "draws": 0,
+      "a_wr_pct": 77.0,
+      "b_wr_pct": 23.0,
+      "avg_length": 132.63,
+      "elapsed_sec": 2.1528890132904053,
+      "pair": [
+        "AdaptiveExpectimax",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "AdaptiveExpectimax",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 76,
+      "b_wins": 24,
+      "draws": 0,
+      "a_wr_pct": 76.0,
+      "b_wr_pct": 24.0,
+      "avg_length": 136.91,
+      "elapsed_sec": 2.5621609687805176,
+      "pair": [
+        "AdaptiveExpectimax",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "MaxCapture",
+      "b": "TwoStack",
+      "n_games": 100,
+      "a_wins": 50,
+      "b_wins": 50,
+      "draws": 0,
+      "a_wr_pct": 50.0,
+      "b_wr_pct": 50.0,
+      "avg_length": 132.8,
+      "elapsed_sec": 0.21928715705871582,
+      "pair": [
+        "MaxCapture",
+        "TwoStack"
+      ]
+    },
+    {
+      "a": "MaxCapture",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 47,
+      "b_wins": 53,
+      "draws": 0,
+      "a_wr_pct": 47.0,
+      "b_wr_pct": 53.0,
+      "avg_length": 130.63,
+      "elapsed_sec": 0.15137052536010742,
+      "pair": [
+        "MaxCapture",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "MaxCapture",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 45,
+      "b_wins": 55,
+      "draws": 0,
+      "a_wr_pct": 45.0,
+      "b_wr_pct": 55.00000000000001,
+      "avg_length": 133.82,
+      "elapsed_sec": 0.20552277565002441,
+      "pair": [
+        "MaxCapture",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "TwoStack",
+      "b": "HomeRush",
+      "n_games": 100,
+      "a_wins": 58,
+      "b_wins": 42,
+      "draws": 0,
+      "a_wr_pct": 57.99999999999999,
+      "b_wr_pct": 42.0,
+      "avg_length": 131.33,
+      "elapsed_sec": 0.14463043212890625,
+      "pair": [
+        "TwoStack",
+        "HomeRush"
+      ]
+    },
+    {
+      "a": "TwoStack",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 46,
+      "b_wins": 54,
+      "draws": 0,
+      "a_wr_pct": 46.0,
+      "b_wr_pct": 54.0,
+      "avg_length": 134.31,
+      "elapsed_sec": 0.20096635818481445,
+      "pair": [
+        "TwoStack",
+        "StackHomeRush"
+      ]
+    },
+    {
+      "a": "HomeRush",
+      "b": "StackHomeRush",
+      "n_games": 100,
+      "a_wins": 49,
+      "b_wins": 51,
+      "draws": 0,
+      "a_wr_pct": 49.0,
+      "b_wr_pct": 51.0,
+      "avg_length": 132.38,
+      "elapsed_sec": 0.12103939056396484,
+      "pair": [
+        "HomeRush",
+        "StackHomeRush"
+      ]
+    }
+  ]
+}
