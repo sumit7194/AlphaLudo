@@ -96,6 +96,17 @@ class V135Symmetric(nn.Module):
         self.progress_fc1 = nn.Linear(num_channels, head_hidden)
         self.progress_fc2 = nn.Linear(head_hidden, 1)
 
+        # Consequence (world-model) aux heads — predict per-rank risk so the
+        # trunk encodes "what happens to this token", curing the laggard-
+        # neglect flaw (see discussion/WORLD_MODEL_ATTACK_ANGLE.md). Both
+        # per-rank like progress; both sigmoid (targets are in [0, 1]).
+        #   capture: P(token at this rank's position is captured next opp turn)
+        #   risk:    cells-at-risk = P(capture) × progress_lost, normalized
+        self.capture_fc1 = nn.Linear(num_channels, head_hidden)
+        self.capture_fc2 = nn.Linear(head_hidden, 1)
+        self.risk_fc1 = nn.Linear(num_channels, head_hidden)
+        self.risk_fc2 = nn.Linear(head_hidden, 1)
+
     # ── Backbone ────────────────────────────────────────────────────────
     def _backbone(self, x: torch.Tensor) -> torch.Tensor:
         out = F.relu(self.bn_input(self.conv_input(x)))
@@ -109,12 +120,16 @@ class V135Symmetric(nn.Module):
             return logits
         all_illegal = (legal_mask.sum(dim=1, keepdim=True) == 0)
         logits = logits.masked_fill(~legal_mask.bool(), float("-inf"))
-        if all_illegal.any():
-            logits = torch.where(
-                all_illegal.expand_as(logits),
-                torch.zeros_like(logits),
-                logits,
-            )
+        # Unconditional where (2026-06-11 throughput fix): the previous
+        # `if all_illegal.any():` branch forced a GPU→CPU sync on EVERY
+        # forward call (training and inference) — py-spy measured ~12% of
+        # wall time stalled here. The where is output-identical in both
+        # cases and costs ~nothing on the common (no all-illegal row) path.
+        logits = torch.where(
+            all_illegal.expand_as(logits),
+            torch.zeros_like(logits),
+            logits,
+        )
         return logits
 
     # Class-level marker so trainer code can detect progress-head support
@@ -154,7 +169,13 @@ class V135Symmetric(nn.Module):
         ph = F.relu(self.progress_fc1(per_rank))
         progress = torch.sigmoid(self.progress_fc2(ph).squeeze(-1))   # (B, 4)
 
-        return policy, win_prob, moves, progress
+        # Consequence heads — per-rank, sigmoid → [0, 1]
+        ch = F.relu(self.capture_fc1(per_rank))
+        capture = torch.sigmoid(self.capture_fc2(ch).squeeze(-1))     # (B, 4)
+        rh = F.relu(self.risk_fc1(per_rank))
+        risk = torch.sigmoid(self.risk_fc2(rh).squeeze(-1))           # (B, 4)
+
+        return policy, win_prob, moves, progress, capture, risk
 
     def forward_policy_only(
         self,

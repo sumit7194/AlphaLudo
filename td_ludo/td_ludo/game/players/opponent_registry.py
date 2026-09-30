@@ -157,6 +157,22 @@ def _build_specs() -> Dict[str, _OpponentSpec]:
             in_channels=21,
             needs_consecutive_sixes=False,
         ),
+        "Hist_V136_best": _OpponentSpec(
+            # V13.6 RL frozen peak (Exp 48, 2026-06-13): the 82.8% best-eval
+            # checkpoint of the v136_rl_parity run itself, used as a FROZEN
+            # frontier opponent. SAME arch as the live student (6×96
+            # V135Symmetric, head_hidden=64) — NOT the 10×128 of V13_5_SL —
+            # so arch_kwargs must match the run's --v135-num-channels 96
+            # --head-hidden 64 or the load mismatches. The point: a fixed
+            # target stronger than the live (oscillating ~80.2) policy that
+            # does NOT co-drift, unlike SelfPlay / ghosts.
+            tag="Hist_V136_best",
+            arch_class=V135ProductionAdapter,
+            arch_kwargs=dict(num_res_blocks=6, num_channels=96, head_hidden=64),
+            encoder_fn=encode_state_v18_production,
+            in_channels=21,
+            needs_consecutive_sixes=False,
+        ),
     }
 
 
@@ -172,6 +188,11 @@ _DEFAULT_CKPTS = {
     "Hist_V13_2":  "checkpoints/v132/model_latest.pt",
     # V13.5 SL final: post-2026-05-08 SL distillation, 5M states.
     "Hist_V13_5_SL": "checkpoints/v135_full/model_latest.pt",
+    # V13.6 RL frozen peak (82.8% eval). A dedicated frozen COPY of
+    # model_best_eval.pt — copied once at Exp 48 launch so subsequent
+    # best-eval updates to model_best_eval.pt can't change the opponent
+    # mid-run. Same run dir as the live student.
+    "Hist_V136_best": "checkpoints/v136_rl_parity/hist_v136_best.pt",
 }
 
 # Repo-root-relative paths. The runner resolves them against the

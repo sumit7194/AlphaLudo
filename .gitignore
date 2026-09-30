@@ -23,6 +23,7 @@ env/
 # --- Build Artifacts ---
 build/
 dist/
+target/
 *.so
 *.dylib
 *.o
@@ -58,10 +59,12 @@ AlphaLudo_Export/
 training_log.txt
 training_logs_mastery_v2_cle
 
-# --- Archives ---
+# --- Archives & Binary Data ---
 *.zip
 *.tar.gz
 *.rar
+*.npz
+experiments/twosignal/*.pt
 
 # --- IDE & System ---
 .DS_Store

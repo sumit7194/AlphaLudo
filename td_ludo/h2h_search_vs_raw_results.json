@@ -1,0 +1,22 @@
+{
+  "control": {
+    "label": "raw-vs-raw",
+    "a_wins": 1,
+    "b_wins": 1,
+    "draws": 0,
+    "games": 2,
+    "a_wr": 50.0,
+    "elapsed_sec": 0.7407338619232178
+  },
+  "search_vs_raw": {
+    "label": "search-vs-raw",
+    "a_wins": 29,
+    "b_wins": 31,
+    "draws": 0,
+    "games": 60,
+    "a_wr": 48.333333333333336,
+    "elapsed_sec": 307.2361731529236
+  },
+  "edge_pp": -1.6666666666666643,
+  "se_pp": 6.451385151296608
+}

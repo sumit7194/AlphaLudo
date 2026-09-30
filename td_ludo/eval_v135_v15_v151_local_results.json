@@ -1,0 +1,271 @@
+{
+  "results": {
+    "V13.5": {
+      "win_rate_percent": 75.5,
+      "wins": 1510,
+      "total": 2000,
+      "elapsed_seconds": 617.8841037750244,
+      "games_per_sec": 3.236852975794006,
+      "avg_game_length": 154.0475,
+      "per_bot": {
+        "RacingExpectimax": {
+          "win_rate": 78.67647058823529,
+          "wins": 107,
+          "games": 136,
+          "avg_length": 149.72058823529412
+        },
+        "Heuristic": {
+          "win_rate": 76.96629213483146,
+          "wins": 137,
+          "games": 178,
+          "avg_length": 158.25280898876406
+        },
+        "Expectimax": {
+          "win_rate": 65.33333333333333,
+          "wins": 98,
+          "games": 150,
+          "avg_length": 149.97333333333333
+        },
+        "Random": {
+          "win_rate": 93.15068493150685,
+          "wins": 136,
+          "games": 146,
+          "avg_length": 141.37671232876713
+        },
+        "Aggressive": {
+          "win_rate": 83.03030303030303,
+          "wins": 137,
+          "games": 165,
+          "avg_length": 157.9030303030303
+        },
+        "Expert": {
+          "win_rate": 79.86577181208054,
+          "wins": 119,
+          "games": 149,
+          "avg_length": 160.39597315436242
+        },
+        "AggressiveExpectimax": {
+          "win_rate": 64.07185628742515,
+          "wins": 107,
+          "games": 167,
+          "avg_length": 158.50898203592814
+        },
+        "MCTSPure": {
+          "win_rate": 80.98159509202453,
+          "wins": 132,
+          "games": 163,
+          "avg_length": 150.01226993865032
+        },
+        "Racing": {
+          "win_rate": 83.95061728395062,
+          "wins": 136,
+          "games": 162,
+          "avg_length": 158.88888888888889
+        },
+        "DefensiveExpectimax": {
+          "win_rate": 61.18421052631579,
+          "wins": 93,
+          "games": 152,
+          "avg_length": 156.44736842105263
+        },
+        "Defensive": {
+          "win_rate": 79.86111111111111,
+          "wins": 115,
+          "games": 144,
+          "avg_length": 156.0
+        },
+        "MinimaxExpectimax": {
+          "win_rate": 63.503649635036496,
+          "wins": 87,
+          "games": 137,
+          "avg_length": 152.4087591240876
+        },
+        "BlockadeExpectimax": {
+          "win_rate": 70.19867549668874,
+          "wins": 106,
+          "games": 151,
+          "avg_length": 150.24503311258277
+        }
+      }
+    },
+    "V15": {
+      "win_rate_percent": 71.1,
+      "wins": 1422,
+      "total": 2000,
+      "elapsed_seconds": 1180.469211101532,
+      "games_per_sec": 1.6942415619071833,
+      "avg_game_length": 155.9205,
+      "per_bot": {
+        "RacingExpectimax": {
+          "win_rate": 69.11764705882354,
+          "wins": 94,
+          "games": 136,
+          "avg_length": 149.53676470588235
+        },
+        "Heuristic": {
+          "win_rate": 74.15730337078652,
+          "wins": 132,
+          "games": 178,
+          "avg_length": 161.41573033707866
+        },
+        "Expectimax": {
+          "win_rate": 62.666666666666664,
+          "wins": 94,
+          "games": 150,
+          "avg_length": 152.53333333333333
+        },
+        "Random": {
+          "win_rate": 95.20547945205479,
+          "wins": 139,
+          "games": 146,
+          "avg_length": 145.5958904109589
+        },
+        "Aggressive": {
+          "win_rate": 71.51515151515152,
+          "wins": 118,
+          "games": 165,
+          "avg_length": 159.83030303030304
+        },
+        "Expert": {
+          "win_rate": 73.15436241610739,
+          "wins": 109,
+          "games": 149,
+          "avg_length": 160.9261744966443
+        },
+        "AggressiveExpectimax": {
+          "win_rate": 62.874251497005986,
+          "wins": 105,
+          "games": 167,
+          "avg_length": 161.65269461077844
+        },
+        "MCTSPure": {
+          "win_rate": 74.84662576687117,
+          "wins": 122,
+          "games": 163,
+          "avg_length": 154.01226993865032
+        },
+        "Racing": {
+          "win_rate": 76.54320987654322,
+          "wins": 124,
+          "games": 162,
+          "avg_length": 160.6851851851852
+        },
+        "DefensiveExpectimax": {
+          "win_rate": 66.44736842105263,
+          "wins": 101,
+          "games": 152,
+          "avg_length": 150.93421052631578
+        },
+        "Defensive": {
+          "win_rate": 75.0,
+          "wins": 108,
+          "games": 144,
+          "avg_length": 161.34027777777777
+        },
+        "MinimaxExpectimax": {
+          "win_rate": 57.66423357664234,
+          "wins": 79,
+          "games": 137,
+          "avg_length": 153.02189781021897
+        },
+        "BlockadeExpectimax": {
+          "win_rate": 64.23841059602648,
+          "wins": 97,
+          "games": 151,
+          "avg_length": 152.41721854304635
+        }
+      }
+    },
+    "V15.1": {
+      "win_rate_percent": 71.35,
+      "wins": 1427,
+      "total": 2000,
+      "elapsed_seconds": 523.6124830245972,
+      "games_per_sec": 3.819618639431956,
+      "avg_game_length": 155.5455,
+      "per_bot": {
+        "RacingExpectimax": {
+          "win_rate": 67.6470588235294,
+          "wins": 92,
+          "games": 136,
+          "avg_length": 149.96323529411765
+        },
+        "Heuristic": {
+          "win_rate": 74.15730337078652,
+          "wins": 132,
+          "games": 178,
+          "avg_length": 160.5
+        },
+        "Expectimax": {
+          "win_rate": 60.0,
+          "wins": 90,
+          "games": 150,
+          "avg_length": 152.80666666666667
+        },
+        "Random": {
+          "win_rate": 91.78082191780823,
+          "wins": 134,
+          "games": 146,
+          "avg_length": 145.08219178082192
+        },
+        "Aggressive": {
+          "win_rate": 74.54545454545455,
+          "wins": 123,
+          "games": 165,
+          "avg_length": 160.8242424242424
+        },
+        "Expert": {
+          "win_rate": 76.51006711409396,
+          "wins": 114,
+          "games": 149,
+          "avg_length": 161.3288590604027
+        },
+        "AggressiveExpectimax": {
+          "win_rate": 61.07784431137725,
+          "wins": 102,
+          "games": 167,
+          "avg_length": 166.89820359281438
+        },
+        "MCTSPure": {
+          "win_rate": 81.59509202453988,
+          "wins": 133,
+          "games": 163,
+          "avg_length": 149.2638036809816
+        },
+        "Racing": {
+          "win_rate": 74.69135802469135,
+          "wins": 121,
+          "games": 162,
+          "avg_length": 158.5679012345679
+        },
+        "DefensiveExpectimax": {
+          "win_rate": 61.8421052631579,
+          "wins": 94,
+          "games": 152,
+          "avg_length": 154.26315789473685
+        },
+        "Defensive": {
+          "win_rate": 77.08333333333333,
+          "wins": 111,
+          "games": 144,
+          "avg_length": 155.72222222222223
+        },
+        "MinimaxExpectimax": {
+          "win_rate": 56.934306569343065,
+          "wins": 78,
+          "games": 137,
+          "avg_length": 153.02189781021897
+        },
+        "BlockadeExpectimax": {
+          "win_rate": 68.21192052980132,
+          "wins": 103,
+          "games": 151,
+          "avg_length": 150.49006622516555
+        }
+      }
+    }
+  },
+  "wall_min": 38.69943260351817,
+  "n_games": 2000,
+  "seed_base": 42
+}

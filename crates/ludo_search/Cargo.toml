@@ -1,0 +1,14 @@
+[package]
+name = "ludo_search"
+version = "0.1.0"
+edition = "2021"
+authors = ["AlphaLudo Team"]
+description = "High-performance Expectimax and MCTS search algorithms for Ludo"
+
+[dependencies]
+ludo_core = { path = "../ludo_core" }
+rand = "0.8"
+rayon = "1.10"
+
+
+[dev-dependencies]

@@ -58,6 +58,10 @@ class V15RichTrainer:
         win_bce_coeff: float = 0.5,
         kl_anchor_coeff: float = 0.0,
         kl_anchor_model: Optional[nn.Module] = None,
+        use_gae: bool = False,
+        gae_lambda: float = 0.95,
+        terminal_only: bool = False,
+        value_target: str = "terminal",
     ):
         self.model = model
         self.device = device
@@ -72,10 +76,21 @@ class V15RichTrainer:
         self.win_bce_coeff = win_bce_coeff
         self.kl_anchor_coeff = kl_anchor_coeff
         self.kl_anchor_model = kl_anchor_model
+        # GAE (ported from v13.6 trainer_v10; Exp 58). use_gae=False → legacy MC.
+        self.use_gae = bool(use_gae)
+        self.gae_lambda = float(gae_lambda)
+        # terminal_only: zero every per-step reward, train on ±1 win/loss only
+        # (the "best pipeline" from v13.6: terminal-only + GAE).
+        self.terminal_only = bool(terminal_only)
+        # value_target: "terminal" = BCE to binary win/loss (high variance + bias,
+        # the original). "lambda" = MSE to the GAE bootstrapped λ-return
+        # (value+advantage) — lower variance, the squeeze lever (Exp 62).
+        self.value_target = str(value_target)
 
         # PPO buffering
         self._ppo_buffer: List[dict] = []
         self._ppo_games_buffered = 0
+        self._traj_lengths: List[int] = []   # per-game own-decision count (GAE)
 
         # EMA return normalization
         self._return_running_mean = 0.0
@@ -116,7 +131,10 @@ class V15RichTrainer:
         z = 1.0 if model_player == winner else (0.0 if winner < 0 else loss_penalty)
         won_target = 1.0 if model_player == winner else 0.0
 
-        rewards = [step["step_reward"] for step in trajectory]
+        if self.terminal_only:
+            rewards = [0.0] * len(trajectory)
+        else:
+            rewards = [step["step_reward"] for step in trajectory]
         rewards[-1] = rewards[-1] + z  # add terminal reward to last step
 
         # Backwards discount
@@ -127,7 +145,7 @@ class V15RichTrainer:
             returns[i] = R
 
         # Buffer
-        for step, ret in zip(trajectory, returns):
+        for i, (step, ret) in enumerate(zip(trajectory, returns)):
             self._ppo_buffer.append({
                 "v15_x": step["v15_x"],
                 "v15_mask": step["v15_mask"],
@@ -135,14 +153,49 @@ class V15RichTrainer:
                 "old_log_prob": step["old_log_prob"],
                 "temperature": step.get("temperature", 1.0),
                 "return": ret,
+                "reward": rewards[i],   # per-step r_t for GAE
                 "won_target": won_target,
+                # v16 only: sparse tactical targets (capture-available,
+                # in-danger) recorded at rollout time. Absent for v15 runs,
+                # in which case every v16 hook below is a no-op.
+                "aux_target": step.get("aux_target"),
             })
         self._ppo_games_buffered += 1
+        self._traj_lengths.append(len(trajectory))
         self.total_games += 1
 
         if self._ppo_games_buffered >= self.ppo_buffer_games:
             return self._ppo_update()
         return None
+
+    def _compute_gae(self, rewards, values, gamma=GAMMA):
+        """Generalized Advantage Estimation, per trajectory (ported from
+        v13.6 trainer_v10._compute_gae, Exp 58).
+
+        rewards / values: (N,) tensors aligned to the flattened PPO buffer;
+        self._traj_lengths splits them back into per-game trajectories.
+            δ_t = r_t + γ·V(s_{t+1}) − V(s_t)   (V at the trajectory end = 0)
+            A_t = δ_t + γλ·A_{t+1}              (backward recursion)
+        At λ=1 this telescopes to (raw discounted return from t) − V_t, i.e.
+        exactly the Monte-Carlo advantage (the correctness gate). The value
+        head is the BCE-trained win-prob baseline; GAE only reads it. Computed
+        on CPU/numpy (segments ~50-150 steps); result moved back to device.
+        """
+        r = rewards.detach().cpu().numpy()
+        v = values.detach().cpu().numpy()
+        adv = np.zeros_like(r)
+        lam = self.gae_lambda
+        idx = 0
+        for L in self._traj_lengths:
+            L = int(L)
+            a = 0.0
+            for t in range(L - 1, -1, -1):
+                v_next = float(v[idx + t + 1]) if (t + 1) < L else 0.0
+                delta = float(r[idx + t]) + gamma * v_next - float(v[idx + t])
+                a = delta + gamma * lam * a
+                adv[idx + t] = a
+            idx += L
+        return torch.from_numpy(adv).to(values.device, dtype=torch.float32)
 
     # ── PPO update ──────────────────────────────────────────────────────────
     def _ppo_update(self) -> dict:
@@ -155,7 +208,12 @@ class V15RichTrainer:
         all_old_lp = np.array([b["old_log_prob"] for b in buf], dtype=np.float32)
         all_temps = np.array([b["temperature"] for b in buf], dtype=np.float32)
         all_returns_raw = np.array([b["return"] for b in buf], dtype=np.float32)
+        all_rewards_raw = np.array([b.get("reward", 0.0) for b in buf], dtype=np.float32)
         all_won_targets = np.array([b["won_target"] for b in buf], dtype=np.float32)
+        # v16 only — None for v15 runs, and every aux hook below no-ops.
+        _aux = [b.get("aux_target") for b in buf]
+        all_aux_t = (torch.from_numpy(np.asarray(_aux, dtype=np.float32)).to(device)
+                     if _aux and _aux[0] is not None else None)
 
         # Update EMA running stats
         batch_mean = float(all_returns_raw.mean())
@@ -172,6 +230,7 @@ class V15RichTrainer:
         all_old_lp_t = torch.from_numpy(all_old_lp).to(device)
         all_temps_t = torch.from_numpy(all_temps).to(device)
         all_returns_t = torch.from_numpy(all_returns).to(device)
+        all_rewards_raw_t = torch.from_numpy(all_rewards_raw).to(device)
         all_won_t = torch.from_numpy(all_won_targets).to(device)
 
         # Pre-compute advantages once per update — CHUNKED to avoid OOM on
@@ -185,7 +244,17 @@ class V15RichTrainer:
                 win_probs.append(wp)
             win_prob0 = torch.cat(win_probs, dim=0)
             all_values = 2.0 * win_prob0 - 1.0
-            all_advantages = all_returns_t - all_values
+            if self.use_gae and sum(self._traj_lengths) == len(buf):
+                # GAE on raw rewards + bootstrap values, per trajectory.
+                # Scale-consistent (raw return − value at λ=1), unlike the MC
+                # path's normalized-return − value. Falls back to MC if the
+                # trajectory lengths don't sum to the buffer (safety).
+                all_advantages = self._compute_gae(all_rewards_raw_t, all_values)
+            else:
+                all_advantages = all_returns_t - all_values
+            # λ-return value target = value + (raw, un-normalized) advantage.
+            # Computed BEFORE advantage normalization. Clamp to the reward range.
+            all_value_targets = (all_values + all_advantages).clamp(-1.0, 1.0)
             all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
 
         N = len(buf)
@@ -211,7 +280,12 @@ class V15RichTrainer:
                 mb_temps = all_temps_t[mb_idx]
                 mb_won = all_won_t[mb_idx]
                 mb_adv = all_advantages[mb_idx]
+                mb_vtarg = all_value_targets[mb_idx]
+                mb_aux = all_aux_t[mb_idx] if all_aux_t is not None else None
 
+                # v16: select which weight property receives this backward.
+                # No-op for v15.
+                self._mode_main()
                 policy, win_prob = self.model(mb_states, mb_masks)
                 # Re-derive behavior policy with the temperature used at rollout time.
                 behavior_logits = torch.log(policy + 1e-8) / mb_temps.unsqueeze(1)
@@ -232,8 +306,13 @@ class V15RichTrainer:
                                     1.0 + self.ppo_clip) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                win_bce_loss = F.binary_cross_entropy(
-                    win_prob.clamp(1e-6, 1 - 1e-6), mb_won)
+                if self.value_target == "lambda":
+                    # MSE regress the value (2·win_prob−1 ∈ [−1,1]) to the
+                    # bootstrapped λ-return — lower-variance than binary BCE.
+                    win_bce_loss = F.mse_loss(2.0 * win_prob - 1.0, mb_vtarg)
+                else:
+                    win_bce_loss = F.binary_cross_entropy(
+                        win_prob.clamp(1e-6, 1 - 1e-6), mb_won)
 
                 # Entropy over masked policy
                 log_p_all = torch.log(policy + 1e-8)
@@ -260,6 +339,11 @@ class V15RichTrainer:
 
                 self.optimizer.zero_grad()
                 loss.backward()
+                # v16: SECOND backward on the auxiliary objective, into the
+                # second weight property. Runs BEFORE clipping/step so both
+                # objectives share one clip and one optimizer step — the RL
+                # update itself is untouched. Returns 0.0 for v15.
+                aux_val = self._aux_backward(mb_states, mb_masks, mb_aux)
                 nn.utils.clip_grad_norm_(self.model.parameters(), MAX_GRAD_NORM)
                 self.optimizer.step()
 
@@ -274,6 +358,7 @@ class V15RichTrainer:
                 metrics_acc["clip_fraction"] += float(clip_frac)
                 metrics_acc["approx_kl"] += float(approx_kl)
                 metrics_acc["kl_anchor"] += kl_anchor_val
+                metrics_acc["aux_loss"] = metrics_acc.get("aux_loss", 0.0) + aux_val
                 n_minibatches += 1
 
         if n_minibatches > 0:
@@ -293,8 +378,21 @@ class V15RichTrainer:
         # Reset buffer
         self._ppo_buffer = []
         self._ppo_games_buffered = 0
+        self._traj_lengths = []
         self.total_updates += 1
         return metrics_acc
+
+    # ── v16 hooks — no-ops here, overridden by V16RichTrainer ───────────────
+    # These exist so v15 and v16 share ONE implementation of the PPO/GAE math.
+    # The first two-signal attempt reimplemented the RL loop and diverged from
+    # this pipeline in ~10 ways; a subclass with three hooks cannot drift.
+    def _mode_main(self) -> None:
+        """Select the property that receives the RL backward."""
+        return None
+
+    def _aux_backward(self, mb_states, mb_masks, mb_aux) -> float:
+        """Second backward for the auxiliary objective. Returns its loss."""
+        return 0.0
 
     # ── Convenience accessors for dashboard / logging ───────────────────────
     def get_diagnostic_means(self) -> dict:

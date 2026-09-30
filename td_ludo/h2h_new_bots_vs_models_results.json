@@ -1,0 +1,275 @@
+{
+  "results": {
+    "V15.1_RL_strong_vs_Expectimax": {
+      "a_wins": 67,
+      "b_wins": 33,
+      "draws": 0,
+      "a_wr": 67.0,
+      "b_wr": 33.0,
+      "elapsed_sec": 13.07063102722168,
+      "avg_len": 152.32
+    },
+    "V13.5_vs_Expectimax": {
+      "a_wins": 74,
+      "b_wins": 26,
+      "draws": 0,
+      "a_wr": 74.0,
+      "b_wr": 26.0,
+      "elapsed_sec": 17.982707262039185,
+      "avg_len": 155.24
+    },
+    "V15.1_RL_strong_vs_MCTSPure": {
+      "a_wins": 81,
+      "b_wins": 19,
+      "draws": 0,
+      "a_wr": 81.0,
+      "b_wr": 19.0,
+      "elapsed_sec": 202.39494514465332,
+      "avg_len": 154.98
+    },
+    "V13.5_vs_MCTSPure": {
+      "a_wins": 82,
+      "b_wins": 18,
+      "draws": 0,
+      "a_wr": 82.0,
+      "b_wr": 18.0,
+      "elapsed_sec": 198.32610201835632,
+      "avg_len": 155.24
+    },
+    "V15.1_RL_strong_vs_AggressiveExpectimax": {
+      "a_wins": 62,
+      "b_wins": 38,
+      "draws": 0,
+      "a_wr": 62.0,
+      "b_wr": 38.0,
+      "elapsed_sec": 13.882426977157593,
+      "avg_len": 157.75
+    },
+    "V13.5_vs_AggressiveExpectimax": {
+      "a_wins": 62,
+      "b_wins": 38,
+      "draws": 0,
+      "a_wr": 62.0,
+      "b_wr": 38.0,
+      "elapsed_sec": 18.258519172668457,
+      "avg_len": 160.64
+    },
+    "V15.1_RL_strong_vs_DefensiveExpectimax": {
+      "a_wins": 60,
+      "b_wins": 40,
+      "draws": 0,
+      "a_wr": 60.0,
+      "b_wr": 40.0,
+      "elapsed_sec": 12.715276956558228,
+      "avg_len": 151.7
+    },
+    "V13.5_vs_DefensiveExpectimax": {
+      "a_wins": 66,
+      "b_wins": 34,
+      "draws": 0,
+      "a_wr": 66.0,
+      "b_wr": 34.0,
+      "elapsed_sec": 17.421535968780518,
+      "avg_len": 153.03
+    },
+    "V15.1_RL_strong_vs_MinimaxExpectimax": {
+      "a_wins": 66,
+      "b_wins": 34,
+      "draws": 0,
+      "a_wr": 66.0,
+      "b_wr": 34.0,
+      "elapsed_sec": 12.260618925094604,
+      "avg_len": 151.73
+    },
+    "V13.5_vs_MinimaxExpectimax": {
+      "a_wins": 75,
+      "b_wins": 25,
+      "draws": 0,
+      "a_wr": 75.0,
+      "b_wr": 25.0,
+      "elapsed_sec": 17.756019830703735,
+      "avg_len": 155.72
+    },
+    "V15.1_RL_strong_vs_RacingExpectimax": {
+      "a_wins": 77,
+      "b_wins": 23,
+      "draws": 0,
+      "a_wr": 77.0,
+      "b_wr": 23.0,
+      "elapsed_sec": 12.674482107162476,
+      "avg_len": 146.54
+    },
+    "V13.5_vs_RacingExpectimax": {
+      "a_wins": 78,
+      "b_wins": 22,
+      "draws": 0,
+      "a_wr": 78.0,
+      "b_wr": 22.0,
+      "elapsed_sec": 17.504035711288452,
+      "avg_len": 145.74
+    },
+    "V15.1_RL_strong_vs_BlockadeExpectimax": {
+      "a_wins": 72,
+      "b_wins": 28,
+      "draws": 0,
+      "a_wr": 72.0,
+      "b_wr": 28.0,
+      "elapsed_sec": 13.004550695419312,
+      "avg_len": 151.61
+    },
+    "V13.5_vs_BlockadeExpectimax": {
+      "a_wins": 68,
+      "b_wins": 32,
+      "draws": 0,
+      "a_wr": 68.0,
+      "b_wr": 32.0,
+      "elapsed_sec": 18.18516778945923,
+      "avg_len": 150.3
+    },
+    "V15.1_RL_strong_vs_VoteExpectimax": {
+      "a_wins": 63,
+      "b_wins": 37,
+      "draws": 0,
+      "a_wr": 63.0,
+      "b_wr": 37.0,
+      "elapsed_sec": 18.697538137435913,
+      "avg_len": 152.93
+    },
+    "V13.5_vs_VoteExpectimax": {
+      "a_wins": 69,
+      "b_wins": 31,
+      "draws": 0,
+      "a_wr": 69.0,
+      "b_wr": 31.0,
+      "elapsed_sec": 23.252374172210693,
+      "avg_len": 157.09
+    },
+    "V15.1_RL_strong_vs_AdaptiveExpectimax": {
+      "a_wins": 72,
+      "b_wins": 28,
+      "draws": 0,
+      "a_wr": 72.0,
+      "b_wr": 28.0,
+      "elapsed_sec": 11.734604120254517,
+      "avg_len": 144.76
+    },
+    "V13.5_vs_AdaptiveExpectimax": {
+      "a_wins": 77,
+      "b_wins": 23,
+      "draws": 0,
+      "a_wr": 77.0,
+      "b_wr": 23.0,
+      "elapsed_sec": 16.007838249206543,
+      "avg_len": 146.96
+    },
+    "V15.1_RL_strong_vs_MaxCapture": {
+      "a_wins": 86,
+      "b_wins": 14,
+      "draws": 0,
+      "a_wr": 86.0,
+      "b_wr": 14.0,
+      "elapsed_sec": 9.781663179397583,
+      "avg_len": 132.15
+    },
+    "V13.5_vs_MaxCapture": {
+      "a_wins": 86,
+      "b_wins": 14,
+      "draws": 0,
+      "a_wr": 86.0,
+      "b_wr": 14.0,
+      "elapsed_sec": 14.553168773651123,
+      "avg_len": 134.22
+    },
+    "V15.1_RL_strong_vs_TwoStack": {
+      "a_wins": 89,
+      "b_wins": 11,
+      "draws": 0,
+      "a_wr": 89.0,
+      "b_wr": 11.0,
+      "elapsed_sec": 10.104069232940674,
+      "avg_len": 135.83
+    },
+    "V13.5_vs_TwoStack": {
+      "a_wins": 91,
+      "b_wins": 9,
+      "draws": 0,
+      "a_wr": 91.0,
+      "b_wr": 9.0,
+      "elapsed_sec": 14.9617760181427,
+      "avg_len": 135.93
+    },
+    "V15.1_RL_strong_vs_HomeRush": {
+      "a_wins": 87,
+      "b_wins": 13,
+      "draws": 0,
+      "a_wr": 87.0,
+      "b_wr": 13.0,
+      "elapsed_sec": 9.722615003585815,
+      "avg_len": 131.91
+    },
+    "V13.5_vs_HomeRush": {
+      "a_wins": 87,
+      "b_wins": 13,
+      "draws": 0,
+      "a_wr": 87.0,
+      "b_wr": 13.0,
+      "elapsed_sec": 14.386390924453735,
+      "avg_len": 133.46
+    },
+    "V15.1_RL_strong_vs_StackHomeRush": {
+      "a_wins": 89,
+      "b_wins": 11,
+      "draws": 0,
+      "a_wr": 89.0,
+      "b_wr": 11.0,
+      "elapsed_sec": 10.292785882949829,
+      "avg_len": 135.41
+    },
+    "V13.5_vs_StackHomeRush": {
+      "a_wins": 89,
+      "b_wins": 11,
+      "draws": 0,
+      "a_wr": 89.0,
+      "b_wr": 11.0,
+      "elapsed_sec": 14.46316409111023,
+      "avg_len": 136.28
+    },
+    "V15.1_RL_strong_vs_Depth2Expectimax": {
+      "a_wins": 63,
+      "b_wins": 37,
+      "draws": 0,
+      "a_wr": 63.0,
+      "b_wr": 37.0,
+      "elapsed_sec": 17.602471351623535,
+      "avg_len": 154.14
+    },
+    "V13.5_vs_Depth2Expectimax": {
+      "a_wins": 63,
+      "b_wins": 37,
+      "draws": 0,
+      "a_wr": 63.0,
+      "b_wr": 37.0,
+      "elapsed_sec": 21.733978033065796,
+      "avg_len": 155.41
+    },
+    "V15.1_RL_strong_vs_MCTSExpectimaxPrior": {
+      "a_wins": 20,
+      "b_wins": 10,
+      "draws": 0,
+      "a_wr": 66.66666666666667,
+      "b_wr": 33.333333333333336,
+      "elapsed_sec": 60.259843826293945,
+      "avg_len": 154.5
+    },
+    "V13.5_vs_MCTSExpectimaxPrior": {
+      "a_wins": 18,
+      "b_wins": 12,
+      "draws": 0,
+      "a_wr": 60.0,
+      "b_wr": 40.0,
+      "elapsed_sec": 62.089242935180664,
+      "avg_len": 160.1
+    }
+  },
+  "elapsed_min": 15.251375301678975
+}

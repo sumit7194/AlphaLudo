@@ -1,0 +1,18 @@
+{
+  "result": {
+    "a_wins": 357,
+    "b_wins": 643,
+    "draws": 0,
+    "a_wr": 35.7,
+    "b_wr": 64.3,
+    "elapsed_sec": 472.72738218307495,
+    "avg_len": 152.962,
+    "games": 1000
+  },
+  "ckpt_v152_sl": "/Users/sumit/Github/AlphaLudo/td_ludo_v15/checkpoints/h2h_compare/v152_sl_final.pt",
+  "ckpt_v151_pre": "/Users/sumit/Github/AlphaLudo/td_ludo_v15/checkpoints/h2h_compare/v151_rl_pre_strong.pt",
+  "games_per_orientation": 500,
+  "elapsed_sec": 472.7273919582367,
+  "std_err_pp": 1.5150940564862632,
+  "delta_pp": -28.599999999999994
+}

@@ -132,7 +132,7 @@ class V135ProductionAdapter(nn.Module):
         rank_legal = self._build_rank_legal_mask(legal_mask, token_to_rank)
 
         # Inner forward — rank-indexed
-        rank_policy, win_prob, moves, rank_progress = self.inner(
+        rank_policy, win_prob, moves, rank_progress, rank_capture, rank_risk = self.inner(
             v18, rank_masks, rank_legal,
         )
 
@@ -153,7 +153,15 @@ class V135ProductionAdapter(nn.Module):
         # token can be moved this turn).
         token_progress = torch.gather(rank_progress, 1, token_to_rank)  # (B, 4)
 
-        return token_policy, win_prob, moves, token_progress
+        # Consequence heads → token space (gather like progress). These are
+        # token-id-indexed so they match compute_per_token_targets in the
+        # trainer — keeping prediction and target in the SAME space (unlike
+        # the rank-vs-token progress mismatch, which was harmless only
+        # because progress_coeff defaulted to 0).
+        token_capture = torch.gather(rank_capture, 1, token_to_rank)    # (B, 4)
+        token_risk = torch.gather(rank_risk, 1, token_to_rank)          # (B, 4)
+
+        return token_policy, win_prob, moves, token_progress, token_capture, token_risk
 
     def forward_policy_only(self, x: torch.Tensor, legal_mask: torch.Tensor):
         """Pre-softmax legal-masked logits for sampler/PPO importance ratios.

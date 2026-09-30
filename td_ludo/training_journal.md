@@ -22,6 +22,41 @@ no
 
 ## Experiment Log
 
+---
+
+### 2026-05-23: V13.5 RL strong-opp — **dense rewards restored, KL anchor dropped**
+
+**Context**: Multi-week effort to break V13.5 / V15.1 past their 75-76% bot-WR plateau. We added strong-bot opponents (Expectimax-family, MCTSPure, Depth2Expectimax) hoping the *better* opponents would teach the models more. They didn't. After 300K games of V15.1 against the new mix, overall WR moved +0.4pp from G=50K → G=300K (essentially flat). V13.5 at G=51K of strong-opp showed the same pattern — small gains on hard bots (Minimax/Aggressive +1.4-1.7pp) eaten by losses on saturated easy bots.
+
+**The diagnostic question**: Are we LEARNING anything from these new opponents, or just shuffling the model around?
+
+**Root cause discovered (re-read of THIS journal):**
+
+The V13.5 RL trainer was **terminal-only ±1 rewards**. Pure REINFORCE with sparse signals. Per **Experiment 8 (this journal)** — proven catastrophic ~7 months ago:
+
+> *"The sparse terminal reward of Ludo (+1/−1 over ~175 moves with high dice randomness) creates a **Credit Assignment Nightmare** for standard PPO. The model cannot discern the value of a mid-game capture purely from an outcome that happens 80 moves later. The shaped rewards were crucial priors, not harmful biases."*
+
+> *"In highly stochastic, long-horizon games, intermediate rewards MUST be loud enough to overpower terminal noise."*
+
+`td_ludo/td_ludo/game/reward_shaping.py::compute_shaped_reward` was never removed — just unused by the V13.5 trainer. We had been training V13.5 (and V15.1, same design) without the proven dense-reward backbone for the entire strong-opp campaign.
+
+**Compounding problem**: V13.5 trainer also has a KL anchor pulling toward V13.5_SL (the supervised parent). V13.5_SL was trained on V13.5 self-play data — it has never seen Expectimax-family bots. So the anchor was pulling V13.5 RL back toward a policy that doesn't know how to beat the new opponents. Anchor coeff was 0.05 — small but non-trivial; measured KL = 0.11-0.43 during recent runs, indicating real pull.
+
+**Changes (in `train_v135_rl.py`)**:
+1. **Restored dense reward shaping** via `compute_shaped_reward`. Each trajectory entry now stores a per-step shaped reward (leave-base +0.05, forward +0.005/step, home-stretch +0.10, score +0.40, capture +0.20, killed −0.20, plus strategic safety/danger/leader-capture bonuses). `_finalize` / `_truncate` compute per-entry returns via reverse cumsum of future shaped rewards + terminal ±1. CLI flag `--use-shaped-reward 1` (default on).
+2. **Dropped KL anchor** (`--kl-anchor-coeff 0`). The V13.5_SL teacher doesn't know about strong opps; anchor = drag.
+3. **Tightened eval cadence** to 15K games × 2K eval games (was 50K × 5K) for faster signal on whether the new reward signal helps.
+
+**Latent bug also fixed (separate root cause):**
+
+`_load_v135` was not stripping the `inner.` prefix that production-adapter checkpoints carry (V135ProductionAdapter wraps V135Symmetric). With `--init v135_prod_rl_local/model_latest.pt`, `load_state_dict(strict=False)` silently loaded NOTHING — the model was at random initialization. Smoke test: argmax V13.5 vs Aggressive showed 23/100 before the fix, 84/100 after. The previous "V13.5 RL strong-opp" run was actually a random-init model — explains the chaotic 11-25% per-bot WRs we were seeing.
+
+**Expected impact**: per the journal's repeated lesson, dense rewards should restore credit assignment. Hard-bot WRs should rise meaningfully (not just +1-2pp noise). Run is live as of 2026-05-23 14:46 UTC. First eval at G=15K → ETA ~1.5hr at GPM 172.
+
+**Cross-pollination note**: V15.1 trainer (`td_ludo_v15/train_v15_rich.py`) has the same terminal-only design. Same intervention applies. Hold porting until V13.5 results confirm the recipe works on the strong-opp mix.
+
+---
+
 ### Experiment 1: PBRS (Potential-Based Reward Shaping)
 - **Games**: 0 → 155K
 - **Config**: `R = R_raw + γ·Φ(s') - Φ(s)`, scale=0.15, γ=0.995
@@ -5237,3 +5272,1007 @@ extending V13.5 specifically, MCTS is dead.
 - Diagnostic JSONs: `runs/mcts_diag_v135_500sims.json`
 - Failed-distill checkpoint preserved: `checkpoints/mcts_v135_step1_distill/`
 - 9/9 MCTS unit tests passing — engine is reusable for any future model.
+
+---
+
+## Exp 46 — V13.6 reward-system audit + three wiring fixes (2026-06-10)
+
+Full audit of the reward code behind both live V13.6 RL runs (local Mac
+`v136_rl_local` via train_v135_rl.py; GCP L4 `v136_rl_parity` via
+train_v12.py → v11.py → trainer_v10.py). Three real defects found and
+fixed. No coefficient values changed anywhere — all fixes make the code
+do what the documented recipe already claimed.
+
+### Defects found
+
+1. **Got-killed −0.20 was DEAD CODE in the reward_shaping.py path.**
+   `compute_shaped_reward` checks for own tokens going to base inside the
+   (pre→post) window of the player's OWN move — impossible; captures
+   happen during the opponent's intervening turn. Affected
+   train_v135_rl.py (v136_rl_local) and, historically, every
+   reward_shaping-based run (v6_1.py player included). The v1_dense menu
+   path (v11.py + dense_rewards.py, used by the VM parity run) was NOT
+   affected — it tracks at-base deltas across opponent turns via
+   `compute_kill_penalty`. Net effect on affected runs: capture earned
+   +0.20 but getting captured cost nothing dense. Plausibly related to
+   v136_rl_local being pinned at ~50% by exactly the risk-aware bots
+   (Expectimax 50.7%, MinimaxExpectimax 51.2%) while beating everything
+   else 70-95%.
+   **Fix:** train_v135_rl.py now keeps `prev_own_at_base[game][player]`
+   and charges `compute_kill_penalty` at each own decision (same
+   mechanism as v11.py).
+
+2. **Missed-finish bias penalty (−0.15) had never fired in ANY run.**
+   `bias_penalties._simulate_dest` treated finishing as cur+dice == 99,
+   but real tokens finish by landing exactly on logical cell 56 (from
+   home column 51-55, or from track pos 50 with a 6); the engine stores
+   the result as the 99 sentinel. Its unit test passed only because it
+   used fictional positions (90/95). Also distorted: laggard-on-3rd-score
+   distance used 99−pos, so a laggard at 55 (one roll from home) was
+   charged distance 44 ≈ same as at-base after the cap.
+   **Fix:** `_simulate_dest` now models finish = exact landing on 56
+   (overshoot → illegal); laggard distance is real cells (at-base = 57 →
+   max 0.1425, just under the 0.15 cap). Tests rewritten with real
+   encodings + new cases (finish from 50 with a 6, overshoot): 26/26 pass
+   locally and on the VM.
+
+3. **Phantom forward reward on scoring moves in reward_shaping.py.**
+   The forward-progress term didn't exclude the 56→99 sentinel jump, so
+   scoring from pos 55 paid an extra 0.005×44 ≈ +0.22 on top of +0.40 —
+   score was effectively worth ~0.62 in the local run (dense_rewards.py
+   already excluded this, another local-vs-parity divergence).
+   **Fix:** forward term now guarded by p2 < SCORE_POSITION.
+
+### Deployment (both runs paused → patched → resumed, zero loss)
+
+- **v136_rl_local** (was not running): patched, relaunched via
+  launch_v136_rl_local.sh → resumed clean at **910,806 games /
+  107.5M states**, optimizer restored. Backup:
+  `checkpoint_backups/v136_rl_local_prefix_fix_20260610_035330/`.
+- **v136_rl_parity (VM alphaludo-l4)**: checkpoint backed up to
+  `~/checkpoint_backups/v136_rl_parity_20260609_222452/`, tests run on
+  VM, old PID killed 41s after an auto-save, relaunched via
+  launch_v136_rl_newvm.sh → **"Resumed: 765004 games, 802035 updates"**,
+  GPM 383. Only change live on VM: missed-finish penalty now actually
+  fires + truthful laggard distance (bias-penalty module only; its v1
+  dense menu was already correct).
+
+### What to watch
+
+- Local run: reward distribution shifted noticeably (−0.20 kills now
+  charged, −0.22 score inflation removed) → expect a transient; judge
+  after ≥2 evals (eval every 15K games). Hypothesis: Expectimax-family
+  WRs (the ~50% wall) should move if under-priced exposure was real.
+- VM run: mild change; next eval at G=780,000. Watch for regression vs
+  the 78.8-80.5% band; revert path = restore backup + revert
+  bias_penalties.py.
+- Per journal hard rules: no buffer to clear (both trainers are
+  on-policy chunks); return-norm running stats persist through resume
+  and will adapt.
+
+---
+
+## Exp 47 — V13.6 RL throughput overhaul (2026-06-11)
+
+py-spy profile of the live VM run (60s, 2,953 samples) showed the
+bottleneck was NOT game generation: PPO update = 55% of wall time, of
+which 26.4% was Adam's Python per-parameter loop (`_get_value` .item()
+syncs), 11.8% was a GPU→CPU sync inside `_apply_legal_mask`
+(`if all_illegal.any():` — every forward, train AND inference), ~6%
+buffer/telemetry `.item()` churn. Real GPU math: ~6%. Eval additionally
+blocked the loop ~6.5 min per 15K games (~13% of wall). GPU util 16%.
+
+### Patches (all output-identical to old behavior)
+
+1. `trainer.py`: Adam(fused=True) on CUDA (single-kernel update; MPS/CPU
+   unchanged). Same update rule. Old optimizer state loads cleanly.
+2. `models/v13_5.py`: `_apply_legal_mask` made branchless (unconditional
+   torch.where). Verified output-identical on 200 random batches incl.
+   all-illegal rows.
+3. `trainer_v10.py`: telemetry accumulated on-device, ONE sync per
+   update (was 6-8 .item()/minibatch); aux-buffer sampling via numpy
+   (was device randint + per-element .item()); progress-loss guard
+   de-synced (clamp_min makes the >0 check redundant); NaN guard
+   single isfinite. recent_progress_loss now logs per-update mean
+   instead of per-minibatch values (dashboard granularity only).
+4. `train_v12.py` + NEW `eval_worker_v12.py`: async eval. At each eval
+   bucket: snapshot weights → nice'd subprocess runs the identical
+   evaluate_v11.evaluate_model → result applied on completion. Training
+   no longer blocks. New-best now preserves the EXACT evaluated weights
+   as `model_best_eval.pt` (previously best weights weren't kept at all
+   — the 81.5% peak weights were lost to checkpoint rotation).
+
+### Validation
+
+- Mask equivalence: 200/200 identical (incl. all-illegal rows).
+- Synthetic 300-step PPO update on CPU: all metrics finite, fused=False
+  on CPU as designed.
+- eval_worker smoke test: random model, 6 games, JSON contract OK.
+- VM deploy: backups at ~/checkpoint_backups/v136_rl_parity_prethroughput_
+  20260611_002126/ + local copies (model_latest @1.33M games + best812
+  snapshot) in checkpoint_backups/v136_rl_parity_vm_20260611/.
+- Resumed: 1,312,574 games / 1,383,993 updates, optimizer state accepted
+  by fused Adam, no errors. (~80 games lost to restart.)
+
+### Expectations
+
+- GPM 353 → ~570 (in-process fixes) + eval no longer pausing the loop
+  (effective ~1.8× wall-clock throughput). Baseline GPM 353 @ entropy
+  0.236, eval band 79.5–81.5, best 81.5.
+- Quality invariant: training math unchanged. Watch next 2-3 evals stay
+  in band; revert = restore backup + git-revert the 5 files.
+- NOT done (deliberate): parallel actor processes (2-4× more, real
+  engineering, slight off-policy staleness) — revisit only if the run
+  plateaus and throughput still matters.
+
+---
+
+## Exp 48 — V13.6 RL pool-refresh shot: frozen-best as frontier opponent (2026-06-13)
+
+After Exp 47 the run trained cleanly to ~2.49M games but **converged**:
+eval mean flat at ~80.2 for ~1M games (1.5-1.7M:80.29, 1.7-1.9M:80.34,
+1.9-2.1M:80.34, 2.1-2.3M:80.23, 2.3-2.5M:80.08), peak 82.8 @ G=1.92M
+unbeaten for 560K games / ~37 evals. Per-opponent training WR (from
+game_history.db, 30-40K games/bucket, ±0.5pp) flat then gently declining:
+Hist_V13_5_SL ~44%, V13_2 ~44.5%, V12_2 ~45.5% — pool taught out at τ=0.95.
+Entropy 0.241 / vloss 0.595 / KL 0.0099 all pinned = coherent equilibrium
+(same signature the journal documented for V13.5).
+
+### The one intervention (user-approved single shot)
+
+Introduce the FROZEN 82.8 peak (model_best_eval.pt, preserved by Exp 47's
+async-eval) as a new opponent `Hist_V136_best` — a fixed frontier target
+stronger than the live (oscillating ~80.2) policy that does NOT co-drift
+like SelfPlay/ghosts. Rationale: it's the only lever left that changes the
+training DISTRIBUTION rather than churning the same one.
+
+- **Mix** (v13_5_no_bots): V13_2 0.40→0.35, V13_5_SL 0.30→0.25,
+  **Hist_V136_best 0.25 (NEW)**, SelfPlay 0.20→0.15, V12_2 0.10→**retired**
+  (oldest/weakest DNA, most taught-out).
+- **LR: held at 1e-5.** At advantage≈0 there's no gradient for LR to scale;
+  the shot is about creating signal, not amplifying a non-existent one.
+  Bumping LR + changing opponent = 2 vars at once + the V15 entropy-drift
+  risk. If signal appears and the model still won't move, LR is the NEXT
+  lever, not this one.
+
+### Implementation
+
+- `opponent_registry.py`: new Hist_V136_best spec. CRITICAL: arch is
+  6×96 head_hidden=64 (matches the live run), NOT V13_5_SL's 10×128.
+  Verified locally: strict load gives 0 missing / 0 unexpected keys +
+  selects moves. Default ckpt = checkpoints/v136_rl_parity/hist_v136_best.pt.
+- VM: froze the opponent as a dedicated COPY (hist_v136_best.pt ← cp
+  model_best_eval.pt) so later best-eval updates can't change the
+  opponent mid-run.
+- `train_v12.py`: updated V13_5_NO_BOTS_MIX.
+
+### Deploy
+
+- 82.8 artifact downloaded local: checkpoint_backups/v136_rl_parity_best828_20260613/.
+- VM backup: ~/checkpoint_backups/v136_rl_parity_pre_exp48_20260613_024534/.
+- Resumed: 2,491,129 games / 2,647,497 updates. Mix + new tag confirmed
+  live in log. (The old G=1.32M shutil traceback in the log is stale —
+  fix verified present; next eval path is clean.)
+
+### Expectations + kill criterion
+
+Realistic best case = eval band TIGHTENS/lifts ~0.5-1.5pp (fewer sub-80
+dips, maybe a peak in the low 83s), NOT a break to the 84.5-85 family
+ceiling (which the journal attributes to architecture, not opponents).
+Watch: (1) WR vs Hist_V136_best — expect <50% (live is weaker than frozen
+peak); (2) eval band over next ~200K games. **Kill criterion:** if no eval
+> 82.8 AND band hasn't lifted by G~2.7M, the lever is spent — bank 82.8 as
+the V13.6 result and stop. Revert = restore pre_exp48 backup + Phase L mix.
+
+---
+
+## Exp 49 — Generations tournament: the run converged at ~764K games (2026-06-13)
+
+To settle "did later training make a stronger model, or just churn?", ran a
+round-robin H2H between 6 snapshots spanning the whole v136_rl_parity run
+(all V135ProductionAdapter 6×96 head64, greedy policy, 1000 games/pair,
+mirrored seeds for seat/dice fairness). On the VM, CPU-only, nice'd, 5
+workers — zero impact on the live trainer (GPM held 414). Script:
+gen_tournament.py.
+
+Snapshots: G0.76M (eval 80.5), G1.01M (81.2), G1.31M (81.5), G1.92M_peak
+(82.8 — the best-eval ckpt), G2.49M (pre-Exp48), G2.74M_latest (post-Exp48).
+
+### Result: one policy, 4.2pp max spread
+
+Ladder (overall decisive win%, ~5000 g each, SE ≈ 0.7pp):
+  G2.74M_latest 51.9 · G2.49M 51.2 · G0.76M 49.7 · G1.31M 49.5 ·
+  G1.01M 49.0 · G1.92M_peak 48.6
+
+Every pair within 4.2pp of 50%. The earliest snapshot (764K games, lowest
+eval) plays DEAD EVEN (48-52%) against everything after it, including the
+peak and latest. **1.7M additional games of training = coin-flip H2H.**
+The run converged by ~764K games; the 80.5→82.8 eval "climb" was noise
+within the variance band, not skill.
+
+### Two sharp lessons
+
+1. **The 82.8% best-eval checkpoint is the WEAKEST in H2H (48.6%, last on
+   the ladder).** Its eval peak was a lucky 2000-game roll vs the 6 weak
+   eval bots — eval-best is not just saturated, it's anti-correlated with
+   true strength at this resolution. CONSEQUENCE: bank G2.74M_latest as the
+   V13.6 result, NOT model_best_eval.pt.
+2. **Faint-but-real ordering exists:** the two latest snapshots are ~3pp
+   (≈3 SE) stronger H2H than the rest — so later training added a sliver,
+   invisible to the eval. Caveat: G2.74M_latest trained under Exp 48 vs a
+   frozen v136 self, and this tournament measures exactly "beat v136
+   selves" — its edge may be lineage-overfit, not general (eval-bot WR
+   still ~80 like everyone). Inconclusive, doesn't change the verdict.
+
+### Verdict (combines Exp 48 + the strong-bot-ceiling analysis)
+
+The ~82.8 eval is a VARIANCE + ROSTER ceiling, not a skill ceiling — the
+eval roster is only 6 weak scripted bots, and per STRONG_BOTS_FINDINGS the
+strongest bot ever built (MCTSExpectimaxPrior, 1s/move) beats Expert only
+77%. No agent wins much more on this roster. More 2P RL training is now
+DEFINITIVELY ruled out as a ceiling-breaker (H2H proof, not inference).
+Real levers remaining: (a) re-instrument eval with the strong bots so it
+can show top-end skill differences at all; (b) 4-player Ludo — genuinely
+larger strategic space, where a stronger agent can exist. Both are new
+projects, not "train longer."
+
+---
+
+## Exp 50 — V13.6 plateau-break EXPLOITER (2026-06-13)
+
+The decisive test the project never ran on this model family: is the
+converged ~82.8 policy near-optimal, or a stuck fixed point with holes
+mirror self-play can't reveal? Mechanism behind the plateau: training vs
+mirrors (SelfPlay + same-family ghosts all ~80%) drives advantage = G−V → 0,
+so the gradient dies — that looks identical to "optimal" from inside
+self-play AND from the bot-eval. An exploiter distinguishes them.
+
+### Setup (mirrors Exp 19's V10 exploiter)
+
+- New run `v136_exploiter`, init from the **2-epoch SL baseline** (pushed
+  from Mac `checkpoints/v136_sl_ep2/` → VM; loads 0/0 into 6×96 head64).
+  SL = outside the RL basin, the champion's own pre-RL origin.
+- **100% of games = Model vs frozen champion.** New composition
+  `v136_exploiter = {Hist_V136_best: 1.0}`; Hist_V136_best pointed via
+  HISTORICAL_OPPONENT_CKPTS at `exploiter_target.pt` = a frozen copy of the
+  current strongest snapshot (G2,816,475 — Exp 49's H2H ladder leader, NOT
+  the eval-peak which Exp 49 showed is H2H-weakest).
+- Entropy 0.03 (vs 0.005 main) + τ 1.10 for exploration. Dense reward +
+  bias (same credit-assignment recipe). Separate run dir, port 8792.
+
+### Decision rule
+
+- Exploiter **greedy** WR vs champion **> 55% sustained** ⇒ champion has
+  exploitable holes ⇒ REAL HEADROOM ⇒ build the league (exploiters +
+  main, regenerates advantage signal that never hits 0). The unlock.
+- **≤ ~52% after 100K games** ⇒ champion near-optimal for 2P ⇒ stop with
+  confidence. (Caveat: an exploit proves a HOLE, not that the exploiter is
+  generally stronger — the value is the league dynamic it enables.)
+
+### Ops
+
+- Champion run (Exp 48) PAUSED to free the L4 (it was at its kill
+  criterion / Exp 49 showed it's churning). Backed up:
+  ~/checkpoint_backups/v136_rl_parity_pre_exploiter_20260613_161437/.
+  Resumable anytime via launch_v136_rl_newvm.sh --resume.
+- Exploiter live: init-from-SL confirmed, G≈0.5K, WR vs champion 33%
+  (SL loses ~2:1 to champion — the gap it must climb), entropy 0.378,
+  GPM 467, GPU 87%. ~100K games ≈ 3.6h.
+- Two false starts fixed at launch: (1) no model_sl.pt on VM → pushed ep2
+  SL from Mac; (2) port 8791 squatted by a 3-day orphan (PID 3174) →
+  moved exploiter to 8792. Also: champion had a wrapper+python PID pair;
+  killed the real python (50793) by bracket-grep, not just the wrapper.
+- Read greedy WR via periodic H2H (gen_tournament-style) of the exploiter
+  ckpt vs exploiter_target.pt — training-temp WR (high entropy) reads
+  lower than greedy, so the 55% gate is judged on greedy H2H, not the
+  console WR.
+
+---
+
+## Exp 51 — V13.6 first human play-test: two flaws diagnosed (2026-06-14)
+
+First manual human-vs-AI game vs the V13.6 champion (play/server.py, now
+wired for v13_6 + v12_3; v15_2 needs separate integration — different engine
++ 225-cell action space). Target B (decision quality), so judged by play,
+not eval. Two systematic flaws — full diagnosis + proposed fixes in
+**discussion/PLAYTEST_FLAWS_v136.md**. Summary:
+
+1. **Bad use of a 6 (spawns instead of chasing/capturing).** Causes: (a)
+   documented 92% unlock-on-6 bias baked in from V12.2 lineage/SL data; (b)
+   REWARD TILT — spawn=+0.05 > forward-6=+0.03, so the dense reward literally
+   prefers spawning over advancing on a 6 with no immediate capture; (c)
+   under-exploration on 6-states. Existing unlock penalty is phase-gated OFF
+   in the opening (where it shows) and doesn't cover "chase".
+2. **Neglects the trailing token ("T3").** REFRAME: not representation —
+   persists across BOTH symmetric archs (v13.6 rank-indexed, v15 graph
+   transformer), so it can't be token-ID bias. It's a value/reward gap:
+   danger penalty only protects advanced tokens (pos>35), safety/danger
+   rewards are near-noise, got-captured is a flat −0.20 (no value-at-risk
+   scaling). The model was never taught the laggard is worth protecting; V15
+   attacked the wrong layer.
+
+**Decision (user):** do NOT chase these targeted fixes now; documented for
+later. Both flaws are evidence of the same root: the model optimizes the
+reward surface, not game understanding → motivates the "different attack
+angle" (world-model / consequence-prediction), discussed next.
+
+**Ops this session:** VM training paused + freed (for a separate LLM
+project); v13.6 weights (champion latest+best, exploiter-best 83.8) backed
+up to checkpoint_backups/v136_final_20260614/. Comparison settled earlier:
+v13.6 ≈ v13.5 in greedy H2H (52.5% vs v13.5_SL, 49.2% vs v13.5_RL_best) —
+equal strength at ¼ the params.
+
+---
+
+## Exp 52 — World-model consequence-prediction heads (target B) (2026-06-14)
+
+The "different attack angle" from the discussion, now built + launched. Full
+design in discussion/WORLD_MODEL_ATTACK_ANGLE.md.
+
+### Step 1 probe (decisive): champion beats ALL search bots
+`probe_champion_vs_search.py`, 300 greedy games each:
+  vs Expectimax 59.7% · vs Depth2Expectimax 62.3% · vs MCTSExpectimaxPrior
+  64.0% (±2.8). → No reachable stronger policy to distill from (net already
+  exceeds the best search). Distillation dead → the world-model/understanding
+  route is THE path. Reconciles with the play flaws: strong on average,
+  specific blind spots = pattern-matches, doesn't understand.
+
+### Step 2 build (the core)
+Auxiliary heads that force the trunk to encode CONSEQUENCES (cures the
+laggard-neglect flaw at the representation level, not reward whack-a-mole):
+- `consequence_targets.py` (+20/20 unit tests): per-token P(captured next opp
+  turn) and cells-at-risk, computed EXACTLY from the engine by enumerating
+  the 6 dice (no search → sidesteps the Exp-45 coherent-equilibrium wall).
+  Reuses bias_penalties' capture geometry.
+- `V135Symmetric`: + capture_fc + risk_fc heads (per-rank, sigmoid), mirroring
+  the progress head. forward now returns 6-tuple.
+- `V135ProductionAdapter`: gathers rank→token for capture/risk (TOKEN space,
+  consistent with compute_per_token_targets — deliberately avoids the latent
+  rank-vs-token mismatch the progress head has, harmless only at coeff 0).
+- `v11.py`: computes + stores per-token targets each step (consequence_target_
+  enabled).
+- `trainer_v10.py`: BCE aux loss on capture+risk, masked by valid, weighted
+  by `--consequence-coeff`. Verified firing + finite on a synthetic update.
+- `trainer.py`: load_checkpoint → strict=False so the champion (pre-heads)
+  resumes with new heads random-init.
+- `train_v12.py`: `--consequence-coeff` arg; play/server.py loader tolerates
+  missing aux-head keys (backward compat for all V135 checkpoints).
+
+### Step 3 launch
+`launch_v136_worldmodel.sh` — fine-tune from the champion, separate run dir
+`v136_worldmodel` (champion stays safe), consequence-coeff 0.4, else identical
+recipe (v13_5_no_bots, dense+bias, 6×96, entropy 0.005). LIVE on the VM:
+init-from-champion confirmed (8 head keys random), training from G≈0.
+
+### Validation plan (target B — NOT win rate; eval expected to stay ~80)
+1. Head accuracy on held-out positions (does P(capture) match ground truth).
+2. PLAY-TEST: does laggard-neglect disappear? (the original flaw).
+3. Decision-logs: fewer "left token in danger" disagreements.
+Note: this targets the risk/consequence (laggard) flaw; spawn-on-6 is more
+reward-tilt and may still want the PLAYTEST_FLAWS_v136.md reward fix.
+
+---
+
+## Exp 53 — World-model VALIDATION + risk-delta reward (2026-06-15)
+
+### World-model (Exp 52) validation: heads learned, behavior did NOT change
+- **Head accuracy** (eval_consequence_heads.py, 60 self-play games, 24.5K
+  token-decisions): capture_prob corr **0.965**, cells-at-risk corr 0.955,
+  MAE ~10× below mean-baseline. → The trunk LEARNED to predict capture risk.
+- **Behavioral probe** (eval_laggard_behavior.py, 700 games, tested model as
+  P0 vs fixed plain opponent):
+  | metric | plain champion | world-model |
+  |---|---|---|
+  | rescue_rate | 75.2% (188/250) | 71.1% (194/273) |
+  | laggard_rescue_rate | 55.2% (32/58) | 51.7% (31/60) |
+  | avg_post_move_risk | 0.0147 | 0.0149 |
+  → **No behavioral change.** Representation-shaping (aux loss) made the model
+  PREDICT risk but not ACT on it. Knowledge ≠ behavior. The probe also
+  QUANTIFIES the original flaw: plain champion rescues general tokens 75% but
+  the laggard only 55%.
+
+### Diagnosis → the missing lever is INCENTIVE, not representation
+The policy doesn't protect the laggard because nothing REWARDS it (danger/
+safety rewards are near-noise per the 300-game decomposition; capture penalty
+is a flat −0.20 regardless of value). The model now KNOWS the risk; it's never
+been PAID to act on it.
+
+### Exp 53 fix: risk-delta reward (built + tested + launched)
+Per-step reward = `coeff × (own cells-at-risk before − after)`, engine-computed
+via consequence_targets (raw cells, ×51). Rescue→+ , advance-into-danger→−.
+Unit-checked: rescue to safe sq gives +5.17 risk-delta (×0.02 = +0.10 reward,
+≈ capture); works with v11's dict state. Wired: `--risk-delta-coeff` in
+train_v12 + v11.py play_step. LAUNCHED `v136_riskdelta` (consequence 0.4 +
+risk-delta 0.02), init from the world-model checkpoint so it KEEPS the trained
+heads (representation) AND gets the incentive. World-model run stopped at
+G=270K (job done). Separate run dir; champion + world-model safe.
+
+### Validation plan
+Re-run eval_laggard_behavior.py on the risk-delta checkpoint once matured
+(~100K+ games). Success = laggard_rescue_rate meaningfully > 55% baseline.
+If yes → representation+incentive fixed the flaw. (Eval WR expected ~80,
+unchanged — variance ceiling.)
+
+---
+
+## Exp 53 conclusion — risk-delta reward FAILED (design error) (2026-06-15)
+
+Stopped at G≈132K. Behavior probe on the G≈120K checkpoint (400 games vs
+fixed plain opp): laggard_rescue_rate **55.6% (25/45)** = identical to the
+plain baseline 55.2%. AND eval drifted DOWN 80.0%(45K) → 75.5%(120K), below
+the champion band.
+
+**Root cause (my error):** the risk-delta reward `(risk_before − risk_after)`
+is a POTENTIAL-BASED shaping term (Φ = −risk). Potential-based shaping is
+provably policy-invariant — it telescopes to `risk_start − risk_end`
+independent of the path — so it CANNOT change which policy the model prefers.
+Worse, because "risk to the current player" jumps between the player's turns
+(opponent acts in between), the telescoping isn't clean → it injects noisy
+non-telescoping distortion. Net: no behavioral incentive + eval distortion =
+the observed result. Should have caught this before launching.
+
+**Standing conclusions on the laggard flaw:**
+1. World-model heads (Exp 52): learn to PREDICT risk (corr 0.96) but don't
+   change behavior. Knowledge ≠ action.
+2. Potential-based risk reward (Exp 53): can't change behavior by construction.
+3. **Value-at-risk doesn't even fit the laggard**: the laggard is the LEAST-
+   advanced token (low progress → low value-at-risk), yet its importance is
+   STRUCTURAL (need all 4 home to win), not immediate-value. So a value-scaled
+   capture penalty would target advanced-token protection, NOT the laggard.
+
+To actually move the laggard behavior needs a NON-potential, laggard-specific
+incentive (e.g., generalize bias-penalty #6 / penalize neglecting a far-behind
+token), carefully validated on the behavior probe at low coeff before
+committing — reward engineering here is fiddly and just cost eval once.
+DECISION: pause, discuss appetite with user before another run.
+
+---
+
+## Exp 54 — TERMINAL-ONLY fine-tune from champion (2026-06-15)
+
+User hypothesis: the dense rewards are CAUSING the play flaws (spawn-on-6 =
+the +0.05>+0.03 tilt; leader focus = score/capture rewards). Strip them →
+the policy can only optimize what wins → maybe sheds the flaws.
+
+Design (after discussing the anchor tradeoff — a KL anchor would just freeze
+the champion's flaws, so NO anchor):
+- Init from the champion (strongest model, v136_rl_parity).
+- LUDO_TERMINAL_ONLY=1 → new flag in v11.py zeroes ALL per-step shaping;
+  win/loss ±1 only (LUDO_TERMINAL_COEFF=1.0).
+- NO anchor, entropy 0.02 + temp 1.1→0.95 = HIGH exploration, so it samples
+  the lines the dense reward suppressed (chase-on-6) and the terminal signal
+  reinforces winners. v13_5_no_bots pool, 6×96, eval every 10K.
+
+Honest risk (stated up front): at the variance ceiling advantage≈0 for the
+policy's current actions, so terminal-only mostly DRIFTS (entropy) rather
+than improving — a RACE between shedding-flaws and drifting. Journal precedent
+(Exp 8 removed dense rewards → regressed; V13.5 accidental terminal-only =
+plateau bug) predicts likely degradation. My odds: ~30% behavioral win.
+
+Validation: judge by the laggard behavior probe (eval_laggard_behavior.py)
+across snapshots, NOT eval (variance-capped + expected to drift). Watch eval
+for cratering → stop. Separate run dir; champion safe.
+
+LAUNCHED: init-from-champion confirmed, G≈0.4K, GPM 417 (terminal-only is
+lighter — no consequence targets). Monitor armed (eval-drift + crash).
+
+---
+
+## Exp 55 — GAE (variance-reduced advantage) (2026-06-15)
+
+Option-2 stage 1. Finding that motivated it: the trainer used pure
+Monte-Carlo returns (R = r_t + γR), the maximally-high-variance estimator —
+every move's label is the full dice-soaked outcome. Likely why terminal-only
+(Exp 54) drifted: MC gradients so noisy that entropy won.
+
+### Implementation (gated by --use-gae, MC path untouched when off)
+- trainer_v10: `_compute_gae(rewards, values)` — per-trajectory backward
+  GAE; δ_t = r_t + γV(s_{t+1}) − V(s_t), A_t = δ_t + γλ A_{t+1}, V(end)=0.
+  Buffer now carries per-step raw reward + per-trajectory lengths
+  (train_on_game). Value head STILL BCE-trained on outcome (untouched — only
+  read as the bootstrap baseline; preserves the V10.2 calibration/anti-
+  inversion fix). Advantage computed in _ppo_update (same forward/BN-mode as
+  before) then normalized. Safety: falls back to MC if traj lengths don't
+  sum to buffer.
+- Key design note: existing MC path computes advantage = NORMALIZED_return −
+  value (scale-inconsistent); GAE uses raw_return − value (consistent). So
+  GAE is slightly MORE correct even at λ=1. Left the MC path as-is (gated).
+- train_v12: --use-gae / --gae-lambda (default 0.95).
+
+### Validation
+- Hand-computed GAE (λ=0.5, 3 steps): exact match.
+- **λ=1 ≡ MC identity** (GAE λ=1 == raw_discounted_return − value): match to
+  6e-8. The correctness gate.
+- End-to-end synthetic _ppo_update, GAE on AND off: finite, traj_lengths
+  cleared, MC path unchanged.
+- Exp 55a PRACTICAL validation LAUNCHED: champion recipe (dense+bias) +
+  --use-gae λ0.95 from champion → confirm eval HOLDS ~80 (real-pipeline
+  check: rollout trajectory alignment, truncations, BatchNorm). If it holds →
+  Exp 55b: terminal-only + GAE + entropy 0.01 (the actual target-B
+  experiment — cleaner gradient than the MC terminal-only that drifted).
+
+---
+
+## Exp 55b RESULT — terminal-only + GAE BEATS THE CHAMPION (2026-06-16)
+
+First genuine improvement over the champion in the whole project.
+
+### Setup
+Init from champion, win/loss ±1 ONLY (LUDO_TERMINAL_ONLY=1), --use-gae
+λ0.95, entropy 0.01, no anchor, v13_5_no_bots pool.
+
+### Eval climbed (didn't drift like MC terminal-only)
+10K:82.1 → 40K:83.4 → 60K:83.8 → 100K:84.3. Entropy controlled ~0.32 (vs
+the MC terminal-only's runaway 0.44). So GAE's low-variance advantage let
+the win/loss signal actually teach, instead of entropy winning.
+
+### Verdicts (checkpoint G≈106K)
+- **H2H vs champion: 54.4% ±1.6 (544-456)** — ~2.75 SE above 50%,
+  STATISTICALLY REAL. gaeterminal is genuinely stronger than the champion.
+  Notable: all prior v13.6 snapshots were ~50% coin flips vs each other
+  (variance ceiling); this one is distinguishably stronger.
+- **Laggard rescue: 56.8% (25/44) ≈ 55.2% baseline — flaw NOT fixed.**
+  rescue_rate 72.3%, post-move-risk 0.0143 (~champion).
+
+### Interpretation
+The variance-reduced terminal signal (option 2) WORKED at producing a
+stronger PLAYER — removing the dense-reward artifacts + GAE noise-cancelling
+let it find genuinely better general play. But the improvement is NOT from
+laggard protection (that signal is too tiny even cleaned up); it's broad.
+So: set out to fix a specific flaw, got a generally stronger model instead.
+
+### Key methodological win
+The root cause of "terminal-only fails in Ludo" was the pure-MC estimator
+(max variance), NOT terminal rewards per se. Terminal-only + GAE works.
+GAE is now a validated, permanent pipeline upgrade.
+
+### Next
+- Run STILL TRAINING (eval climbing toward the ~85 v13.5 ceiling) — let it
+  continue; may go further.
+- Back up the G≈106K checkpoint (new best candidate).
+- H2H vs v13.5_RL_best to see if it broke the FAMILY ceiling (champion was
+  49.2% vs v13.5; if gaeterminal > champion, maybe it now matches/beats v13.5).
+
+## Exp 55b — family-ceiling H2H (2026-06-16)
+gaeterminal (G≈106K) vs v13.5_RL_best: **51.0% ±1.6 (510-490)** — PARITY
+(~0.6 SE over 50%). For comparison the champion was 49.2% vs v13.5. So
+gaeterminal moved from "slightly below v13.5" → "slightly above": now the
+(weakly) strongest model in the family — clearly beats the champion (54.4%),
+matches/edges v13.5. It reached the TOP of the ~85% ceiling but did NOT
+decisively break it. Still training + eval climbing (84.3) → may push further.
+Checkpoint backed up: checkpoint_backups/v136_gaeterminal_<date>/.
+Decision: LET IT KEEP TRAINING; re-probe ~200K — does it push past v13.5
+decisively (ceiling break) or plateau at the family top?
+
+## Exp 55b CONCLUSION — gaeterminal ran to 280K, peaked & plateaued (2026-06-17)
+Ran terminal-only+GAE to G≈280K. Eval peaked **85.5% (G200K)** and 85.1%
+(G130K) — the highest evals in the project — then oscillated 82–85.5 (mean
+~83.5) with entropy slowly creeping 0.32→0.378. Verdict: it LIFTED the eval
+band ~1–2pp and TOUCHED the top of the ~85% v13.5 family ceiling, but did NOT
+decisively break it (parity with v13.5, beats champion 54.4%). Laggard probe
+stayed ~56.8% ≈ baseline — the general improvement did NOT fix the specific
+target-B flaw. **This run is tapped out**; "more value" lives in NEW
+experiments using the now-validated GAE tool, not in running it longer.
+Backed up (latest G280k + best 85.5%, named, VM+local):
+checkpoint_backups/v136_gaeterminal_2026-06-17/. Best wired into the play
+server as LUDO_MODEL=v13_6_gae.
+
+## Exp 56 — GAE + DE-BIASED DENSE (the last high-juice lever) (2026-06-17)
+Two prior data points framed this: terminal-only+GAE beat champion but is
+flaw-agnostic; plain dense+GAE (gae_validate) held ~80 and didn't push. So
+dense+GAE only earns its keep if the dense rewards are DE-BIASED to aim at the
+two flaws. Gated behind **LUDO_DEBIAS_DENSE=1** (canonical recipe untouched):
+- **spawn-on-6**: REWARD_SPAWN 0.05 → **0.02** (< forward-6's 0.03), so a 6 only
+  spawns when nothing better exists.
+- **laggard neglect**: danger penalty (bias_penalties Penalty 5) now covers ALL
+  main-track positions (pos≥1, was >35) with a magnitude floor (0.7×), so
+  leaving the trailing 4th token exposed costs ~0.09 instead of 0.
+Tests: canonical 26/26 (zero regression); debias mode the one "non-advanced →
+no penalty" case correctly flips to -0.09 (the intended new behavior).
+### Setup
+Init from the gaeterminal BEST (85.5%) — start from the new peak, not the old
+champion. v1_dense + bias + GAE λ0.95, entropy 0.005 (dense gives signal → less
+exploration, guards drift). LR 1e-5. Separate run dir checkpoints/v136_gae_debias,
+port 8799. Launcher: launch_v136_gae_debias.sh.
+### The bet
+Dense gives the per-step gradient terminal-only lacks (so the suppressed
+flaw-lines get gradient); GAE keeps variance low; the de-bias aims the signal AT
+the flaws. Judged by the **laggard probe + H2H**, NOT eval.
+### Early (G≈35K) — WATCH
+Eval DIPPING from 85.5 init: 82.3 (10K) → 80.5 (20K) → 79.8 (30K). Entropy
+healthy/tight (0.40→0.252, no drift). The dip is expected-ish (objective
+changed; de-biased dense trades a sliver of pure win-rate for flaw-correction)
+but is ALSO the shape risk-delta had when it failed. Verdict deferred to
+~80–100K + the laggard probe. If eval keeps sliding AND the laggard probe
+doesn't improve → de-bias failed like risk-delta, roll back to gaeterminal best.
+
+## Exp 56 RESULT — de-bias FIXED the laggard, but cost ~6-7pp eval (2026-06-17)
+Ran to G≈331K. Eval converged **76–79%** (init 85.5, never recovered; entropy
+tight 0.24 → genuinely converged, not drift). Laggard probe (200g vs
+gaeterminal-best fixed opp): **laggard_rescue 55.9→78.3%**, rescue_rate
+67.4→84.5%, avg_post_move_risk 0.0158→0.0119. **First intervention to ever
+move the laggard needle** (world-model + gaeterminal both ≈ baseline). So NOT
+"failed like risk-delta" — it's the target-B tradeoff: ~6-7pp eval for a real
+flaw fix. n smallish (18/23 vs 19/34) but all 3 metrics agree + mechanistic.
+
+## Exp 57 — LIGHTER-TOUCH de-bias (half laggard penalty, no spawn cut) (2026-06-17)
+Decoupled the knobs: `LUDO_DEBIAS_SPAWN` (spawn cut) split from
+`LUDO_DEBIAS_DENSE` (laggard), added `LUDO_DEBIAS_DANGER_MULT`. Light =
+DENSE=1, SPAWN=0, MULT=0.5. Ran to G≈72K, settled **~79-80%** — barely above
+the full de-bias's ~78%. **Halving the laggard penalty did NOT buy back eval**
+→ the eval cost is intrinsic to the bias, not penalty-magnitude. Stopped.
+
+## Play-test + STRATEGIC PIVOT (2026-06-17)
+Human play-tested both in the server. gaeterminal: major old problems gone but
+spawn-on-6 + laggard-while-chasing still visible (confirms probes). Full
+de-bias: "much better," but spawn-on-6 SOFTENED not solved (advanced open
+token, then spawned new one next turn). Conclusion: **reward-engineering papers
+over the flaws rather than instilling understanding.** Hypothesis: v13.6's
+**multi-turn input channels** drive the momentum/neglect behavior. Decision:
+**PAUSE v13.6** (champion = gaeterminal 85.5%), pivot to test the same winning
+pipeline (terminal-only + GAE) on **v15.2** (single-frame GraphTransformer) to
+isolate which flaws are architectural. Full notes: discussion/V136_HANDOFF.md.
+Next: v15.2 SL-to-parity + GAE port — see discussion (in progress).
+
+## Exp 58 — V15.2 TERMINAL-ONLY + GAE (architectural test) (2026-06-17)
+Porting the v13.6 winning pipeline to the **single-frame** GraphTransformer to
+isolate whether the play flaws are architectural (v15.2 has history_len=1 — no
+multi-turn input, the variable we suspect drives spawn-on-6 + laggard-neglect).
+### Port (verified)
+GAE + terminal-only added to `td_ludo_v15/.../rich/v15_trainer.py` (separate
+trainer from v13.6's trainer_v10; mirrors `_compute_gae`, tracks
+`_traj_lengths`, stores per-step `reward`, branches advantage on `use_gae`).
+Wired through `train_v15_rich.py` (`--use-gae --gae-lambda --terminal-only`).
+Gates PASS: GAE(λ=1) ≡ MC advantage (max diff 5e-7); full terminal-only+GAE
+PPO update runs end-to-end, `_traj_lengths` resets.
+### Setup (user chose: v15.2 only, current SL base as-is)
+Built `td_ludo_v15_cpp` on the VM (Linux py3.10, g++, pybind11 3.0.4). Init
+from 1-epoch `v152_sl_final.pt`. Arch 4×128, history_len 1. terminal-only
+(±1) + GAE λ0.95, entropy 0.03 (v15's 225-action default, NOT v13.6's 0.01 —
+entropy scale differs by action-space size), lr 1e-5. Opponent pool (strong
+neural, no scripted bots): v132 40 / v135-sl 30 / v136-champion-in-rl-slot 10 /
+self 20. Run dir `td_ludo_v15/checkpoints/v152_gaeterminal`, dashboard :8801.
+Launcher: `launch_v152_gaeterminal_vm.sh`.
+### Throughput (Exp 58)
+Single-process all-neural rollout = 86 GPM. Moved opponents to GPU + bumped
+parallel-games 64→128 → **148 GPM** (~1.7×). GPU util only 13% → the bottleneck
+is the single-process Python rollout, NOT compute. `--rollout-workers` only
+parallelizes SCRIPTED bots (all-neural pool stays single-process), so ~148 GPM
+is the ceiling for the faithful neural pool. User chose to keep the pure-neural
+recipe and accept 148 GPM (~11h to 100K, ~22h to 200K) over adding scripted
+bots for a 2-4× speedup. Final config: opp-device cuda, parallel-games 128.
+### Baseline to beat
+v152 MC stage1 (dense, MC) reached eval **0.796**. Question is dual: (a) does
+GAE+terminal beat MC+dense on v15.2 too? (b) does the single-frame arch shed
+the flaws? Judge by play-test + laggard/spawn probes, not just eval.
+NOTE: v15 is ~2-4× slower than v13.6 (GPM ~99-176) — evals come slower.
+
+## Exp 58 — V15.2 vs V13.6 H2H: STATISTICAL TIE (2026-06-19)
+Fair cross-arch comparison (both play in the v13 engine via shared adapters;
+eval numbers weren't comparable across pools). 2000 games, CPU/Mac.
+**V15.2 50.8% (1016) vs V13.6 49.2% (984), std err ±1.1pp → TIE.**
+Script: `h2h_v152gae_vs_v136best.py` (load_v136 = V135 6x96 head_hidden=64).
+v15.2 best = `td_ludo_v15/checkpoints/h2h_compare/v152_gaeterminal_best.pt`
+(best eval ~0.845, init from old v15.2 RL best, terminal-only+GAE).
+**Headline: the single-frame GraphTransformer (587K params, NO history)
+MATCHES the v13.6 champion (1.05M, 85.5%) — 56% the size, reaches the same
+~85% ceiling a different way.** The winning pipeline (terminal-only+GAE)
+generalized fully to the v15 arch. Caveat: this measures STRENGTH, not the
+play flaws — the spawn-on-6/laggard "is it architectural" question still needs
+the play-test or ported probes (v15 uses the 225-cell engine; existing probes
+are v13). Depth2Expectimax opponent (Exp 58 mid-run add) confirmed a dead end
+— student beat it 65%, even MCTSExpectimaxPrior (strongest scripted) is weaker
+than the champion already in the pool. Scripted bots are spent at this level;
+harder opponents are neural (self-play league).
+
+## Exp 58 — 4-WAY TOURNAMENT: V15.2 IS THE NEW CHAMPION (2026-06-19)
+Round-robin, 2000 games/pair (1k/orientation), v13 engine via adapters, Mac.
+Script: `tournament_4way.py` (parallel ProcessPool). Win% (row vs col):
+```
+         v13.5  v13.6  v15.2  MCTS
+ v13.5     —    48.2   47.3   65.8
+ v13.6   51.8    —     47.5   65.5
+ v15.2   52.7   52.5    —     68.3
+  MCTS   34.2   34.5   31.6    —
+```
+Ranking (avg vs other 3): **v15.2 57.9% > v13.6 54.9% > v13.5 53.8% > MCTS 33.4%**.
+**HEADLINE: v15.2 (single-frame GT, 587K params, NO history) is now the
+STRONGEST model in the family** — beats BOTH v13.5 (52.7%) and v13.6 (52.5%),
+each ~2.4 SE over 50%, corroborated across two opponents. Not just parity (the
+earlier single H2H 50.8% was the noisy low end). v13.6 > v13.5 as expected.
+MCTSExpectimaxPrior (strongest scripted) loses 65-68% to ALL neural — scripted
+tier conclusively below neural (6k games). V15.2 best vs latest: 50.2/49.8 TIE
+— run plateaued, best checkpoint is representative. STILL OPEN: the flaw
+question (does single-frame shed spawn-on-6/laggard?) — needs the play-test;
+now extra-motivated since v15.2 is both the strongest AND single-frame.
+
+## Exp 58 — PLAY-TEST: FLAWS ARE GONE — they were ARCHITECTURAL (2026-06-19)
+Human play-tested v15.2 in the server (17 games, ~even split, dice-decided).
+Verdict: **NONE of the old flaws (spawn-on-6, laggard-neglect) observed.** This
+answers the question that motivated the whole v15.2 effort: the flaws were
+ARCHITECTURAL, not reward/training artifacts.
+MECHANISM (visible in game_logs decision lines): the GraphTransformer policy is
+over 225 BOARD CELLS, permutation-symmetric over tokens — when tokens are
+interchangeable it assigns equal prob (e.g. T0=T1=T2=T3=0.250). The laggard
+flaw was a TOKEN-IDENTITY artifact of v13.6's rank-indexed encoding (a specific
+token could be under-weighted); the cell-based GT structurally CANNOT represent
+that bias — it scores moves by resulting position, so no token is "forgotten."
+Spawn-on-6 also gone (terminal-only+GAE carried no spawn-reward tilt).
+Flip-side (minor): when 2 tokens share a cell but one is genuinely better to
+move (break a stack / one step from safety), the symmetric policy can't
+distinguish them → arbitrary pick. The natural place to sharpen this arch.
+NET: v15.2 (single-frame GT) is the strongest model AND flaw-free by human
+play. Wired into the play server (LUDO_MODEL=v15_2), pick verified 40/40 vs the
+proven adapter. Server stopped after play-test. Future plans: TBD (user).
+
+## Exp 59 — INFERENCE-TIME SEARCH: null result (2026-06-20)
+Ceiling research (discussion/CEILING_RESEARCH.md) ranked inference-time search
+the top "raises-win-rate" lever. Built 2-ply expectimax (v15 value net at
+leaves, v15 policy as opp model) in the v13 engine — `inference_search.py`
+(reuses ExpectimaxBot mechanics), tested via `h2h_search_vs_raw.py` (paired
+dice, raw-vs-raw control).
+- **Naive value-only search: 29.5%** vs raw — value head too flat to rank moves
+  alone, degenerates toward random, throws away the policy's ranking skill.
+- **Policy-anchored** (default to policy move; override only on value-lookahead
+  margin 0.03): **49.8% vs raw over 2000 games, edge −0.2pp ±1.1pp → DEAD EVEN.**
+  Control raw-vs-raw 50.0%.
+VERDICT: **2-ply inference search adds NOTHING** on v15.2 — the value head can't
+refine the near-optimal policy (fits: play-test showed no flaws; H2H all
+coin-flips). Bottleneck = value-net accuracy, not absence of search (exactly the
+research prediction). Search-as-a-lever is OUT for this net; more evidence v15.2
+is near the genuine ceiling. Ran on VM GPU (~0.94 g/s; Python tree + small
+batches dominate, GPU ~17% util). Next candidates: exploiter diagnostic
+(ceiling vs blind-spot), deeper 3-ply (likely also value-bottlenecked), or
+accept the ceiling.
+
+## Exp 60 — EXPLOITER test: a SMALL HOLE found (in progress, 2026-06-20)
+Added a frozen-v15 opponent path to train_v15_rich.py (--opp-v15-frozen +
+--opp-weight-v15-frozen; loaded via make_self_picker on a requires_grad-off
+v15). Exploiter = student init from v15.2 best, opponent = ONLY frozen v15.2,
+terminal-only+GAE, entropy 0.03. Running locally on Mac (MPS, ~53-108 GPM,
+dashboard :8801).
+- Training win-rate FLAT ~43% over 18.5K games (39-49 band) — but confounded by
+  the ~12pp exploration handicap (student samples, frozen plays greedy).
+- **CLEAN greedy H2H (exploiter_latest vs frozen v15.2, 600 games, paired
+  dice): exploiter 54.0% (324/600, ±2.0pp).** Edge +4pp ≈ 2 SE — marginally
+  significant. So v15.2 is NOT perfectly robust; the exploiter found a small
+  real hole (more than coin-flips/no-flaws/search-null suggested).
+OPEN: (1) does the edge GROW with more training (real deepening exploit =
+ceiling lever) or plateau (~54% wobble)? (2) is the exploiter genuinely
+STRONGER, or just a NON-TRANSITIVE counter (beats v15.2 but worse vs v13.6 /
+eval roster — cf. KataGo exploiters won 99% yet lost to amateurs)? Plan: let
+run to ~40K, re-probe greedy H2H (bigger N) + test exploiter vs v13.6 + eval
+roster for transitivity.
+
+## Exp 60 CONCLUSION — NO EXPLOIT; v15.2 is robust (2026-06-20)
+Ran exploiter to 110K games. Training win-rate stayed FLAT (36-46 band) the
+whole way — never climbed. Re-probe (greedy, bigger N):
+- **Exploiter vs frozen v15.2: 45.4% (363/800, ±1.8pp)** — it LOSES to its
+  parent (~2.5 SE below 50). The 54% at 18.5K was early-training noise that
+  washed out.
+- Exploiter vs v13.6: 53.8% (≈ v15.2's own 52.5%) — so it's a normal ~equal
+  family member, NOT a non-transitive counter.
+VERDICT: a dedicated exploiter trained 110K games specifically to beat v15.2
+COULD NOT. v15.2 is robust / near-optimal. Exploiter stopped.
+
+## CEILING INVESTIGATION — CLOSED: ~85% is the genuine ceiling (2026-06-20)
+Four independent lines of evidence now CONVERGE that v15.2 is near-optimal for
+2-player Ludo and the ~85% is the variance/luck ceiling, not a skill wall:
+1. H2H — all model snapshots ~50% coin-flips (Exp 49).
+2. Play-test — human saw zero flaws over 17 games (Exp 58).
+3. Inference search — 2-ply lookahead finds no improvement (Exp 59, 49.8%).
+4. Exploiter — 110K games can't beat v15.2 (Exp 60, 45.4%).
+The research (CEILING_RESEARCH.md) predicted this: high-variance dice race →
+near-optimal policies are ~50/50 by symmetry; intrinsic dice ceiling ~60-75%
+single-game even for a large skill gap. To go further: a different GAME
+(4-player, larger strategic space) or accept v15.2 as the 2P endpoint.
+
+## Exp 61 — SQUEEZE attempt: per-decision EQUITY-LOSS metric (2026-06-21)
+User wanted to squeeze small move-level suboptimalities (saw v15.2 "could play a
+little better" — no patterns, just loose). Research (SQUEEZE_RESEARCH.md): build
+a measurement harness first (per-decision equity-loss via rollouts), then sharpen
+the value head. Built measure_equity_loss.py: for each unforced decision, R=50
+greedy self-play rollouts/move, DOUBLE-SAMPLED (pick best on half A, score gap on
+half B → no winner's-curse bias).
+RESULT (250 decisions): **equity-loss = −0.80% ± 0.61pp ≈ ZERO.** v15.2's moves
+are self-consistent / near-optimal vs its own rollout lookahead — no measurable
+equity left on the table. 5TH convergent ceiling signal (after H2H, play-test,
+search, exploiter).
+KEY METHODOLOGICAL WALL: the rollouts use v15.2's OWN policy as reference, so this
+measures SELF-CONSISTENCY, not ABSOLUTE optimality. The "could play better" the
+user felt is below this floor (sub-1%) AND only visible to a reference STRONGER
+than v15.2 — which we can't build from v15.2 itself (same wall search hit). The
+ONLY genuine remaining lever: RETRAIN a candidate with a richer value signal
+(TD(λ)/n-step targets + decorrelated value data) and paired-dice A/B vs v15.2 —
+sub-pp shot, needs VM. NOTE: metric is slow (~65min/250 decisions, CPU).
+
+## Exp 62 — RICH-VALUE retrain (the definitive last 2P lever) (2026-06-21)
+The one un-tried genuine lever. Added `--value-target lambda` to the v15 trainer:
+the value head trains by MSE to the GAE bootstrapped λ-return (value+advantage)
+instead of BCE to the binary terminal win/loss. Lower variance/bias (research:
+Tesauro 5×, Willemsen "better+faster"). Mechanism: better value baseline →
+better advantages → policy reaches a marginally higher optimum. (trainer change
+smoke-tested both modes; λ MSE loss finite.) Launched on VM (spun back up, new
+IP 35.243.151.132): init from v15.2 best, terminal-only + GAE + value-target
+lambda, strong pool (v136-champ 40 / v132 30 / self 30), dashboard :8801.
+PLAN: train ~50K games, then PAIRED-DICE A/B vs v15.2 (the only honest test at
+the ceiling). >52% paired → real squeeze (the value target worked). ~50% → the
+change didn't help → DEFINITIVE end of the 2P road.
+
+## Exp 62 RESULT — λ-value retrain = TIE; SQUEEZE EXHAUSTED (2026-06-21)
+Trained to 106K games (eval band ~0.81-0.84, same as v15.2; best 0.8415).
+**PAIRED-DICE A/B candidate vs v15.2: 50.9% (611/1200, ±1.4pp) → TIE.** The
+richer value target produced NO measurably stronger model — even under the
+sensitive paired-dice test. This was the best-evidence un-tried lever; it didn't
+move the needle. Retrain stopped, VM idle.
+
+## ==== 2-PLAYER LUDO: CLOSED ====  v15.2 is the near-optimal endpoint
+Every lever and every measurement converge — SIX independent confirmations:
+1. H2H — all snapshots ~50% coin-flips (Exp 49)
+2. Play-test — no systematic flaws, human (Exp 58)
+3. Inference search — 2-ply finds no improvement, 49.8% (Exp 59)
+4. Exploiter — 110K games can't beat it, 45.4% (Exp 60)
+5. Equity-loss — ≈0 regret vs own rollouts (Exp 61)
+6. Rich-value retrain — TIE, 50.9% (Exp 62)
+The ~85% is the genuine variance/luck ceiling (research-predicted for a dice
+race: near-optimal policies are ~50/50 by symmetry; intrinsic single-game
+ceiling ~60-75% even for a big skill gap). **v15.2 = the champion**: single-frame
+GraphTransformer, 587K params, flaw-free by human play, robust to a dedicated
+exploiter, self-consistent at the move level. There is nothing more to squeeze
+from 2P without changing the GAME (4-player) — which the user has ruled out.
+Backups: checkpoint_backups/v152_gaeterminal_2026-06-19/. Play: LUDO_MODEL=v15_2.
+
+## V16 — two properties per connection (2026-08-04 → 08-06, IN PROGRESS)
+
+Owner's idea: every bulk weight gets TWO properties, owned by DIFFERENT
+objectives. `w = a·(1+tanh(b))`, `a` ← RL (PPO), `b` ← auxiliary loss on sparse
+tactical events (capture-available, in-danger). Routing is exact — two forward
+passes with opposite detaching; verified MAIN→|∇b|=0.0, AUX→|∇a|=0.0.
+
+Full write-up: `td_ludo_v15/V16_FINDINGS.md`. Pre-registration:
+`td_ludo_v15/V16_PREREGISTRATION.md`. Mech-interp:
+`AlphaLudo-MechInterp/V16_MECH_INTERP_SUMMARY.md`.
+
+### Attempt 1 (`experiments/twosignal`) — VOID, harness not comparable
+212,608 games. The hand-written RL loop diverged from the v15.2 pipeline in ~10
+ways: 100% self-play (vs 20%), REINFORCE (vs PPO), no GAE, no entropy bonus,
+lr 3e-4 (vs 1e-5), MSE-to-{0,1} value head (vs BCE). Result: improved vs weak
+scripted bots (0.515→0.630) while getting WORSE h2h vs the v15.2 champion it was
+distilled from (0.380 → 0.307 over 1,000 games, 3.4σ). It drifted, it did not
+learn. v15's own code comment predicted exactly this ("weak bots are harmful past
+the SL ceiling"). **A bot-eval gain is not evidence of strength.**
+
+### V16 proper — same code path, one variable
+`train_v15_rich.py` + `V15RichTrainer` reused directly; `V16RichTrainer`
+overrides two hooks. Init = the champion's own stage-1 checkpoint (eval 0.796);
+because `b`=0 ⇒ `w`=`a`, v16 starts NUMERICALLY IDENTICAL to it (verified 0.000e+00,
+asserted at every launch). Reference: the champion went 0.796 → **0.8465** from
+this exact checkpoint on this exact recipe.
+
+Curriculum: stage 1 Expert/Heuristic/self (54K games) → stage 2 champion's strong
+pool (v13.2 30 / v13.6 35 / self 20 / Depth2Expectimax 15).
+
+### Result at 215,239 games — routed does NOT reproduce the gain
+```
+init                     0.7960
+champion from that init  0.8465
+v16 best ever            0.8080  @ 60,001 games
+v16 latest               0.7680  @ 210,000 games
+stage-2 trend           -1.81 pp / 100k games (n=16), last5-first5 -1.64pp (1.88σ)
+```
+The 60k peak was not beaten in 150,000 subsequent games. Diagnostics healthy
+throughout (entropy 0.37, clip 0.02, KL 0.002) — a slow loss of ground, not
+instability.
+
+### Mech-interp — the interesting part
+**Exp 13 (anatomy).** `b` avoids layer 3 (mean |tanh b| 0.0138 vs 0.033-0.040
+elsewhere; `layers.3.ffn.3` = 0.0044) — the layer V15.1's knockout identified as
+the DECISION CRYSTALLIZER. Nothing told it to. `corr(|tanh b|,|a|) = +0.5148`:
+the aux gate targets exactly the high-magnitude weights RL made load-bearing.
+It owns **15.5%** of all weight change since init, and zeroing it flips **25% of
+decisions**, concentrated late-game (KL 0.212 late vs 0.016 early).
+
+**Exp 14 (danger probe, 6,000 real self-play states).** Danger decodability from
+CLS: champion 0.8739 → v16 **0.9985**, collapsing to 0.7666 with `b`=0. Capture:
+0.7826 → 0.9505 → 0.6913. Controls (`num_tokens_out`, `my_progress`) do not
+move. Caveat stated: v16's aux head was trained on these labels from the CLS, so
+the comparison is partly circular; the `b`=0 localisation and the control
+behaviour are what survive that.
+
+### HEADLINE — representation and behaviour dissociate
+Danger decodable at 0.999 (vs champion 0.874) while playing 0.768 (vs 0.8465),
+from the same init on the same pipeline. `cogmap/CLS_RESULTS.md` proposed the
+champion is limited by poor capture-risk encoding (R²≈0.35) — **this falsifies
+that premise**: the representation was fixed essentially completely and play got
+worse.
+
+**Generalisable lesson:** separating GRADIENTS does not separate FUNCTION. The
+routing is exact in the backward pass, but `b` still *scales* `a` in the forward
+pass, so the objectives compose multiplicatively — and Exp 13 shows `b` lands on
+precisely the weights the primary objective depends on. A future version needs
+the second property additive-and-orthogonal, not multiplicative-and-aligned.
+
+### NOT established
+`v16_mixed` (the pre-registered control, P1) has not run. Without it we cannot
+separate "routing hurts" from "the aux objective hurts" from "the two-property
+architecture hurts". Scripted and ready: `./launch_v16_mixed.sh`. A third arm
+(`--aux-coeff 0`) would separate architecture from objective.
+
+### Bugs found and fixed along the way
+- `best_eval_wr` was not restored on resume in `train_v15_rich.py` — every
+  restart made the first eval trivially "best" and overwrote `model_best.pt`.
+  Harmless on a VM, destructive under power cuts. Fixed.
+- `acquire_train_lock()` tests pid liveness with `kill(0)`, but a reboot recycles
+  pids, so a stale lock reads LIVE forever and silently refuses restarts. Cost
+  ~40 min. Both launchers now clear stale locks.
+- MechInterp's `collect_states_stratified` yields states where **71% have zero
+  opponent tokens on board** — it buckets phase by the current player's tokens
+  only. Tactical probes on it are meaningless (capture base rate 0.0%). Added
+  `--collector selfplay`. Any prior experiment probing opponent-dependent
+  concepts should be re-checked.
+
+---
+
+## AlphaLudo V15-4PW: Native Rust Winner-Only Distillation (September 2026)
+
+### Experiment 45: Rust alphaludo_rs + Winner-Only Multi-Agent Distillation
+- **Date**: September 30, 2026
+- **Architecture**: `V15_4PW_GraphTransformer` (593,281 params)
+  - 4 layers × 4 heads × d_model=128, ffn=256.
+  - Policy Head: 225-cell source-cell logits.
+  - Value Head: 4-way winner seat classification (cross-entropy).
+  - Standings Aux Head: 4-way sigmoid MSE on relative token progress fractions $[s_0, s_1, s_2, s_3]$.
+- **Engine**: Native Rust `alphaludo_rs` simulation engine (`crates/ludo_core`, `crates/ludo_search`, `crates/ludo_pyo3`).
+  - Zero heap allocation during search.
+  - Teachers: `MaxNMCTS` (4-player $\text{Max}^n$ MCTS with 4D payoff vectors) + `Depth2Expectimax` (2-ply chance-tree lookahead).
+- **Run Setup**:
+  - Detached background daemon (`launch_winner_distill.sh`) with 25ms CPU pacing.
+  - In-RAM zero-copy streaming (zero dataset files on disk).
+  - Clean interruptability via `touch checkpoints/v15_4pw/stop`.
+- **Training Progression (5h 38m wall time)**:
+  - **Total Winner States Trained**: 9,139,514 (~9.14M states, ~110,000 complete games).
+  - **Batches**: 30,687 (batch size 256).
+  - **Throughput**: ~460–490 states/sec sustained.
+  - **Policy Accuracy**: 75.3% (start) → **92.16%** (final). Policy Loss: 0.535 → **0.1864**.
+  - **Standings MSE Loss**: 0.073 → **0.0088** (~88% error reduction; model precisely predicts 4-way board standings).
+  - **Value Loss**: 0.007 → **0.0000** (saturated winner recognition).
+- **The 1,000-Game Benchmark Tournament (Strict Seat-Rotated 4-Way Match)**:
+  - Matchups: `V15_4PW` vs `V15_4P_RL` (yesterday's 105k RL champion) vs `ExpertBot` vs `HeuristicBot`.
+  - Seat balance: Exactly 250 games per seat per bot.
+  - **Results**:
+    - `V15_4PW`: **506 Wins / 1,000 Games (50.6% Win Rate)**!
+      - Per-seat wins: Seat 0: 123 | Seat 1: 130 | Seat 2: 128 | Seat 3: 125 (perfect seat invariance).
+    - `V15_4P_RL`: **186 Wins (18.6% Win Rate)**.
+    - `HeuristicBot`: **184 Wins (18.4% Win Rate)**.
+    - `ExpertBot`: **124 Wins (12.4% Win Rate)**.
+  - **Conclusion**: `V15_4PW` won more than half of all 1,000 games, beating yesterday's 105k RL model by **2.72×**. Distilling exclusively from winner moves of high-speed Rust searchers completely shattered the 4-player capability plateau.
+
+---
+
+## AlphaLudo V13.7: Tabula Rasa AlphaZero 2-Player Self-Play (September 2026)
+
+### Experiment 46: 100% Pure AlphaZero Self-Play with Deep Rust Expecti-MCTS (N=3,000)
+- **Date**: September 30, 2026
+- **Architecture**: `AlphaLudoV137` Minimal Dual-Head ResNet (1,809,026 params)
+  - 17 input channels (V17 representation: 4 own + 4 opp + 6 dice one-hot + 3 static layout planes).
+  - 6 Residual Blocks × 128 channels.
+  - Policy Head: Spatial per-token pooling via einsum over own token channels 0..3 -> Linear(128, 64) -> ReLU -> Linear(64, 1) -> (B, 4) logits with finite masking (-1e4).
+  - Value Head: AdaptiveAvgPool2d(1) -> Linear(128, 64) -> ReLU -> Linear(64, 1) -> Tanh -> (B,) scalar in [-1.0, +1.0].
+- **Hypothesis & First-Principles Philosophy**:
+  - Historical attempts at MCTS in Exp 9 / Exp 24 failed due to insufficient search budget (N=50 in Python), high rollout variance, and attempting to distill an already-converged model into its own shallow tree.
+  - In native compiled Rust, an Expecti-MCTS search budget of **N = 3,000 simulations per move** executes in ~8.3 ms/move, providing deep, tactical lookahead with chance-node dice integration.
+  - By starting strictly **tabula rasa** from random weights with **terminal-only rewards** ($z \in \{+1.0, -1.0\}$) and uniform root priors with Dirichlet exploration noise ($\alpha=0.3, \epsilon=0.25$), the neural network learns to distill genuine deep tree evaluations rather than inheriting legacy heuristic biases.
+- **Engine & Systems Architecture**:
+  - Zero disk space generation: Self-play games generated entirely in-RAM via multi-threaded Rust Rayon (`alphaludo_rs.generate_alphazero_2p_batch`) streaming directly into a circular RAM replay buffer (60,000 states).
+  - Replay buffer: Ring buffer storing frames (17x15x15), legal masks (4,), target visit distributions $\pi$ (4,), and terminal outcomes $z$.
+  - Evaluation Suite: Dropped trivial `RandomBot` completely. Benchmark suite consists of **`Heuristic`**, **`Aggressive`**, **`Expert`**, and **`MCTS`** (`RustMCTSBot`, native compiled 500-sim Expecti-MCTS in Rust). 80 games total (20 per opponent with strict 50/50 seat alternation).
+  - Cadence: Evaluation spaced out to every 20 iterations (`--eval-every 20`) to maximize training throughput.
+  - Evaluation Execution: Runs on CPU with a shadow model to prevent Apple Silicon Metal stream synchronization latency.
+  - Detached Daemon: Launched via `launch_v137_alphazero.sh` (`nohup` + `disown`) logging to `v137_alphazero.log`.
+  - Clean Interruptability: Graceful termination via `touch stop`.
+  - Interactive Dashboard: Live rich UI on port 8790 (`http://localhost:8790/v13_dashboard.html`) exposing `/api/stats`, `/api/metrics`, `/api/elo`, `/api/system`.
+- **Training Progression (Resumed from Iteration 6)**:
+  - Iteration 7: +3,042 states generated in 2.59s. Total loss: **0.8155** (Policy: 0.6443, Value: **0.1712**). Total states: 21,854.
+  - Iteration 8: +3,114 states generated in 2.97s. Total loss: **0.8791** (Policy: 0.6279, Value: **0.2512**). Total states: 24,968.
+  - Value Loss halving reflects model learning accurate zero-sum terminal outcomes $z \in \{-1, +1\}$.
+

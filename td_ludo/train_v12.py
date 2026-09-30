@@ -25,6 +25,8 @@ import os
 import sys
 import time
 import signal
+import shutil
+import subprocess
 import argparse
 import threading
 import torch
@@ -79,6 +81,21 @@ def get_composition_mix(name):
         return {"SelfPlay": 0.60, "Expert": 0.07, "Heuristic": 0.03,
                 "Hist_V12_2": 0.15, "Hist_V10": 0.10,
                 "Hist_V6_3": 0.03, "Hist_V6_1": 0.02}
+    if name == 'v123_hard':
+        # 2026-05-29: V12.3 RL was coasting on easy bots (Expert 69%,
+        # Aggressive 79% WR — nothing challenging it). Add Expectimax
+        # (mid-hard) as the "few harder opponents", keep the easy bots as
+        # a floor. SelfPlay still includes ghost rotation (handled by the
+        # v11 player's _pick_selfplay_opponent, not GAME_COMPOSITION).
+        # 2026-05-29 (C / AlphaZero-heavy): model was crushing the easy
+        # scripted bots (Aggressive/Heuristic/Expert ~67-71% — near-zero
+        # gradient). Drop them, max out SelfPlay (which auto-rotates ghosts
+        # via the v11 player), keep the hard Expectimax pair as the real
+        # challenge + Expert 5% as a sanity floor. Eval ceiling (~76.5%) is
+        # capacity-bound, so this is a sample-efficiency tweak, not a
+        # ceiling-breaker.
+        return {"SelfPlay": 0.70, "Expectimax": 0.15,
+                "AggressiveExpectimax": 0.10, "Expert": 0.05}
     return None
 
 
@@ -408,6 +425,17 @@ def main():
                              "rank-indexed output mapped back to token-id).")
     parser.add_argument('--num-res-blocks', type=int, default=4)
     parser.add_argument('--num-channels', type=int, default=96)
+    # V13.5-family explicit overrides. The v13_5 branch treats the GLOBAL
+    # defaults (res-blocks=4, channels=96) as sentinels meaning "use V13.5's
+    # 10×128". That makes a genuine 96-channel model (e.g. V13.6 = 6×96)
+    # impossible via --num-channels. These dedicated flags break the
+    # collision: when >0 they are honored verbatim for --model-arch v13_5.
+    parser.add_argument('--v135-num-channels', type=int, default=0,
+                        help='Explicit channel count for --model-arch v13_5 '
+                             '(bypasses the 96→128 sentinel). 0 = legacy.')
+    parser.add_argument('--head-hidden', type=int, default=64,
+                        help='Head hidden width for --model-arch v13_5 '
+                             '(V13.5/V13.6 use 64).')
     parser.add_argument('--num-attn-layers', type=int, default=2)
     parser.add_argument('--num-heads', type=int, default=4)
     parser.add_argument('--ffn-ratio', type=int, default=4)
@@ -447,7 +475,7 @@ def main():
     # V12.2: opponent-mix preset. Bots are saturated for V12-class models;
     # self-play vs ghosts gives more useful gradient than easy bot wins.
     parser.add_argument('--game-composition', default='default',
-                        choices=['default', 'v122', 'v122_hist', 'v122_hist_v2', 'v123', 'v13', 'v13_5_no_bots'],
+                        choices=['default', 'v122', 'v122_hist', 'v122_hist_v2', 'v123', 'v123_hard', 'v13', 'v13_5_no_bots', 'v136_exploiter'],
                         help="'default' = config PROD mix (40/25/15/10/10). "
                              "'v122' = SelfPlay 75 / Expert 15 / Heuristic 5 "
                              "/ Aggressive 3 / Defensive 2. "
@@ -500,6 +528,26 @@ def main():
                              "the per-rank progress head against player_v11's "
                              'progress_target (S(pos) per canonical rank). '
                              '0 disables. Recommended start: 0.05-0.1.')
+    parser.add_argument('--consequence-coeff', type=float, default=0.0,
+                        help='V13.6 world-model aux loss coefficient. >0 trains '
+                             'the per-token capture-prob + cells-at-risk heads '
+                             'against engine-computed targets (consequence_'
+                             'targets.py). 0 disables. Recommended: 0.3-0.5. '
+                             'v13_5 arch only.')
+    parser.add_argument('--risk-delta-coeff', type=float, default=0.0,
+                        help='V13.6 risk-delta reward coefficient (Exp 53). >0 '
+                             'adds a per-step reward = coeff × (own cells-at-'
+                             'risk before − after), giving the policy a gradient '
+                             'to reduce capture exposure (protect endangered/'
+                             'laggard tokens). 0 disables. Recommended: 0.01-0.03.')
+    parser.add_argument('--use-gae', action='store_true',
+                        help='Exp 55: compute the policy advantage via GAE '
+                             '(value-bootstrapped, per trajectory) instead of '
+                             'high-variance Monte-Carlo (return − value). The '
+                             'value head stays BCE-trained. λ=1 ≡ MC.')
+    parser.add_argument('--gae-lambda', type=float, default=0.95,
+                        help='GAE λ (bias/variance knob). 1.0 = Monte-Carlo, '
+                             '0.0 = one-step TD. Default 0.95.')
 
     # Eval cadence overrides (default comes from src.config — usually
     # 25000/2500). Lower interval = more frequent feedback at the cost of
@@ -522,8 +570,10 @@ def main():
         EVAL_GAMES = args.eval_games
 
     # Fresh start: wipe run dir but keep model_sl.pt
+    # (shutil is imported at module level — a local import here would shadow
+    # it for the WHOLE function and break the async-eval snapshot copy with
+    # UnboundLocalError, which is exactly what happened on 2026-06-11.)
     if args.fresh and os.path.exists(CHECKPOINT_DIR):
-        import shutil
         print(f"[V12 Train] Fresh start. Purging {CHECKPOINT_DIR}...")
         for f in os.listdir(CHECKPOINT_DIR):
             if f in ('model_sl.pt',):
@@ -572,8 +622,14 @@ def main():
         # is provided as input rather than learned via aux losses.
         from experiments.distillation_14ch.model_14ch import MinimalCNN14
         from td_ludo.game.encoder_v17 import encode_state_v17, V17_CHANNELS
-        v132_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 10
-        v132_channels = args.num_channels if args.num_channels != 96 else 128
+        # The "if == default else override" logic forced 10×128 when user
+        # passed defaults — but V12.3 SL was actually trained at 8×96 and
+        # passing those explicit values would also get rewritten (96==default
+        # check). Use sentinel-style: respect any non-default value, but
+        # ALSO respect explicitly-passed 96. We treat 0/None as "use 10×128
+        # legacy default", otherwise honor what was passed.
+        v132_blocks = args.num_res_blocks if args.num_res_blocks not in (0, 4) else 10
+        v132_channels = args.num_channels if args.num_channels not in (0,) else 128
         model_factory = lambda: MinimalCNN14(
             num_res_blocks=v132_blocks,
             num_channels=v132_channels,
@@ -615,9 +671,16 @@ def main():
             encode_state_v18_production, V18_PROD_CHANNELS,
         )
         v135_blocks = args.num_res_blocks if args.num_res_blocks != 4 else 10
-        v135_channels = args.num_channels if args.num_channels != 96 else 128
+        # Honor the explicit V13.5-family channel flag first (so V13.6 = 6×96
+        # is buildable); fall back to the legacy 96→128 sentinel otherwise.
+        if args.v135_num_channels > 0:
+            v135_channels = args.v135_num_channels
+        else:
+            v135_channels = args.num_channels if args.num_channels != 96 else 128
+        v135_head_hidden = args.head_hidden
         model_factory = lambda: V135ProductionAdapter(
             num_res_blocks=v135_blocks, num_channels=v135_channels,
+            head_hidden=v135_head_hidden,
         )
         model = model_factory()
         print(f"[V12 Train] Model: V135ProductionAdapter (V13.5) "
@@ -672,7 +735,52 @@ def main():
         model, device, learning_rate=LEARNING_RATE,
         alpha_search=alpha_search_eff,
         progress_coeff=args.progress_coeff,
+        consequence_coeff=args.consequence_coeff,
+        use_gae=args.use_gae,
+        gae_lambda=args.gae_lambda,
     )
+
+    # ── Dashboard run_info (overrides V15.1 fallback labels in HTML) ──
+    # The shared v13_dashboard.html has hardcoded V15.1 labels; we set
+    # run_info to publish model-specific text. Keyed off --model-arch
+    # so V12.3 / V13.6 / etc. each get their proper headers.
+    _arch_label_map = {
+        'v12':         ('V12 AlphaLudoV12',     'V12 RL · CNN+attn'),
+        'v13_minimal': ('V13 MinimalCNN14',     'V13 RL · pure CNN (14ch)'),
+        'v131_aux':    ('V13.1 MinimalCNN14Aux','V13.1 RL · MinCNN+aux heads'),
+        'v132':        ('V12.3 MinimalCNN14',   'V12.3 RL · MinCNN (V17 17ch)'),
+        'v14_scalar':  ('V14 ScalarDeepSets',   'V14 RL · DeepSets'),
+        'v13_5':       ('V13.5 V135Symmetric',  'V13.5 RL · token-symmetric'),
+    }
+    _model_name, _badge = _arch_label_map.get(
+        args.model_arch, ('Model', f'RL · {args.model_arch}')
+    )
+    _n_params = sum(p.numel() for p in model.parameters())
+    _comp = args.game_composition
+    trainer.run_info = {
+        'model_name': _model_name,
+        'badge': _badge,
+        'arch_summary': (
+            f'{_model_name}: '
+            f'{getattr(model, "num_res_blocks", "?")} res blocks · '
+            f'{getattr(model, "num_channels", "?")} ch · '
+            f'{_n_params/1e6:.2f}M params'
+        ),
+        'run_name': os.environ.get("TD_LUDO_RUN_NAME", "ac_v12"),
+        'description': (
+            f'Run <b>{os.environ.get("TD_LUDO_RUN_NAME", "ac_v12")}</b> ({_model_name}). '
+            f'Game composition: <b>{_comp}</b>. '
+            f'Init from <b>model_sl.pt</b> if no checkpoint.'
+        ),
+        'first_eval_at': int(args.eval_interval) if args.eval_interval else 25000,
+        'eval_every_games': int(args.eval_interval) if args.eval_interval else 25000,
+        'eval_games': int(args.eval_games) if args.eval_games else 2500,
+        'target_wr': 0.85,
+        'baseline_wr': 0.80,
+        'baseline_label': 'Stage-1 RL target (80% sustained)',
+        'target_label': '85% (V13.5-family ceiling)',
+        'params_total': int(_n_params),
+    }
 
     # Load weights with multi-backup fallback
     if args.resume:
@@ -732,6 +840,25 @@ def main():
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V122_MIX
         print(f"[V12 Train] Game composition: V12.2 mix → {V122_MIX}")
+    elif args.game_composition == 'v123_hard':
+        # 2026-05-29: V12.3 RL coasting on easy bots (Expert 69%, Aggr 79%
+        # WR). Add Expectimax (mid-hard) as "a few harder opponents" while
+        # keeping the easy bots as a winnable floor. SelfPlay slot still
+        # rotates ghosts via the v11 player.
+        # 2026-05-29 (C / AlphaZero-heavy): dropped the crushed easy bots
+        # (Aggressive/Heuristic), maxed SelfPlay (auto-rotates ghosts),
+        # kept the hard Expectimax pair + Expert 5% floor.
+        V123_HARD_MIX = {
+            "SelfPlay":             0.70,   # live self + ghost rotation
+            "Expectimax":           0.15,   # hard
+            "AggressiveExpectimax": 0.10,   # semi-hard
+            "Expert":               0.05,   # easy reference floor
+        }
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V123_HARD_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V123_HARD_MIX
+        print(f"[V12 Train] Game composition: V12.3-HARD mix → {V123_HARD_MIX}")
     elif args.game_composition == 'v123':
         # Historical-model opponents replace the saturated bot mix.
         # Each Hist_* tag is dispatched at play_step time through
@@ -824,22 +951,41 @@ def main():
         # Hist_V13_5_SL = "different SL endpoint of same architecture";
         # SelfPlay+ghost = "current student / past selves"). NO bots —
         # they're saturated and don't push the policy past V12.2 lineage.
+        # Exp 48 (2026-06-13) pool-refresh shot: the run plateaued at eval
+        # mean ~80.2 / peak 82.8 over ~1M games — every anchor taught out
+        # (all 44-46% training WR, flat) and the eval band flat for 1M
+        # games. Introduce the FROZEN 82.8 peak (Hist_V136_best) as a fresh
+        # frontier opponent: a fixed target stronger than the live policy
+        # that doesn't co-drift. Retire Hist_V12_2 (oldest/weakest DNA,
+        # most taught-out), trim SelfPlay (the frozen-best is a better
+        # "vs self" signal). LR stays 1e-5. Revert = restore the Phase L
+        # mix below + the prethroughput/Exp48 checkpoint backup.
         V13_5_NO_BOTS_MIX = {
-            # Phase L (2026-05-13): "tough-opponents" rebalance after search-
-            # teacher experiment damaged the model. Less self-play (50 → 20)
-            # so the policy doesn't drift into self-overfit; more weight on
-            # the toughest external opponents (V13_2 and V13_5_SL) to
-            # extract whatever discriminative signal remains in the pool.
-            "Hist_V13_2":       0.40,    # tough — V13-line, different arch family
-            "Hist_V13_5_SL":    0.30,    # toughest (different SL endpoint, same arch)
-            "SelfPlay":         0.20,    # cut from 0.50 — less self-overfit
-            "Hist_V12_2":       0.10,    # legacy, kept for DNA diversity
+            "Hist_V13_2":       0.35,    # tough — V13-line, different arch family
+            "Hist_V13_5_SL":    0.25,    # toughest external (different SL endpoint)
+            "Hist_V136_best":   0.25,    # NEW — frozen 82.8 frontier self
+            "SelfPlay":         0.15,    # trimmed from 0.20
+            # "Hist_V12_2":     0.00,    # retired (was 0.10) — taught out
         }
         import src.config as _cfg
         _cfg.GAME_COMPOSITION = V13_5_NO_BOTS_MIX
         import td_ludo.game.players.v11 as _v11mod
         _v11mod.GAME_COMPOSITION = V13_5_NO_BOTS_MIX
         print(f"[V12 Train] Game composition: v13_5_no_bots mix → {V13_5_NO_BOTS_MIX}")
+    elif args.game_composition == 'v136_exploiter':
+        # Exp 50 (2026-06-13): plateau-break exploiter. 100% of games are
+        # the training Model vs the FROZEN champion (Hist_V136_best, pointed
+        # via HISTORICAL_OPPONENT_CKPTS at the frozen latest = H2H-strongest
+        # snapshot). Sole objective: learn to beat the champion. >55%
+        # sustained ⇒ the champion has exploitable holes mirror-self-play
+        # can't reveal ⇒ real headroom. ≤52% after 100K ⇒ near-optimal.
+        # Mirrors Exp 19's V10 exploiter design (init from SL, high entropy).
+        V136_EXPLOITER_MIX = {"Hist_V136_best": 1.0}
+        import src.config as _cfg
+        _cfg.GAME_COMPOSITION = V136_EXPLOITER_MIX
+        import td_ludo.game.players.v11 as _v11mod
+        _v11mod.GAME_COMPOSITION = V136_EXPLOITER_MIX
+        print(f"[V12 Train] Game composition: v136_exploiter → {V136_EXPLOITER_MIX}")
     else:
         from src.config import GAME_COMPOSITION as _gc_default
         print(f"[V12 Train] Game composition: PROD default → {_gc_default}")
@@ -871,7 +1017,7 @@ def main():
     # Initial composition uses what the user passed; curriculum mode also
     # enables historicals upfront so the registry is loaded before the swap.
     historical_opponents_enabled = (
-        args.game_composition in ('v123', 'v13', 'v122_hist', 'v122_hist_v2', 'v13_5_no_bots')
+        args.game_composition in ('v123', 'v13', 'v122_hist', 'v122_hist_v2', 'v13_5_no_bots', 'v136_exploiter')
         or (args.curriculum_mode == 'auto'
             and args.curriculum_target in ('v123', 'v13', 'v122_hist', 'v122_hist_v2', 'v13_5_no_bots'))
     )
@@ -880,6 +1026,11 @@ def main():
     # ignores `progress_target` since the model doesn't return a 4th tensor.
     progress_target_enabled_eff = (
         args.progress_coeff > 0.0 and args.model_arch == 'v13_5'
+    )
+    # V13.6 consequence targets — only meaningful for the v13_5 arch (it has
+    # the capture/risk heads). Player computes per-token targets each step.
+    consequence_target_enabled_eff = (
+        args.consequence_coeff > 0.0 and args.model_arch == 'v13_5'
     )
     player = VectorACGamePlayer(
         trainer, BATCH_SIZE, device,
@@ -892,6 +1043,8 @@ def main():
         encoder_fn=encoder_fn,
         shaping_coeff=args.shaping_coeff,
         progress_target_enabled=progress_target_enabled_eff,
+        consequence_target_enabled=consequence_target_enabled_eff,
+        risk_delta_coeff=args.risk_delta_coeff,
     )
     _player = player
 
@@ -977,6 +1130,10 @@ def main():
     print(f"  Ctrl+C to save and exit gracefully")
     print(f"{'=' * 60}\n")
 
+    # Async eval state (2026-06-11): at most one eval subprocess in flight.
+    # {'proc', 'out', 'snap', 'games'} or None.
+    pending_eval = None
+
     try:
         while not STOP_REQUESTED:
             session_games = trainer.total_games - games_at_start
@@ -1056,65 +1213,123 @@ def main():
                 last_save_time = time.time()
                 print(f"[Auto-save] Checkpoint + backups rotated (game {trainer.total_games})")
 
+            # ── Async eval (2026-06-11) ──────────────────────────────────
+            # The old in-loop eval blocked training ~6.5 min per 15K games
+            # (~13% of wall time). Now: snapshot the current weights and
+            # eval them in a nice'd subprocess (eval_worker_v12.py) while
+            # training continues; the result is applied when it lands.
+            # Identical evaluate_model call, identical post-eval logic.
             current_bucket = trainer.total_games // EVAL_INTERVAL
-            if current_bucket > last_eval_bucket:
-                # Save BEFORE eval (eval is long; power loss mid-eval would
-                # otherwise rewind further than necessary).
+            if current_bucket > last_eval_bucket and pending_eval is None:
+                # Save BEFORE eval (power loss mid-eval would otherwise
+                # rewind further than necessary).
                 safe_save_with_rotation(trainer, CHECKPOINT_DIR)
                 print(f"[Pre-eval-save] Checkpoint saved before eval starts")
 
-                print(f"\n--- Evaluation ({EVAL_GAMES} games) ---")
-                from evaluate_v11 import evaluate_model  # V12.1+: 33ch V11 encoder
-
-                eval_results = evaluate_model(model, device, num_games=EVAL_GAMES, verbose=False, encoder_fn=encoder_fn)
-                eval_wr = eval_results['win_rate']
-                print(f"--- Eval Win Rate: {eval_results['win_rate_percent']}% ---\n")
-
-                is_best = eval_wr > trainer.best_win_rate
-                if is_best:
-                    trainer.best_win_rate = eval_wr
-                    eval_drops = 0
-                    trainer.is_stagnated = False
-                    print(f"  ★ New best: {eval_results['win_rate_percent']}%!")
-                else:
-                    eval_drops += 1
-                    print(f"  ↓ No improvement ({eval_drops}/{EARLY_STOP_PATIENCE} patience)")
-
-                # Plateau-break milestone tracking
-                if eval_wr >= 0.80:
-                    print(f"  ★★★ PLATEAU BREAK: ≥80% sustained eval WR ★★★")
-
-                # Curriculum gating: swap composition once last N evals all clear threshold.
-                if args.curriculum_mode == 'auto' and not curriculum_swapped:
-                    eval_wr_history.append(eval_wr)
-                    recent = eval_wr_history[-args.curriculum_window:]
-                    if (len(recent) >= args.curriculum_window
-                            and all(w >= args.curriculum_eval_thresh for w in recent)):
-                        if apply_composition(args.curriculum_target):
-                            curriculum_swapped = True
-                            mix = get_composition_mix(args.curriculum_target)
-                            print(f"\n  ★★★ CURRICULUM TRIGGER: swapping "
-                                  f"{args.game_composition} → {args.curriculum_target} ★★★")
-                            print(f"      Last {args.curriculum_window} evals: "
-                                  f"{[f'{w:.1%}' for w in recent]}")
-                            print(f"      New mix: {mix}\n")
-                        else:
-                            print(f"  [curriculum] FAILED: unknown target "
-                                  f"'{args.curriculum_target}'")
-
-                win_rate_100 = sum(rolling_win_rate) / max(1, len(rolling_win_rate))
-                trainer.log_metrics(win_rate_100, trainer.total_games, eval_win_rate=eval_wr)
-                trainer.last_eval_wr = eval_wr
-
-                safe_save_with_rotation(trainer, CHECKPOINT_DIR, is_best=is_best)
-                elo_tracker.save()
+                eval_dir = os.path.join(CHECKPOINT_DIR, 'async_eval')
+                os.makedirs(eval_dir, exist_ok=True)
+                snap_path = os.path.join(
+                    eval_dir, f'pending_G{trainer.total_games}.pt')
+                out_path = os.path.join(
+                    eval_dir, f'result_G{trainer.total_games}.json')
+                shutil.copyfile(MAIN_CKPT_PATH, snap_path)
+                worker_cmd = [
+                    sys.executable, '-u',
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'eval_worker_v12.py'),
+                    '--snapshot', snap_path,
+                    '--out', out_path,
+                    '--games', str(EVAL_GAMES),
+                    '--device', str(device),
+                    '--model-arch', args.model_arch,
+                    '--num-res-blocks', str(args.num_res_blocks),
+                    '--v135-num-channels', str(args.v135_num_channels),
+                    '--head-hidden', str(args.head_hidden),
+                ]
+                eval_proc = subprocess.Popen(
+                    worker_cmd,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    preexec_fn=(lambda: os.nice(10)) if hasattr(os, 'nice') else None,
+                )
+                pending_eval = {'proc': eval_proc, 'out': out_path,
+                                'snap': snap_path, 'games': trainer.total_games}
+                print(f"\n--- Evaluation ({EVAL_GAMES} games, async, "
+                      f"G={trainer.total_games}) ---")
                 last_eval_bucket = current_bucket  # advance bucket
                 last_save_time = time.time()
 
-                trainer.is_stagnated = (eval_drops >= EARLY_STOP_PATIENCE)
-                if trainer.is_stagnated:
-                    print(f"\n[V12 Train] ⚠️ WARNING: No improvement for "
-                          f"{EARLY_STOP_PATIENCE} consecutive evals.")
+            if pending_eval is not None and pending_eval['proc'].poll() is not None:
+                rc = pending_eval['proc'].returncode
+                eval_wr = None
+                if rc == 0 and os.path.exists(pending_eval['out']):
+                    try:
+                        with open(pending_eval['out']) as f:
+                            eval_wr = float(json.load(f)['win_rate'])
+                    except Exception as e:
+                        print(f"[async-eval] failed to read result: {e}")
+                if eval_wr is None:
+                    print(f"[async-eval] worker failed (rc={rc}) — eval for "
+                          f"G={pending_eval['games']} skipped")
+                else:
+                    print(f"--- Eval Win Rate: {eval_wr*100:.1f}% "
+                          f"(G={pending_eval['games']}) ---\n")
+
+                    is_best = eval_wr > trainer.best_win_rate
+                    if is_best:
+                        trainer.best_win_rate = eval_wr
+                        eval_drops = 0
+                        trainer.is_stagnated = False
+                        print(f"  ★ New best: {eval_wr*100:.1f}%!")
+                        # Preserve the EXACT evaluated weights (the snapshot),
+                        # not the now-newer live weights.
+                        shutil.copyfile(
+                            pending_eval['snap'],
+                            os.path.join(CHECKPOINT_DIR, 'model_best_eval.pt'))
+                    else:
+                        eval_drops += 1
+                        print(f"  ↓ No improvement ({eval_drops}/{EARLY_STOP_PATIENCE} patience)")
+
+                    # Plateau-break milestone tracking
+                    if eval_wr >= 0.80:
+                        print(f"  ★★★ PLATEAU BREAK: ≥80% sustained eval WR ★★★")
+
+                    # Curriculum gating: swap composition once last N evals all clear threshold.
+                    if args.curriculum_mode == 'auto' and not curriculum_swapped:
+                        eval_wr_history.append(eval_wr)
+                        recent = eval_wr_history[-args.curriculum_window:]
+                        if (len(recent) >= args.curriculum_window
+                                and all(w >= args.curriculum_eval_thresh for w in recent)):
+                            if apply_composition(args.curriculum_target):
+                                curriculum_swapped = True
+                                mix = get_composition_mix(args.curriculum_target)
+                                print(f"\n  ★★★ CURRICULUM TRIGGER: swapping "
+                                      f"{args.game_composition} → {args.curriculum_target} ★★★")
+                                print(f"      Last {args.curriculum_window} evals: "
+                                      f"{[f'{w:.1%}' for w in recent]}")
+                                print(f"      New mix: {mix}\n")
+                            else:
+                                print(f"  [curriculum] FAILED: unknown target "
+                                      f"'{args.curriculum_target}'")
+
+                    win_rate_100 = sum(rolling_win_rate) / max(1, len(rolling_win_rate))
+                    trainer.log_metrics(win_rate_100, trainer.total_games, eval_win_rate=eval_wr)
+                    trainer.last_eval_wr = eval_wr
+
+                    safe_save_with_rotation(trainer, CHECKPOINT_DIR)
+                    elo_tracker.save()
+                    last_save_time = time.time()
+
+                    trainer.is_stagnated = (eval_drops >= EARLY_STOP_PATIENCE)
+                    if trainer.is_stagnated:
+                        print(f"\n[V12 Train] ⚠️ WARNING: No improvement for "
+                              f"{EARLY_STOP_PATIENCE} consecutive evals.")
+
+                # Clean up the snapshot (best copy already preserved above).
+                try:
+                    os.remove(pending_eval['snap'])
+                except OSError:
+                    pass
+                pending_eval = None
 
     except KeyboardInterrupt:
         print("\n[V12 Train] Keyboard interrupt")
@@ -1122,6 +1337,13 @@ def main():
         print(f"\n[V12 Train] Error: {e}")
         import traceback
         traceback.print_exc()
+
+    # Reap any in-flight async eval worker (its result would have no
+    # consumer after we exit; the bucket scheduler simply skips that eval
+    # on resume — same behavior as a power loss mid-eval before async).
+    if pending_eval is not None and pending_eval['proc'].poll() is None:
+        print("[async-eval] terminating in-flight eval worker")
+        pending_eval['proc'].terminate()
 
     print("[V12 Train] Final save (with backup rotation)...")
     trainer.flush_buffer()

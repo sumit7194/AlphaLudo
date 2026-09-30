@@ -63,41 +63,54 @@ INDEX_TO_CELL: np.ndarray = np.array(
 )
 
 # ─── Special-cell constants (encoder + graph use these) ───────────────────
-MD_CELL: Tuple[int, int] = (0, 0)     # My Dice
-OD_CELL: Tuple[int, int] = (14, 14)   # Opp Dice
-MS_CELL: Tuple[int, int] = (7, 6)     # My Scored count (also the HOME center)
-OS_CELL: Tuple[int, int] = (7, 8)     # Opp Scored count
+MD_CELL: Tuple[int, int] = (0, 0)     # My Dice (P0)
+OD_CELL: Tuple[int, int] = (14, 14)   # Opp Dice (P2 in 2P mode)
+MS_CELL: Tuple[int, int] = (7, 6)     # My Scored count (P0)
+OS_CELL: Tuple[int, int] = (7, 8)     # Opp Scored count (P2 in 2P mode)
 
 SPECIAL_CELLS = (MD_CELL, OD_CELL, MS_CELL, OS_CELL)
 
+# 4-Player Special Cells in current-player (P0) POV:
+# 4 Dice Corners: P0 (0,0), P1 (0,14), P2 (14,14), P3 (14,0)
+DICE_CELLS_4P: Tuple[Tuple[int, int], ...] = ((0, 0), (0, 14), (14, 14), (14, 0))
+# 4 Scored Centers: P0 (7,6), P1 (6,7), P2 (7,8), P3 (8,7)
+SCORED_CELLS_4P: Tuple[Tuple[int, int], ...] = ((7, 6), (6, 7), (7, 8), (8, 7))
+SPECIAL_CELLS_4P: Tuple[Tuple[int, int], ...] = DICE_CELLS_4P + SCORED_CELLS_4P
+
 
 def is_special_cell(row: int, col: int) -> bool:
-    """True iff (row, col) is one of the 4 global-state special cells."""
-    return (row, col) in SPECIAL_CELLS
+    """True iff (row, col) is one of the global-state special cells."""
+    return (row, col) in SPECIAL_CELLS_4P
 
 
 # ─── Home base cells (4 cells per player, P0-canonical positions) ─────────
-# In P0's POV, P0's home base is the top-left 2×2. Under V15's design
-# Option B (spread-fill rule, see V15_DESIGN_PLAN.md):
-# When N tokens are at home base, the first N cells in canonical order
-# encode (1, -1, 1); the remaining 4-N cells encode (0, -1, 1).
-# This preserves the visual stack while staying token-id-symmetric.
 HOME_BASE_CELLS_P0 = ((2, 2), (2, 3), (3, 2), (3, 3))
 HOME_BASE_COUNTER: Tuple[int, int] = (2, 2)  # legacy name; first cell in spread order
 
-# Opp home base in current-player POV. Canonical CCW-rotation order from
-# P0's POV → P2's perspective: (12, 12) → (12, 11) → (11, 12) → (11, 11).
-# Same spread-fill applied symmetrically.
-OPP_HOME_BASE_CELLS = ((12, 12), (12, 11), (11, 12), (11, 11))
-OPP_HOME_BASE_COUNTER: Tuple[int, int] = (12, 12)  # legacy name; first cell in spread order
+# 4-Player Home Bases in current-player (P0) POV:
+HOME_BASE_CELLS_4P = (
+    ((2, 2),  (2, 3),  (3, 2),  (3, 3)),      # P0 (Top-Left)
+    ((2, 12), (3, 12), (2, 11), (3, 11)),     # P1 (Top-Right)
+    ((12, 12),(12, 11),(11, 12),(11, 11)),    # P2 (Bottom-Right)
+    ((12, 2), (11, 2), (12, 3), (11, 3)),     # P3 (Bottom-Left)
+)
+
+OPP_HOME_BASE_CELLS = HOME_BASE_CELLS_4P[2]  # P2's base in 2P mode
+OPP_HOME_BASE_COUNTER: Tuple[int, int] = (12, 12)
 
 # ─── Home stretch cells ───────────────────────────────────────────────────
-# In P0's POV: my stretch runs (7, 1) → (7, 5), then HOME at (7, 6).
 HOME_STRETCH_CELLS_P0 = ((7, 1), (7, 2), (7, 3), (7, 4), (7, 5))
 HOME_CENTER: Tuple[int, int] = (7, 6)  # same physical cell as MS
 
-# Opp home stretch in P0's POV (P2's stretch after rotation): (7, 13) → (7, 9).
-OPP_HOME_STRETCH_CELLS = ((7, 13), (7, 12), (7, 11), (7, 10), (7, 9))
+# 4-Player Home Stretches in current-player (P0) POV:
+HOME_STRETCH_CELLS_4P = (
+    ((7, 1), (7, 2), (7, 3), (7, 4), (7, 5)),      # P0 (runs East to 7,6)
+    ((1, 7), (2, 7), (3, 7), (4, 7), (5, 7)),      # P1 (runs South to 6,7)
+    ((7, 13), (7, 12), (7, 11), (7, 10), (7, 9)),  # P2 (runs West to 7,8)
+    ((13, 7), (12, 7), (11, 7), (10, 7), (9, 7)),  # P3 (runs North to 8,7)
+)
+
+OPP_HOME_STRETCH_CELLS = HOME_STRETCH_CELLS_4P[2]  # P2's stretch in 2P mode
 
 
 # ─── Rotations + path-position-to-cell ────────────────────────────────────

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaLudo 4P Dashboard</title>
+<style>
+  :root {
+    --bg: #0b1120;
+    --panel: #131d33;
+    --panel-sub: #1b2844;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #6366f1;
+    --accent-glow: rgba(99, 102, 241, 0.2);
+    --good: #10b981;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+    --border: #1e293b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 18px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    max-width: 1300px;
+    margin: 0 auto 16px auto;
+  }
+  h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .badge {
+    padding: 5px 12px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: var(--accent);
+    color: white;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    max-width: 1300px;
+    margin: 0 auto 16px auto;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card-title {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .big-num {
+    font-size: 32px;
+    font-weight: 800;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    letter-spacing: -0.03em;
+  }
+  .sub-num {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    max-width: 1300px;
+    margin: 0 auto 16px auto;
+  }
+  canvas {
+    width: 100%;
+    height: 240px;
+    background: var(--panel-sub);
+    border-radius: 6px;
+    display: block;
+  }
+  .chart-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .legend {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .details-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  td.mono { font-family: ui-monospace, Menlo, monospace; }
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr 1fr; }
+    .charts-grid, .details-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>AlphaLudo 4-Player Training</h1>
+    <div class="subtitle" id="sub-info">Live Streamed Distillation &bull; V15.4P GraphTransformer</div>
+  </div>
+  <div class="badge" id="phase-badge">ONLINE SL</div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title" id="pol-card-title">Policy Accuracy</div>
+    <div class="big-num" id="pol-acc">--%</div>
+    <div class="sub-num" id="pol-loss">Loss: --</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Eval Win Rate (4P)</div>
+    <div class="big-num" style="color: var(--good);" id="eval-wr">--%</div>
+    <div class="sub-num">Baseline Random: 25.0%</div>
+  </div>
+  <div class="card">
+    <div class="card-title">States Trained</div>
+    <div class="big-num" id="total-states">0</div>
+    <div class="sub-num" id="gpm-text">0 GPM &bull; 0 fps</div>
+  </div>
+  <div class="card">
+    <div class="card-title" id="val-card-title">Value Head Accuracy</div>
+    <div class="big-num" id="val-acc">--%</div>
+    <div class="sub-num" id="val-loss">Loss: -- (4-way CE)</div>
+  </div>
+</div>
+
+<div class="charts-grid">
+  <div class="card">
+    <div class="chart-header">
+      <span>Skill & Accuracy History</span>
+      <div class="legend">
+        <span class="legend-item"><span class="dot" style="background:#10b981;"></span> Eval WR (%)</span>
+        <span class="legend-item"><span class="dot" style="background:#6366f1;"></span> Policy Acc (%)</span>
+      </div>
+    </div>
+    <canvas id="chart-skill"></canvas>
+  </div>
+  <div class="card">
+    <div class="chart-header">
+      <span>Training Loss Convergence</span>
+      <div class="legend">
+        <span class="legend-item"><span class="dot" style="background:#f59e0b;"></span> Policy Loss</span>
+        <span class="legend-item"><span class="dot" style="background:#ec4899;"></span> Value Loss</span>
+      </div>
+    </div>
+    <canvas id="chart-loss"></canvas>
+  </div>
+</div>
+
+<div class="details-grid">
+  <div class="card">
+    <div class="card-title">Training Status & Telemetry</div>
+    <table>
+      <tr><td>Device</td><td class="mono" id="stat-device">--</td></tr>
+      <tr><td>Model Architecture</td><td class="mono">GraphTransformer 4×128 (588K params)</td></tr>
+      <tr><td>Optimizer / LR</td><td class="mono" id="stat-lr">AdamW (1e-3)</td></tr>
+      <tr><td>Batches Processed</td><td class="mono" id="stat-batches">0</td></tr>
+      <tr><td>Games Simulated</td><td class="mono" id="stat-games">0</td></tr>
+      <tr><td>Best Eval WR</td><td class="mono" id="stat-best-wr" style="color:var(--good);">--%</td></tr>
+      <tr><td>Elapsed Time</td><td class="mono" id="stat-elapsed">00:00:00</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">Evaluation Tournament History</div>
+    <table>
+      <thead>
+        <tr><th>Step</th><th>Eval WR</th><th>Best</th><th>Teacher Pool</th></tr>
+      </thead>
+      <tbody id="eval-table-body">
+        <tr><td colspan="4" style="color:var(--muted); text-align:center;">Awaiting first evaluation...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let metricsHistory = [];
+
+async function update() {
+  try {
+    const res = await fetch('/api/stats');
+    if (!res.ok) return;
+    const s = await res.json();
+
+    if (s.phase === 'PPO RL') {
+      document.getElementById('pol-card-title').innerText = 'Policy Confidence';
+      document.getElementById('val-card-title').innerText = 'Winner Predict Acc';
+      document.getElementById('sub-info').innerHTML = 'Live PPO Self-Play & Reinforcement Learning &bull; V15.4P GraphTransformer';
+      document.getElementById('pol-acc').innerText = (s.policy_acc != null && s.policy_acc > 0 ? (s.policy_acc * 100).toFixed(1) + '%' : '--%');
+      document.getElementById('pol-loss').innerText = 'Loss: ' + (s.policy_loss != null ? s.policy_loss.toFixed(4) : '--') + (s.entropy != null ? ' • Ent: ' + s.entropy.toFixed(2) : '');
+      document.getElementById('val-acc').innerText = (s.val_acc != null && s.val_acc > 0 ? (s.val_acc * 100).toFixed(1) + '%' : '--%');
+      document.getElementById('val-loss').innerText = 'Loss: ' + (s.val_loss != null ? s.val_loss.toFixed(4) : '--') + ' (4-way CE)';
+    } else {
+      document.getElementById('pol-card-title').innerText = 'Policy Accuracy';
+      document.getElementById('val-card-title').innerText = 'Value Head Accuracy';
+      document.getElementById('sub-info').innerHTML = 'Live Streamed Distillation &bull; V15.4P GraphTransformer';
+      document.getElementById('pol-acc').innerText = (s.policy_acc != null ? (s.policy_acc * 100).toFixed(1) + '%' : '--%');
+      document.getElementById('pol-loss').innerText = 'Loss: ' + (s.policy_loss != null ? s.policy_loss.toFixed(4) : '--');
+      document.getElementById('val-acc').innerText = (s.val_acc != null ? (s.val_acc * 100).toFixed(1) + '%' : '--%');
+      document.getElementById('val-loss').innerText = 'Loss: ' + (s.val_loss != null ? s.val_loss.toFixed(4) : '--') + ' (4-way CE)';
+    }
+
+    document.getElementById('eval-wr').innerText = (s.eval_wr != null ? s.eval_wr.toFixed(1) + '%' : '--%');
+    document.getElementById('total-states').innerText = (s.total_states || 0).toLocaleString();
+    document.getElementById('gpm-text').innerText = (s.gpm || 0).toFixed(0) + ' GPM • ' + (s.fps || 0).toFixed(0) + ' fps';
+    document.getElementById('stat-device').innerText = s.device || 'MPS/CPU';
+    document.getElementById('stat-lr').innerText = s.lr ? s.lr.toExponential(2) : '--';
+    document.getElementById('stat-batches').innerText = (s.batches || 0).toLocaleString();
+    document.getElementById('stat-games').innerText = (s.games_played || 0).toLocaleString();
+    document.getElementById('stat-best-wr').innerText = (s.best_eval_wr != null ? s.best_eval_wr.toFixed(1) + '%' : '--%');
+    document.getElementById('stat-elapsed').innerText = s.elapsed || '00:00:00';
+    if (s.phase) {
+      document.getElementById('phase-badge').innerText = s.phase;
+    }
+
+    const mRes = await fetch('/api/metrics');
+    if (mRes.ok) {
+      metricsHistory = await mRes.json();
+      drawCharts();
+      updateTable();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function drawLine(ctx, data, color, maxY, minY = 0) {
+  if (data.length < 2) return;
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < data.length; i++) {
+    const x = (i / (data.length - 1)) * (w - 20) + 10;
+    const yVal = Math.max(minY, Math.min(maxY, data[i]));
+    const y = h - 20 - ((yVal - minY) / (maxY - minY)) * (h - 40);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawCharts() {
+  // Skill Chart
+  const cSkill = document.getElementById('chart-skill');
+  cSkill.width = cSkill.clientWidth;
+  cSkill.height = 240;
+  const ctxS = cSkill.getContext('2d');
+  ctxS.clearRect(0, 0, cSkill.width, cSkill.height);
+
+  const wrs = metricsHistory.map(m => m.eval_wr || 25);
+  const pols = metricsHistory.map(m => (m.policy_acc || 0) * 100);
+
+  if (metricsHistory.length >= 2) {
+    drawLine(ctxS, wrs, '#10b981', 100, 0);
+    drawLine(ctxS, pols, '#6366f1', 100, 0);
+  }
+
+  // Loss Chart
+  const cLoss = document.getElementById('chart-loss');
+  cLoss.width = cLoss.clientWidth;
+  cLoss.height = 240;
+  const ctxL = cLoss.getContext('2d');
+  ctxL.clearRect(0, 0, cLoss.width, cLoss.height);
+
+  const polLoss = metricsHistory.map(m => m.policy_loss || 0);
+  const valLoss = metricsHistory.map(m => m.value_loss || 0);
+  const maxL = Math.max(2.5, ...polLoss, ...valLoss);
+
+  if (metricsHistory.length >= 2) {
+    drawLine(ctxL, polLoss, '#f59e0b', maxL, 0);
+    drawLine(ctxL, valLoss, '#ec4899', maxL, 0);
+  }
+}
+
+function updateTable() {
+  const tbody = document.getElementById('eval-table-body');
+  if (!metricsHistory.length) return;
+  const recent = metricsHistory.slice(-8).reverse();
+  tbody.innerHTML = recent.map(m => `
+    <tr>
+      <td class="mono">${m.batches || 0}</td>
+      <td class="mono" style="color:#10b981;">${(m.eval_wr || 0).toFixed(1)}%</td>
+      <td class="mono">${(m.best_eval_wr || 0).toFixed(1)}%</td>
+      <td style="color:var(--muted);">Expert / Heuristic / Expectimax</td>
+    </tr>
+  `).join('');
+}
+
+setInterval(update, 2000);
+update();
+</script>
+</body>
+</html>

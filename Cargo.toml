@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/ludo_core",
+    "crates/ludo_search",
+    "crates/ludo_pyo3",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

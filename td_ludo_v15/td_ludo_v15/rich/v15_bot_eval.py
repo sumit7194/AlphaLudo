@@ -57,6 +57,33 @@ except ImportError:
 # bots conform to the same interface.
 ALL_BOT_NAMES = list(BOT_REGISTRY.keys()) + list(STRONG_BOT_REGISTRY.keys())
 
+# Slow bots that would crater eval time if sampled — eval is a relative
+# measurement, not a strength ceiling, so it's fine to exclude these.
+# Slow bots stay in the training mix at low weight (where their cost is
+# amortized across many parallel games), but evals run sequentially.
+#
+# Empirically: 2000-game eval with all-fast bots ≈ 12 min. Adding 10%
+# slow bots at ~1s/move pushes it to ~5 hours. Not worth it for a
+# relative metric.
+# Relative-tracking eval — only Expert and Heuristic.
+# 2026-05-24: Drastically cut the eval roster to just 2 fast scripted
+# bots. Rationale: at this stage we don't care about absolute WR
+# numbers (we know V15.1 sits around 75-76% against any mix). What we
+# care about is DIRECTION — is the model getting better or worse
+# under the current intervention? Two fast bots × 2000 games = 1000
+# games each → ±1.5pp std error, ~1-2 min eval time. We can run evals
+# very frequently without paying any wall-clock cost.
+#
+# Important caveat: numbers are NOT comparable to historical evals
+# (different bot set). The first post-change eval is the new baseline.
+_SLOW_BOTS = {  # excluded if caller passes the full ALL_BOT_NAMES list
+    "Depth2Expectimax", "Depth2AggressiveExpectimax", "Depth2DefensiveExpectimax",
+    "MCTSExpertPrior", "MCTSExpectimaxPrior",
+    "VoteExpectimax", "AdaptiveExpectimax",
+    "MaxCapture", "TwoStack", "HomeRush", "StackHomeRush",
+}
+EVAL_BOT_NAMES_FAST = ["Expert", "Heuristic"]
+
 
 def get_bot(bot_type, player_id=None, **kwargs):
     """Factory across both legacy + strong registries.
@@ -136,11 +163,11 @@ def evaluate_v15_against_bots(
 ) -> dict:
     """Play V15 vs random heuristic-bot mix. Returns evaluation summary."""
     model.eval()
-    # Default opponent pool now includes the strong non-neural bots
-    # (Expectimax, MCTSPure) — they're qualitatively different from the
-    # scripted family and our most informative eval signal. Callers can
-    # still pass explicit `bot_types` to override.
-    available_types = list(bot_types or ALL_BOT_NAMES)
+    # Default opponent pool: every fast bot (scripted + strong non-neural).
+    # Slow bots (Depth2*, MCTSExpertPrior, MCTSExpectimaxPrior) are
+    # excluded by default — they'd inflate eval wall time ~25× for a
+    # relative-only measurement. Caller can override via `bot_types=`.
+    available_types = list(bot_types or EVAL_BOT_NAMES_FAST)
     per_bot_wins = collections.Counter()
     per_bot_games = collections.Counter()
     per_bot_total_len = collections.Counter()

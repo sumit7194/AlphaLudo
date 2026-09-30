@@ -26,7 +26,19 @@ last own decision) for that signal to fire. See
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
+
+# De-bias mode (Exp 56, 2026-06-17) — GAE + de-biased dense.
+# LUDO_DEBIAS_DENSE gates the broadened danger penalty (laggard fix, in
+# bias_penalties.py). The spawn cut (spawn-on-6 flaw, here) is decoupled under
+# LUDO_DEBIAS_SPAWN so the laggard fix can be run WITHOUT it. For backward
+# compat LUDO_DEBIAS_SPAWN defaults to LUDO_DEBIAS_DENSE (so the Exp 56 full
+# run, which set only DENSE=1, still gets spawn=0.02). Default off → canonical.
+_DEBIAS_DENSE = os.environ.get('LUDO_DEBIAS_DENSE', '0').lower() in ('1', 'true', 'yes')
+_DEBIAS_SPAWN = os.environ.get(
+    'LUDO_DEBIAS_SPAWN', os.environ.get('LUDO_DEBIAS_DENSE', '0')
+).lower() in ('1', 'true', 'yes')
 
 
 # Position sentinels — kept in sync with `td_ludo.game.progress_score`
@@ -40,7 +52,7 @@ REWARD_SCORE_TOKEN     = 0.40
 REWARD_CAPTURE_ENEMY   = 0.20
 PENALTY_GOT_KILLED     = -0.20
 REWARD_HOME_STRETCH    = 0.10
-REWARD_SPAWN           = 0.05
+REWARD_SPAWN           = 0.02 if _DEBIAS_SPAWN else 0.05  # 0.02 < forward-6 (0.03)
 REWARD_FORWARD_STEP    = 0.005
 
 

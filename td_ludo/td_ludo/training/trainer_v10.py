@@ -57,7 +57,9 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
     def __init__(self, model, device, learning_rate=1e-5,
                  moves_aux_coeff=0.003, win_bce_coeff=0.5,
-                 alpha_search=0.0, progress_coeff=0.0, **kwargs):
+                 alpha_search=0.0, progress_coeff=0.0,
+                 consequence_coeff=0.0,
+                 use_gae=False, gae_lambda=0.95, **kwargs):
         super().__init__(model, device, learning_rate=learning_rate, **kwargs)
         self.moves_aux_coeff = moves_aux_coeff
         self.win_bce_coeff = win_bce_coeff
@@ -79,6 +81,25 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             or getattr(getattr(model, 'inner', None), 'has_progress_head', False)
         )
         self.recent_progress_loss = []
+
+        # V13.6 consequence (world-model) aux head loss weight. The model
+        # exposes capture + cells-at-risk heads (token-indexed). 0 disables.
+        # Targets come from the player as 'capture_target'/'risk_target'/
+        # 'consequence_valid' (per-token). See WORLD_MODEL_ATTACK_ANGLE.md.
+        self.consequence_coeff = float(consequence_coeff)
+        self.recent_consequence_loss = []
+
+        # GAE (Exp 55): when True, the policy-gradient advantage is computed
+        # via Generalized Advantage Estimation (value-bootstrapped, per
+        # trajectory) instead of the high-variance Monte-Carlo
+        # (return − value). The value head is STILL trained on BCE-of-outcome
+        # (untouched) — GAE only uses its predictions as the bootstrap
+        # baseline. λ=1 reduces exactly to the MC advantage (correctness gate).
+        # Requires the buffer to carry per-step raw reward + per-trajectory
+        # lengths (filled in train_on_game).
+        self.use_gae = bool(use_gae)
+        self.gae_lambda = float(gae_lambda)
+        self._traj_lengths = []   # own-decision count per buffered game
 
     def train_on_game(self, trajectories, winner, model_player, aux_trajectory=None):
         """Buffer trajectory steps with own_moves_remaining + binary won target.
@@ -122,9 +143,11 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         # when the policy gradient ignores the terminal signal.
         won_target = 1.0 if model_player == winner else 0.0
 
-        # Discounted returns (same as before)
+        # Discounted returns (same as before) + per-step raw reward r_t
+        # (the latter feeds GAE in _ppo_update; harmless when GAE is off).
         gamma = 0.999
         discounted_returns = []
+        raw_rewards = []
         R = 0.0
         for i in reversed(range(len(trajectory))):
             step = trajectory[i]
@@ -135,6 +158,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 r_t = shaped_reward
             R = r_t + gamma * R
             discounted_returns.insert(0, R)
+            raw_rewards.insert(0, r_t)
 
         # Own moves remaining for each step
         total_own_moves = len(trajectory)
@@ -150,6 +174,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 'old_log_prob': step['old_log_prob'],
                 'temperature': step.get('temperature', 1.0),
                 'z': discounted_returns[i],
+                'reward': raw_rewards[i],   # GAE per-step r_t
                 'moves_remaining_target': own_moves_remaining,
                 'won_target': won_target,
                 'pi_search': step.get('pi_search'),  # np.ndarray (4,) or None
@@ -158,12 +183,48 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 # otherwise zeros and they're effectively no-ops in loss.
                 'progress_target': step.get('progress_target'),
                 'progress_valid': step.get('progress_valid'),
+                # V13.6 consequence targets (per-token capture / risk / valid).
+                'capture_target': step.get('capture_target'),
+                'risk_target': step.get('risk_target'),
+                'consequence_valid': step.get('consequence_valid'),
             })
+        # Record this game's own-decision count so _ppo_update can split the
+        # flattened buffer back into trajectories for the GAE backward pass.
+        self._traj_lengths.append(len(trajectory))
         self._ppo_games_buffered += 1
 
         if self._ppo_games_buffered >= self.ppo_buffer_games:
             return self._ppo_update()
         return {}
+
+    def _compute_gae(self, rewards, values, gamma=0.999):
+        """Generalized Advantage Estimation, per trajectory (Exp 55).
+
+        rewards / values: (N,) tensors aligned to the flattened PPO buffer;
+        self._traj_lengths splits them back into per-game trajectories.
+            δ_t = r_t + γ·V(s_{t+1}) − V(s_t)   (V at the trajectory end = 0)
+            A_t = δ_t + γλ·A_{t+1}              (backward recursion)
+        At λ=1 this telescopes to A_t = (raw discounted return from t) − V_t,
+        i.e. exactly the Monte-Carlo advantage (the correctness gate). The
+        value head is the BCE-trained win-prob baseline; GAE only reads it.
+        Computed on CPU/numpy (segments are short, ~50-150 steps) to avoid
+        per-step GPU syncs; result moved back to device.
+        """
+        r = rewards.detach().cpu().numpy()
+        v = values.detach().cpu().numpy()
+        adv = np.zeros_like(r)
+        lam = self.gae_lambda
+        idx = 0
+        for L in self._traj_lengths:
+            L = int(L)
+            a = 0.0
+            for t in range(L - 1, -1, -1):
+                v_next = float(v[idx + t + 1]) if (t + 1) < L else 0.0
+                delta = float(r[idx + t]) + gamma * v_next - float(v[idx + t])
+                a = delta + gamma * lam * a
+                adv[idx + t] = a
+            idx += L
+        return torch.from_numpy(adv).to(values.device, dtype=torch.float32)
 
     def _ppo_update(self):
         """PPO update with win_prob as value head + moves aux loss."""
@@ -199,6 +260,13 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
 
         all_returns_raw = torch.tensor(
             [s['z'] for s in self._ppo_buffer],
+            dtype=torch.float32, device=self.device
+        )
+
+        # GAE: per-step raw reward r_t (terminal z folded into the last step
+        # of each trajectory). Only consumed when self.use_gae.
+        all_rewards_raw = torch.tensor(
+            [s.get('reward', 0.0) for s in self._ppo_buffer],
             dtype=torch.float32, device=self.device
         )
 
@@ -262,6 +330,32 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             all_progress_targets = None
             all_progress_valid = None
 
+        # V13.6 consequence aux: per-token capture + cells-at-risk + valid.
+        if self.consequence_coeff > 0.0:
+            cap_arrs, risk_arrs, cval_arrs = [], [], []
+            for s in self._ppo_buffer:
+                ct = s.get('capture_target')
+                rt = s.get('risk_target')
+                cv = s.get('consequence_valid')
+                if ct is None:
+                    cap_arrs.append(np.zeros(4, dtype=np.float32))
+                    risk_arrs.append(np.zeros(4, dtype=np.float32))
+                    cval_arrs.append(np.zeros(4, dtype=np.float32))
+                else:
+                    cap_arrs.append(ct.astype(np.float32))
+                    risk_arrs.append(rt.astype(np.float32))
+                    cval_arrs.append(cv.astype(np.float32))
+            all_capture_targets = torch.from_numpy(np.stack(cap_arrs)).to(
+                self.device, dtype=torch.float32)
+            all_risk_targets = torch.from_numpy(np.stack(risk_arrs)).to(
+                self.device, dtype=torch.float32)
+            all_consequence_valid = torch.from_numpy(np.stack(cval_arrs)).to(
+                self.device, dtype=torch.float32)
+        else:
+            all_capture_targets = None
+            all_risk_targets = None
+            all_consequence_valid = None
+
         # Return normalization (identical to base)
         with torch.no_grad():
             batch_mean = all_returns_raw.mean().item()
@@ -275,14 +369,24 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 self._return_running_std = 0.99 * self._return_running_std + 0.01 * max(batch_std, 1e-6)
             all_returns = (all_returns_raw - self._return_running_mean) / (self._return_running_std + 1e-8)
 
-        # Stats accumulators
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_moves_loss = 0.0
-        total_entropy = 0.0
-        total_advantage = 0.0
-        total_clip_frac = 0.0
-        total_approx_kl = 0.0
+        # Stats accumulators. Kept as GPU tensors (2026-06-11 throughput
+        # fix): the previous per-minibatch `.item()` accumulation forced
+        # 6-8 GPU→CPU syncs per minibatch. They're now accumulated on
+        # device and synced ONCE at the end of the update. Search-loss
+        # accumulators stay as floats — that path only runs when search
+        # is enabled (it isn't in production runs).
+        _dev = self.device
+        total_policy_loss = torch.zeros((), device=_dev)
+        total_value_loss = torch.zeros((), device=_dev)
+        total_moves_loss = torch.zeros((), device=_dev)
+        total_entropy = torch.zeros((), device=_dev)
+        total_advantage = torch.zeros((), device=_dev)
+        total_clip_frac = torch.zeros((), device=_dev)
+        total_approx_kl = torch.zeros((), device=_dev)
+        total_progress_loss = torch.zeros((), device=_dev)
+        n_progress_mb = 0
+        total_consequence_loss = torch.zeros((), device=_dev)
+        n_consequence_mb = 0
         total_search_loss = 0.0
         total_search_kl = 0.0  # KL(pi_search || pi_model) on covered states
         total_search_coverage = 0.0
@@ -296,7 +400,15 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
             fwd_result = self.model(all_states, all_masks)
             win_prob = fwd_result[1].view(-1)  # robust to batch_size=1 (.squeeze bug)
             all_values = 2.0 * win_prob - 1.0  # [0,1] → [-1,1]
-            all_advantages = all_returns - all_values
+            if self.use_gae and sum(self._traj_lengths) == n_steps:
+                # GAE on the raw rewards + bootstrap values, per trajectory.
+                # Scale-consistent (raw return − value at λ=1), unlike the MC
+                # path's normalized-return − value. Falls back to MC if the
+                # trajectory lengths don't sum to the buffer (safety).
+                all_advantages = self._compute_gae(all_rewards_raw, all_values)
+            else:
+                # Monte-Carlo advantage (legacy path; unchanged).
+                all_advantages = all_returns - all_values
             adv_mean = all_advantages.mean()
             adv_std = all_advantages.std()
             all_advantages = (all_advantages - adv_mean) / (adv_std + 1e-8)
@@ -331,12 +443,23 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                     mb_progress_targets = None
                     mb_progress_valid = None
 
-                # V10/V13.5: forward returns (policy, win_prob, moves_remaining)
-                # for V12.x and (policy, win_prob, moves_remaining, progress)
-                # for V13.5. Unpack robustly to support both.
+                if all_capture_targets is not None:
+                    mb_capture_targets = all_capture_targets[mb_idx]
+                    mb_risk_targets = all_risk_targets[mb_idx]
+                    mb_consequence_valid = all_consequence_valid[mb_idx]
+                else:
+                    mb_capture_targets = None
+                    mb_risk_targets = None
+                    mb_consequence_valid = None
+
+                # V10/V13.5/V13.6: forward returns (policy, win_prob, moves)
+                # for V12.x; (..., progress) for V13.5; (..., progress,
+                # capture, risk) for V13.6. Unpack robustly.
                 fwd = self.model(mb_states, mb_masks)
                 policy, win_prob, moves_pred = fwd[0], fwd[1], fwd[2]
                 progress_pred = fwd[3] if len(fwd) > 3 else None
+                capture_pred = fwd[4] if len(fwd) > 4 else None
+                risk_pred = fwd[5] if len(fwd) > 5 else None
                 # Model already squeezes last dim. Use .view(-1) to guarantee
                 # 1D shape even when batch size is 1 (.squeeze(-1) on [1]
                 # collapses to 0-dim scalar, which breaks F.binary_cross_entropy
@@ -409,9 +532,12 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 # sigmoid output. Masked by progress_valid (1 where the rank
                 # corresponds to a real own-token position, 0 for unused
                 # ranks beyond the number of unique positions).
-                if (progress_pred is not None
-                        and mb_progress_targets is not None
-                        and mb_progress_valid.sum() > 0):
+                # NOTE (2026-06-11): the old `mb_progress_valid.sum() > 0`
+                # guard forced a GPU→CPU sync per minibatch. With an
+                # all-zero valid mask the masked sum is 0 and clamp_min
+                # keeps the denominator at 1 → loss is exactly 0 anyway,
+                # so the guard was redundant. Output-identical.
+                if progress_pred is not None and mb_progress_targets is not None:
                     pred = progress_pred.clamp(1e-6, 1 - 1e-6)
                     tgt = mb_progress_targets.clamp(0.0, 1.0)
                     # Element-wise BCE then average over valid slots only
@@ -423,6 +549,27 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 else:
                     progress_loss = torch.zeros((), device=self.device)
 
+                # V13.6 consequence aux loss: per-token capture prob (BCE) +
+                # cells-at-risk (BCE, target ∈ [0,1]), masked by
+                # consequence_valid (own tokens on the main track). Both heads
+                # sigmoid; we use BCE for both since targets are in [0, 1].
+                if (capture_pred is not None and risk_pred is not None
+                        and mb_capture_targets is not None):
+                    cap_p = capture_pred.clamp(1e-6, 1 - 1e-6)
+                    risk_p = risk_pred.clamp(1e-6, 1 - 1e-6)
+                    cap_t = mb_capture_targets.clamp(0.0, 1.0)
+                    risk_t = mb_risk_targets.clamp(0.0, 1.0)
+                    cap_bce = -(cap_t * torch.log(cap_p)
+                                + (1.0 - cap_t) * torch.log(1.0 - cap_p))
+                    risk_bce = -(risk_t * torch.log(risk_p)
+                                 + (1.0 - risk_t) * torch.log(1.0 - risk_p))
+                    n_cvalid = mb_consequence_valid.sum().clamp_min(1.0)
+                    consequence_loss = (
+                        ((cap_bce + risk_bce) * mb_consequence_valid).sum() / n_cvalid
+                    )
+                else:
+                    consequence_loss = torch.zeros((), device=self.device)
+
                 # AUX value loss (BCE on win_prob from opp-turn states).
                 # Off-policy actions, so value-only — no policy grad path.
                 # Encoded canonically post encoder-fix → value head learns
@@ -431,12 +578,16 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 if self._aux_buffer:
                     n_aux = len(self._aux_buffer)
                     aux_mb = min(n_aux, mb_states.shape[0])
-                    aux_idx = torch.randint(0, n_aux, (aux_mb,), device=self.device)
+                    # Sample on CPU via numpy (2026-06-11): the old
+                    # device-side torch.randint + per-element `i.item()`
+                    # cost one GPU→CPU sync per aux row per minibatch.
+                    # Statistically identical sampling.
+                    aux_idx = np.random.randint(0, n_aux, size=aux_mb)
                     aux_states = torch.from_numpy(
-                        np.stack([self._aux_buffer[i.item()]['state'] for i in aux_idx])
+                        np.stack([self._aux_buffer[int(i)]['state'] for i in aux_idx])
                     ).to(self.device, dtype=torch.float32)
                     aux_won_targets = torch.tensor(
-                        [self._aux_buffer[i.item()]['won_target'] for i in aux_idx],
+                        [self._aux_buffer[int(i)]['won_target'] for i in aux_idx],
                         dtype=torch.float32, device=self.device
                     )
                     # Permissive mask — value head is mask-independent.
@@ -457,10 +608,12 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                         + self.alpha_search * search_loss
                         + self.aux_value_loss_coeff * aux_value_loss
                         + self.progress_coeff * progress_loss
+                        + self.consequence_coeff * consequence_loss
                         - self.entropy_coeff * entropy)
 
-                # Safety net: skip NaN/Inf batches (belt-and-braces for MPS)
-                if torch.isnan(loss) or torch.isinf(loss):
+                # Safety net: skip NaN/Inf batches (belt-and-braces for MPS).
+                # Single isfinite check = one sync instead of two (2026-06-11).
+                if not torch.isfinite(loss):
                     self.optimizer.zero_grad()
                     continue
 
@@ -472,35 +625,60 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
                 self.optimizer.step()
                 self.total_updates += 1
 
-                total_policy_loss += policy_loss.item()
-                total_value_loss += win_bce_loss.item()  # now tracks BCE loss
-                total_moves_loss += moves_loss.item()
-                total_entropy += entropy.item()
-                total_advantage += advantage.mean().item()
+                # On-device accumulation (2026-06-11) — no per-minibatch
+                # .item() syncs; one .cpu() after the epoch loop.
+                total_policy_loss += policy_loss.detach()
+                total_value_loss += win_bce_loss.detach()  # tracks BCE loss
+                total_moves_loss += moves_loss.detach()
+                total_entropy += entropy.detach()
+                total_advantage += advantage.mean().detach()
                 if all_pi_search is not None:
                     total_search_loss += float(search_loss.item())
                     total_search_kl += float(kl_avg.item())
                     total_search_coverage += coverage_frac
                 if progress_pred is not None and self.progress_coeff > 0.0:
-                    self.recent_progress_loss.append(float(progress_loss.item()))
-                    if len(self.recent_progress_loss) > 1000:
-                        self.recent_progress_loss.pop(0)
+                    # Was: per-minibatch float append (one sync each).
+                    # Now: accumulate on device, append the per-update mean
+                    # once after the loop. Dashboard granularity only.
+                    total_progress_loss += progress_loss.detach()
+                    n_progress_mb += 1
+
+                if capture_pred is not None and self.consequence_coeff > 0.0:
+                    total_consequence_loss += consequence_loss.detach()
+                    n_consequence_mb += 1
 
                 with torch.no_grad():
-                    clipped = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean().item()
-                    approx_kl = (mb_old_lp - new_lp).mean().item()
+                    clipped = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
+                    approx_kl_t = (mb_old_lp - new_lp).mean()
                 total_clip_frac += clipped
-                total_approx_kl += abs(approx_kl)
+                total_approx_kl += approx_kl_t.abs()
                 n_minibatches += 1
 
-        # Average stats
-        avg_pl = total_policy_loss / n_minibatches if n_minibatches > 0 else 0
-        avg_vl = total_value_loss / n_minibatches if n_minibatches > 0 else 0
-        avg_ml = total_moves_loss / n_minibatches if n_minibatches > 0 else 0
-        avg_ent = total_entropy / n_minibatches if n_minibatches > 0 else 0
-        avg_adv = total_advantage / n_minibatches if n_minibatches > 0 else 0
-        avg_clip = total_clip_frac / n_minibatches if n_minibatches > 0 else 0
-        avg_kl = total_approx_kl / n_minibatches if n_minibatches > 0 else 0
+        # Average stats — single GPU→CPU sync for the whole update
+        # (2026-06-11; was one .item() per metric per minibatch).
+        if n_minibatches > 0:
+            _stats = (torch.stack([
+                total_policy_loss, total_value_loss, total_moves_loss,
+                total_entropy, total_advantage, total_clip_frac,
+                total_approx_kl,
+            ]) / n_minibatches).cpu()
+            (avg_pl, avg_vl, avg_ml, avg_ent,
+             avg_adv, avg_clip, avg_kl) = (float(x) for x in _stats)
+        else:
+            avg_pl = avg_vl = avg_ml = avg_ent = 0
+            avg_adv = avg_clip = avg_kl = 0
+        if n_progress_mb > 0:
+            self.recent_progress_loss.append(
+                float(total_progress_loss.cpu()) / n_progress_mb
+            )
+            if len(self.recent_progress_loss) > 1000:
+                self.recent_progress_loss.pop(0)
+        if n_consequence_mb > 0:
+            self.recent_consequence_loss.append(
+                float(total_consequence_loss.cpu()) / n_consequence_mb
+            )
+            if len(self.recent_consequence_loss) > 1000:
+                self.recent_consequence_loss.pop(0)
 
         self.recent_policy_loss.append(avg_pl)
         self.recent_value_loss.append(avg_vl)
@@ -524,6 +702,7 @@ class ActorCriticTrainerV10(ActorCriticTrainer):
         n_aux_used = len(self._aux_buffer)
         self._ppo_buffer = []
         self._aux_buffer.clear()
+        self._traj_lengths = []
         self._ppo_games_buffered = 0
 
         return {

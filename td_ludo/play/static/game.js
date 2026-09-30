@@ -1134,8 +1134,13 @@ function finishReview() {
 }
 
 // ── Utilities ───────────────────────────────────────────────
+// Simulated human-pacing delays funnel through here. DELAY_SCALE scales every
+// `sleep(ms)` call in one place: 1 = original feel, 0 = effectively removed
+// (still yields to the event loop so the UI repaints between steps). Set to a
+// small value like 0.05 if fully-instant feels too abrupt.
+const DELAY_SCALE = 0;
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve => setTimeout(resolve, Math.round(ms * DELAY_SCALE)));
 }
 
 // ── Boot ────────────────────────────────────────────────────

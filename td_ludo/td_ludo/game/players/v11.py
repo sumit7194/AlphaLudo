@@ -23,11 +23,18 @@ from td_ludo.game.progress_score import (
     progress_score, total_progress_for_player,
 )
 from td_ludo.game.rank_mapping import state_to_rank_mapping, MAX_RANK_SLOTS
+from td_ludo.game.consequence_targets import compute_per_token_targets
 
 from src.heuristic_bot import (
     HeuristicLudoBot, AggressiveBot, DefensiveBot, RacingBot, RandomBot,
     ExpertBot,
 )
+# Strong bots (Expectimax etc.) for harder opponent compositions. Imported
+# defensively so environments without the strong_bots module still load.
+try:
+    from td_ludo.game.strong_bots import STRONG_BOT_REGISTRY as _STRONG_BOT_REGISTRY
+except Exception:
+    _STRONG_BOT_REGISTRY = {}
 from src.config import (
     GAME_COMPOSITION, MAX_MOVES_PER_GAME,
     TEMPERATURE_START, TEMPERATURE_END, TEMPERATURE_DECAY_GAMES,
@@ -82,6 +89,14 @@ else:
     _BASE_POS = -1
 
 
+# Terminal-only mode (Exp 54). When LUDO_TERMINAL_ONLY=1, every per-step
+# shaped reward is forced to 0 — the policy is trained on win/loss terminal
+# ±1 ONLY (handled by the trainer's terminal z). Tests whether removing the
+# dense-reward artifacts (spawn-on-6 tilt, leader focus) lets the policy shed
+# the play flaws. Overrides dense / sparse / bias / shaping / risk-delta.
+_TERMINAL_ONLY_ENABLED = os.environ.get('LUDO_TERMINAL_ONLY', '0').lower() in ('1', 'true', 'yes')
+
+
 BOT_CLASSES = {
     'Heuristic': HeuristicLudoBot,
     'Aggressive': AggressiveBot,
@@ -90,6 +105,16 @@ BOT_CLASSES = {
     'Random': RandomBot,
     'Expert': ExpertBot,
 }
+# Register harder strong bots (Expectimax + variants) so game-composition
+# presets that name them resolve to the real bot instead of silently
+# falling back to Random (see select_move dispatch ~line 365). Only the
+# ones whose constructor works with no args are added (matches the
+# `{name: cls()}` instantiation in __init__).
+for _sb_name in ("Expectimax", "AggressiveExpectimax", "DefensiveExpectimax",
+                 "MinimaxExpectimax"):
+    _sb_cls = _STRONG_BOT_REGISTRY.get(_sb_name)
+    if _sb_cls is not None:
+        BOT_CLASSES[_sb_name] = _sb_cls
 
 
 class VectorACGamePlayer:
@@ -101,7 +126,9 @@ class VectorACGamePlayer:
                  historical_opponents_enabled=False,
                  encoder_fn=None,
                  shaping_coeff=0.0,
-                 progress_target_enabled=False):
+                 progress_target_enabled=False,
+                 consequence_target_enabled=False,
+                 risk_delta_coeff=0.0):
         # encoder_fn: ludo_cpp.encode_state_* callable for the main model's
         # input. Defaults to encode_state_v11 (33ch) for V11/V12 family;
         # V13 (MinimalCNN14) passes encode_state_v14_minimal (14ch).
@@ -143,6 +170,14 @@ class VectorACGamePlayer:
         # ON whenever the trainer accepts it; safe to leave on for non-V13.5
         # since the trainer simply ignores the extra field.
         self.progress_target_enabled = bool(progress_target_enabled)
+        # When True, compute + store per-TOKEN consequence targets (capture
+        # prob + cells-at-risk) on each training step for the V13.6
+        # world-model heads. Token-space (matches compute_per_token_targets
+        # ↔ adapter's token-space capture/risk outputs).
+        self.consequence_target_enabled = bool(consequence_target_enabled)
+        # Risk-delta reward coefficient (Exp 53). >0 adds a per-step reward
+        # for reducing own capture exposure (engine-computed cells-at-risk).
+        self.risk_delta_coeff = float(risk_delta_coeff)
 
         # Phase 2: historical opponent registry. Lazy-loads prior-generation
         # V-model checkpoints (V6.3 / V10 / V11 / V12) and routes Hist_*
@@ -474,6 +509,18 @@ class VectorACGamePlayer:
                             progress_target[r] = progress_score(int(pos))
                             progress_valid[r] = 1.0
 
+                    # V13.6 consequence targets (per-TOKEN: capture prob +
+                    # cells-at-risk + valid mask). Token-space to match the
+                    # adapter's gathered capture/risk outputs.
+                    capture_target = np.zeros(4, dtype=np.float32)
+                    risk_target = np.zeros(4, dtype=np.float32)
+                    consequence_valid = np.zeros(4, dtype=np.float32)
+                    if self.consequence_target_enabled:
+                        game_for_cons = self.env.get_game(idx)
+                        capture_target, risk_target, consequence_valid = (
+                            compute_per_token_targets(game_for_cons, cp)
+                        )
+
                     self.trajectories[idx][cp].append({
                         'state': batch_states[j],
                         'action': action,
@@ -483,6 +530,9 @@ class VectorACGamePlayer:
                         'pi_search': None,  # filled by _maybe_run_search below
                         'progress_target': progress_target,
                         'progress_valid': progress_valid,
+                        'capture_target': capture_target,
+                        'risk_target': risk_target,
+                        'consequence_valid': consequence_valid,
                     })
 
         # Phase 2: historical opponent resolution. Each Hist_* tag has its
@@ -628,6 +678,27 @@ class VectorACGamePlayer:
                     delta_own = phi_own_after - phi_own_before
                     delta_opp = phi_opp_after - phi_opp_before
                     step_reward += self.shaping_coeff * (delta_own - delta_opp)
+
+                # Risk-delta reward (Exp 53): reward reducing own capture
+                # exposure. risk = Σ own cells-at-risk (capture_prob × progress
+                # lost), engine-computed. before(pre-move) − after(post-move):
+                # a rescue (endangered token → safety) gives + reward, moving a
+                # token INTO danger gives −. Gives the policy the INCENTIVE to
+                # act on risk the world-model heads already represent (the
+                # behavioral probe showed representation alone didn't change
+                # play). Uses raw (un-normalized ×51) cells so the scale is
+                # comparable to capture(+0.20)/score(+0.40).
+                if self.risk_delta_coeff > 0.0:
+                    _, car_b, val_b = compute_per_token_targets(dummy_old, cp)
+                    _, car_a, val_a = compute_per_token_targets(next_game, cp)
+                    risk_before = float((car_b * val_b).sum()) * 51.0
+                    risk_after = float((car_a * val_a).sum()) * 51.0
+                    step_reward += self.risk_delta_coeff * (risk_before - risk_after)
+
+                # Terminal-only override (Exp 54): zero ALL per-step shaping
+                # so the policy learns from win/loss terminal ±1 only.
+                if _TERMINAL_ONLY_ENABLED:
+                    step_reward = 0.0
 
                 last_idx = len(self.trajectories[i][cp]) - 1
                 if last_idx >= 0:

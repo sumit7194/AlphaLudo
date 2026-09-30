@@ -1,0 +1,16 @@
+{
+  "result": {
+    "a_wins": 1048,
+    "b_wins": 952,
+    "draws": 0,
+    "a_wr": 52.4,
+    "b_wr": 47.6,
+    "elapsed_sec": 566.2491121292114,
+    "avg_len": 158.466,
+    "games": 2000
+  },
+  "ckpt_v135": "play/model_weights/v13_5/model_latest.pt (G=535450)",
+  "ckpt_v151": "checkpoints/v151_rl_strong_vm_snapshot/model_latest.pt (G=151257)",
+  "games_per_orientation": 1000,
+  "elapsed_sec": 566.249115228653
+}

@@ -44,10 +44,10 @@ from td_ludo.game.encoder_v18_production import encode_state_v18_production
 
 # ── Configuration ──────────────────────────────────────────────
 MODEL_VERSION = os.environ.get('LUDO_MODEL', 'v12_2').lower()
-if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
+if MODEL_VERSION not in ('v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias', 'v15_2'):
     raise ValueError(
         f"Unknown LUDO_MODEL='{MODEL_VERSION}'. "
-        "Use 'v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v13_2', or 'v13_5'."
+        "Use 'v6_1', 'v6_3', 'v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', or 'v13_6'."
     )
 
 MODEL_FILES = {
@@ -56,12 +56,51 @@ MODEL_FILES = {
     'v11':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v11.pt'),
     'v12':   os.path.join(SCRIPT_DIR, 'model_weights', 'model_v12.pt'),
     'v12_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v12_2', 'model_latest.pt'),
+    # V12.3: MinimalCNN14 (8×96, 17ch V17 encoder, per-token policy) — RL best.
+    'v12_3': os.path.join(SCRIPT_DIR, 'model_weights', 'v12_3', 'model_best.pt'),
     'v13_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_2', 'model_best.pt'),
     # V13.5: latest weight (RL on top of SL — replaceable; can also swap to
     # play/model_weights/v13_5/model_sl.pt for the pure-SL baseline)
     'v13_5': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_5', 'model_latest.pt'),
+    # V13.6: same V135 arch as v13_5 but 6×96 head_hidden=64 (the champion).
+    'v13_6': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_6', 'model_latest.pt'),
+    # V13.6 world-model fine-tune (Exp 52) — same arch as v13_6, + consequence
+    # heads trained (capture/risk). Play this to test if laggard-neglect is cured.
+    'v13_6_wm': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_6_wm', 'model_latest.pt'),
+    # V13.6 terminal-only + GAE (Exp 55b) — same arch as v13_6 (no aux heads).
+    # First RL run to beat the champion (54.4% H2H) and touch the ~85% ceiling
+    # (peak eval 85.5%). This points at the LATEST (G280k) checkpoint; swap to
+    # model_best.pt for the 85.5% peak.
+    'v13_6_gae': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_6_gae', 'model_latest.pt'),
+    # V13.6 full de-bias (Exp 56) — spawn 0.05→0.02 + laggard danger penalty.
+    # ~78% eval (weaker than gaeterminal's 85.5%) BUT fixes both play flaws:
+    # spawn-on-6 and laggard-neglect (laggard_rescue 55.9→78.3%). Same arch.
+    'v13_6_debias': os.path.join(SCRIPT_DIR, 'model_weights', 'v13_6_debias', 'model_latest.pt'),
+    # V15.2: single-frame GraphTransformer (587K), 225-cell action space, the
+    # separate v15 engine. Plays in THIS (v13) engine via the proven H2H adapter
+    # (encode_frame + cell↔token), so no v15 engine needed at serve time.
+    # Now the family's strongest model (tournament: beats v13.5 + v13.6 H2H).
+    'v15_2': os.path.join(SCRIPT_DIR, 'model_weights', 'v15_2', 'model_best.pt'),
 }
 MODEL_PATH = MODEL_FILES[MODEL_VERSION]
+
+# ── V15.2 support (lazy — only when selected) ──────────────────
+# v15.2 is a GraphTransformer on the separate v15 engine. We serve it inside the
+# v13 engine using the same adapter proven in the H2H (encode_frame + cell↔token
+# mapping). Imports are guarded so non-v15 runs don't need the v15 package.
+if MODEL_VERSION == 'v15_2':
+    V15_ROOT = os.path.join(os.path.dirname(TD_LUDO_DIR), 'td_ludo_v15')
+    if V15_ROOT not in sys.path:
+        sys.path.insert(0, V15_ROOT)
+    from td_ludo_v15.models.v15 import V15GraphTransformer
+    from td_ludo_v15.game.encoder import encode_frame as _v15_encode_frame
+    from td_ludo_v15.game.cells import (
+        position_to_cell_in_pov as _v15_pos_to_cell,
+        cell_to_index as _v15_cell_to_index,
+        NUM_BOARD_CELLS as _V15_NUM_CELLS,
+    )
+    import td_ludo_v15_cpp as _v15_cpp
+    _V15_BASE = _v15_cpp.BASE_POS
 
 HUMAN_PLAYER = 0   # P0 = Human (top-left on standard board)
 AI_PLAYER = 2       # P2 = AI (bottom-right on standard board)
@@ -183,7 +222,30 @@ def generate_board_layout():
 def load_model():
     device = torch.device('cpu')  # CPU for single-game inference is fine
 
-    if MODEL_VERSION == 'v13_5':
+    if MODEL_VERSION == 'v15_2':
+        # V15.2 single-frame GraphTransformer (d=128, 4 layers, 4 heads,
+        # ffn=256, history_len=1). Returns (policy_225, win_prob).
+        model = V15GraphTransformer(
+            d_model=128, n_heads=4, n_layers=4, ffn_dim=256, history_len=1,
+        )
+        ck = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+        sd = ck.get('model_state_dict', ck) if isinstance(ck, dict) else ck
+        if any(k.startswith('_orig_mod.') for k in sd):
+            sd = {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
+        model.load_state_dict(sd, strict=False)
+        model.eval().to(device)
+        n = sum(p.numel() for p in model.parameters())
+        print(f"[Play] Loaded V15_2 model from {MODEL_PATH} ({n:,} params)")
+        return model, device
+
+    if MODEL_VERSION in ('v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
+        # V13.6 (and the world-model fine-tune v13_6_wm): SAME arch/encoder as
+        # V13.5 but the smaller 6×96 head_hidden=64 build. v13_6_wm adds the
+        # trained consequence heads (loaded; unused by inference).
+        model = V135ProductionAdapter(
+            num_res_blocks=6, num_channels=96, head_hidden=64,
+        )
+    elif MODEL_VERSION == 'v13_5':
         # V13.5: token-symmetric V18 encoder (13ch base + 4 rank-mask + 4
         # token_to_rank planes = 21ch packed) + V135ProductionAdapter
         # wrapping V135Symmetric (10 ResBlocks × 128ch, rank-indexed inner
@@ -193,6 +255,13 @@ def load_model():
         # equal probability (architectural invariance preserved through the
         # wrapper).
         model = V135ProductionAdapter(num_res_blocks=10, num_channels=128)
+    elif MODEL_VERSION == 'v12_3':
+        # V12.3: MinimalCNN14 (8 ResBlocks × 96ch, 17ch V17 encoder,
+        # per-token policy). Same class as V13.2 (MinimalCNN14Aux loaded
+        # non-strict — aux heads unused), just 8 blocks instead of 10.
+        model = MinimalCNN14Aux(
+            num_res_blocks=8, num_channels=96, in_channels=17,
+        )
     elif MODEL_VERSION == 'v13_2':
         # V13.2: pure CNN, 10 ResBlocks × 128ch, 17-channel input
         # (V14_minimal 14ch + 3 static V11 channels). No aux heads.
@@ -242,22 +311,31 @@ def load_model():
         state_dict = checkpoint['model_state_dict']
     else:
         state_dict = checkpoint
-    if MODEL_VERSION == 'v13_2':
-        # V13.2 checkpoint has no aux conv weights — load non-strict.
+    if MODEL_VERSION in ('v13_2', 'v12_3'):
+        # V13.2 / V12.3 checkpoints have no aux conv weights — load
+        # non-strict; aux_ keys stay at random init and are never called.
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         non_aux_missing = [k for k in missing if not k.startswith('aux_')]
         if non_aux_missing:
-            raise RuntimeError(f"V13.2 missing non-aux keys: {non_aux_missing}")
+            raise RuntimeError(f"{MODEL_VERSION} missing non-aux keys: {non_aux_missing}")
         if unexpected:
-            raise RuntimeError(f"V13.2 unexpected keys: {unexpected}")
-    elif MODEL_VERSION == 'v13_5':
+            raise RuntimeError(f"{MODEL_VERSION} unexpected keys: {unexpected}")
+    elif MODEL_VERSION in ('v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
         # V135ProductionAdapter overrides load_state_dict to auto-detect
         # both bare V135Symmetric checkpoints (saved by train_v135_*.py)
         # AND adapter-format checkpoints (saved by trainer_v10 / future
         # production saves). Load non-strict to be tolerant of either.
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        if missing:
-            raise RuntimeError(f"V13.5 missing keys: {missing[:5]}...")
+        # Tolerate missing AUX-head keys (progress / capture / risk): these
+        # are training-only world-model heads (V13.6) absent from pre-heads
+        # checkpoints; they're random-init and never consumed by inference
+        # (play uses only policy/win_prob). A new-champion checkpoint that
+        # HAS them loads them fully. Any other missing key is a real error.
+        def _is_aux(k):
+            return any(s in k for s in ('progress_fc', 'capture_fc', 'risk_fc'))
+        non_aux_missing = [k for k in missing if not _is_aux(k)]
+        if non_aux_missing:
+            raise RuntimeError(f"V13.5 missing non-aux keys: {non_aux_missing[:5]}...")
         if unexpected:
             raise RuntimeError(f"V13.5 unexpected keys: {unexpected[:5]}...")
     else:
@@ -560,43 +638,55 @@ class GameManager:
             self.state.current_player = AI_PLAYER
             self.state.current_dice_roll = 0
 
-            if MODEL_VERSION == 'v13_5':
-                # V13.5 uses V18 production encoder (21ch packed: V18 base +
-                # rank masks + token_to_rank planes).
-                state_tensor = encode_state_v18_production(self.state)
-            elif MODEL_VERSION == 'v13_2':
-                # V13.2 uses V17 encoder (V14 minimal + 3 static V11 channels).
-                state_tensor = encode_state_v17(self.state)
-            elif MODEL_VERSION == 'v12_2':
-                # V12.2 uses V11 encoder (33 channels — adds idle/streak/danger).
-                state_tensor = ludo_cpp.encode_state_v11(self.state)
-            elif MODEL_VERSION in ('v11', 'v12'):
-                # V11 and V12 both use the V10 encoder (28 channels).
-                state_tensor = ludo_cpp.encode_state_v10(self.state)
-            elif MODEL_VERSION == 'v6_3':
-                state_tensor = ludo_cpp.encode_state_v6_3(
-                    self.state, int(self.consecutive_sixes[AI_PLAYER])
-                )
+            if MODEL_VERSION == 'v15_2':
+                # V15.2: value head (CLS token) is mask-independent → permissive
+                # 225-cell mask; out[1] is win_prob.
+                v15_x = np.zeros((1, 15, 15, 3), dtype=np.float32)
+                v15_x[0] = _v15_encode_frame(self.state, pov_player=AI_PLAYER)
+                v15_legal = np.ones(_V15_NUM_CELLS, dtype=np.float32)
+                with torch.no_grad():
+                    xt = torch.from_numpy(v15_x).unsqueeze(0).to(self.device)
+                    mt = torch.from_numpy(v15_legal).unsqueeze(0).to(self.device)
+                    _, wp = self.model(xt, mt)
+                    v = float(wp.squeeze().item())
             else:
-                state_tensor = ludo_cpp.encode_state_v6(self.state)
+                if MODEL_VERSION in ('v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
+                    # V13.5/V13.6 use the V18 production encoder (21ch packed:
+                    # V18 base + rank masks + token_to_rank planes).
+                    state_tensor = encode_state_v18_production(self.state)
+                elif MODEL_VERSION in ('v13_2', 'v12_3'):
+                    # V13.2/V12.3 use V17 encoder (V14 minimal + 3 static V11 ch).
+                    state_tensor = encode_state_v17(self.state)
+                elif MODEL_VERSION == 'v12_2':
+                    # V12.2 uses V11 encoder (33 channels — adds idle/streak/danger).
+                    state_tensor = ludo_cpp.encode_state_v11(self.state)
+                elif MODEL_VERSION in ('v11', 'v12'):
+                    # V11 and V12 both use the V10 encoder (28 channels).
+                    state_tensor = ludo_cpp.encode_state_v10(self.state)
+                elif MODEL_VERSION == 'v6_3':
+                    state_tensor = ludo_cpp.encode_state_v6_3(
+                        self.state, int(self.consecutive_sixes[AI_PLAYER])
+                    )
+                else:
+                    state_tensor = ludo_cpp.encode_state_v6(self.state)
 
-            # Permissive mask — value head doesn't actually depend on it,
-            # but the model API expects one.
-            mask = np.ones(4, dtype=np.float32)
+                # Permissive mask — value head doesn't actually depend on it,
+                # but the model API expects one.
+                mask = np.ones(4, dtype=np.float32)
 
-            with torch.no_grad():
-                s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
-                    self.device, dtype=torch.float32
-                )
-                m_t = torch.from_numpy(mask).unsqueeze(0).to(
-                    self.device, dtype=torch.float32
-                )
-                out = self.model(s_t, m_t)
-                # V6.1:  (policy, value)
-                # V6.3:  (policy, value, aux)
-                # V11:   (policy, win_prob, moves_remaining)
-                # V12:   (policy, win_prob, moves_remaining)
-                v = float(out[1].squeeze().item())
+                with torch.no_grad():
+                    s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(
+                        self.device, dtype=torch.float32
+                    )
+                    m_t = torch.from_numpy(mask).unsqueeze(0).to(
+                        self.device, dtype=torch.float32
+                    )
+                    out = self.model(s_t, m_t)
+                    # V6.1:  (policy, value)
+                    # V6.3:  (policy, value, aux)
+                    # V11:   (policy, win_prob, moves_remaining)
+                    # V12:   (policy, win_prob, moves_remaining)
+                    v = float(out[1].squeeze().item())
         except Exception as e:
             print(f"[Play] win_chance failed: {e}")
             return None
@@ -605,9 +695,9 @@ class GameManager:
             self.state.current_player = saved_cp
             self.state.current_dice_roll = saved_dice
 
-        if MODEL_VERSION in ('v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
-            # V11/V12/V12.2/V13.2/V13.5 win_prob head is sigmoid-output, BCE-trained
-            # on actual outcomes — already a calibrated probability in [0, 1].
+        if MODEL_VERSION in ('v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias', 'v15_2'):
+            # These win_prob heads are sigmoid-output, BCE-trained on actual
+            # outcomes — already a calibrated probability in [0, 1].
             ai_win_prob = v
         else:
             # V6.x value head is unbounded; squash for display.
@@ -748,11 +838,54 @@ class GameManager:
             response['model_win_prob'] = prediction['win_prob']
         return response
 
+    def _v15_policy(self, legal):
+        """V15.2 adapter: run the GraphTransformer on the current (v13-engine)
+        state. Returns (token_policy[4] np.array, win_prob float, argmax int).
+        Mirrors make_picker_v15 — the bridge proven correct in the H2H."""
+        cp = int(self.state.current_player)
+        v15_x = np.zeros((1, 15, 15, 3), dtype=np.float32)  # history_len=1
+        v15_x[0] = _v15_encode_frame(self.state, pov_player=cp)
+        v15_legal = np.zeros(_V15_NUM_CELLS, dtype=np.float32)
+        legal_idx = {}
+        for t in legal:
+            pos = int(self.state.player_positions[cp][int(t)])
+            c = _v15_pos_to_cell(_V15_BASE if pos == _V15_BASE else pos, cp, cp)
+            idx = _v15_cell_to_index(*c)
+            v15_legal[idx] = 1.0
+            legal_idx[int(t)] = idx
+        with torch.no_grad():
+            xt = torch.from_numpy(v15_x).unsqueeze(0).to(self.device)
+            mt = torch.from_numpy(v15_legal).unsqueeze(0).to(self.device)
+            policy225, win_prob = self.model(xt, mt)
+            policy225 = policy225.squeeze(0).cpu().numpy()
+            win_prob = float(win_prob.squeeze().item())
+        token_policy = np.zeros(4, dtype=np.float32)
+        for t, idx in legal_idx.items():
+            token_policy[t] = policy225[idx]
+        s = float(token_policy.sum())
+        if s > 0:
+            token_policy = token_policy / s
+        # model masks illegal cells, so raw argmax over legal cells is the pick
+        argmax = max(legal_idx.items(), key=lambda kv: policy225[kv[1]])[0]
+        return token_policy, win_prob, int(argmax)
+
     def _predict_human_policy(self, legal):
         """Run the loaded V11/V12/V13.x model on the current state and return a
         dict with policy / argmax / win_prob / moves_remaining. Returns
         None for older models (different encoder, not supported)."""
-        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2', 'v13_5'):
+        if MODEL_VERSION == 'v15_2':
+            try:
+                probs, win_prob, argmax = self._v15_policy(legal)
+                return {
+                    'policy': [round(float(p), 6) for p in probs],
+                    'argmax': int(argmax),
+                    'win_prob': round(win_prob, 6),
+                    'moves_remaining': None,
+                }
+            except Exception as e:
+                print(f"[Play] _v15_policy (predict) failed: {e}")
+                return None
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
             return None
 
         legal_mask = np.zeros(4, dtype=np.float32)
@@ -760,9 +893,9 @@ class GameManager:
             legal_mask[int(m)] = 1.0
 
         try:
-            if MODEL_VERSION == 'v13_5':
+            if MODEL_VERSION in ('v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
                 state_tensor = encode_state_v18_production(self.state)
-            elif MODEL_VERSION == 'v13_2':
+            elif MODEL_VERSION in ('v13_2', 'v12_3'):
                 state_tensor = encode_state_v17(self.state)
             elif MODEL_VERSION == 'v12_2':
                 state_tensor = ludo_cpp.encode_state_v11(self.state)
@@ -887,9 +1020,9 @@ class GameManager:
         (interest_score, kl, agree) are precomputed at log time so the
         review endpoint can sort without re-deriving them.
         """
-        # V11/V12/V12.2 all expose (policy, win_prob, ...) outputs we can log.
+        # V11/V12/V12.2/V12.3/V13.x expose (policy, win_prob, ...) we can log.
         # Older models use a different encoder + value-head semantics; skip them.
-        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
             return
 
         cp = int(self.state.current_player)
@@ -961,7 +1094,7 @@ class GameManager:
         """Log the AI's pre-move state + full policy. Returns the new
         ai_decision_id (caller ships it back to the FE so a later
         disagreement flag can reference this exact decision)."""
-        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v13_2'):
+        if MODEL_VERSION not in ('v11', 'v12', 'v12_2', 'v12_3', 'v13_2', 'v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
             return None
 
         cp = int(self.state.current_player)
@@ -1025,34 +1158,42 @@ class GameManager:
             return {**self.make_move(legal[0]), 'ai_roll': rolled_for_ai}
 
         # Model inference — pick encoder matching the loaded model
-        if MODEL_VERSION == 'v13_5':
-            state_tensor = encode_state_v18_production(self.state)
-        elif MODEL_VERSION == 'v13_2':
-            state_tensor = encode_state_v17(self.state)
-        elif MODEL_VERSION == 'v12_2':
-            state_tensor = ludo_cpp.encode_state_v11(self.state)
-        elif MODEL_VERSION in ('v11', 'v12'):
-            state_tensor = ludo_cpp.encode_state_v10(self.state)
-        elif MODEL_VERSION == 'v6_3':
-            state_tensor = ludo_cpp.encode_state_v6_3(
-                self.state, int(self.consecutive_sixes[cp])
-            )
+        if MODEL_VERSION == 'v15_2':
+            # V15.2: GraphTransformer via the v13-engine adapter (encode_frame +
+            # cell↔token). Returns 4-token policy + win_prob + argmax.
+            probs, value, action = self._v15_policy(legal)
+            legal_mask = np.zeros(4, dtype=np.float32)
+            for m in legal:
+                legal_mask[m] = 1.0
         else:
-            state_tensor = ludo_cpp.encode_state_v6(self.state)
-        legal_mask = np.zeros(4, dtype=np.float32)
-        for m in legal:
-            legal_mask[m] = 1.0
+            if MODEL_VERSION in ('v13_5', 'v13_6', 'v13_6_wm', 'v13_6_gae', 'v13_6_debias'):
+                state_tensor = encode_state_v18_production(self.state)
+            elif MODEL_VERSION in ('v13_2', 'v12_3'):
+                state_tensor = encode_state_v17(self.state)
+            elif MODEL_VERSION == 'v12_2':
+                state_tensor = ludo_cpp.encode_state_v11(self.state)
+            elif MODEL_VERSION in ('v11', 'v12'):
+                state_tensor = ludo_cpp.encode_state_v10(self.state)
+            elif MODEL_VERSION == 'v6_3':
+                state_tensor = ludo_cpp.encode_state_v6_3(
+                    self.state, int(self.consecutive_sixes[cp])
+                )
+            else:
+                state_tensor = ludo_cpp.encode_state_v6(self.state)
+            legal_mask = np.zeros(4, dtype=np.float32)
+            for m in legal:
+                legal_mask[m] = 1.0
 
-        with torch.no_grad():
-            s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(self.device, dtype=torch.float32)
-            m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(self.device, dtype=torch.float32)
-            # Run full model for richer logging.
-            # V6.1: (policy, value); V6.3: (policy, value, aux); V11: (policy, win_prob, moves_remaining)
-            full_out = self.model(s_t, m_t)
-            policy = full_out[0].squeeze(0).cpu().numpy()
-            value = float(full_out[1].squeeze().item())  # win_prob for v11, value for v6.x
-            probs = policy
-            action = int(policy.argmax())
+            with torch.no_grad():
+                s_t = torch.from_numpy(np.asarray(state_tensor)).unsqueeze(0).to(self.device, dtype=torch.float32)
+                m_t = torch.from_numpy(legal_mask).unsqueeze(0).to(self.device, dtype=torch.float32)
+                # Run full model for richer logging.
+                # V6.1: (policy, value); V6.3: (policy, value, aux); V11: (policy, win_prob, moves_remaining)
+                full_out = self.model(s_t, m_t)
+                policy = full_out[0].squeeze(0).cpu().numpy()
+                value = float(full_out[1].squeeze().item())  # win_prob for v11, value for v6.x
+                probs = policy
+                action = int(policy.argmax())
 
         if action not in legal:
             action = random.choice(legal)
@@ -1121,6 +1262,10 @@ MODEL_INFO = {
         'label': 'V12.2 (bias-trained)',
         'subtitle': 'V12.2 + bias-penalty RL · 82.4% eval · 1.36M params',
     },
+    'v12_3': {
+        'label': 'V12.3 (minimal CNN)',
+        'subtitle': 'V12.3 MinimalCNN14 (8×96, 17ch V17) · per-token policy',
+    },
     'v13_2': {
         'label': 'V13.2 (minimal CNN)',
         'subtitle': 'V13.2 distilled CNN (10×128, 17ch) · 82.3% eval · 3M params',
@@ -1128,6 +1273,14 @@ MODEL_INFO = {
     'v13_5': {
         'label': 'V13.5 (token-symmetric)',
         'subtitle': 'V13.5 ResNet (10×128, 21ch packed, rank-indexed) · 84.55% eval · 3M params',
+    },
+    'v13_6': {
+        'label': 'V13.6 (efficient champion)',
+        'subtitle': 'V13.6 V135 (6×96, 21ch packed) · ≈V13.5 strength at ¼ params · 1M params',
+    },
+    'v13_6_wm': {
+        'label': 'V13.6-WM (world-model)',
+        'subtitle': 'V13.6 + consequence heads (capture/risk, corr 0.96) · target-B laggard test',
     },
 }
 

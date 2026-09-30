@@ -1,0 +1,11 @@
+[package]
+name = "ludo_core"
+version = "0.1.0"
+edition = "2021"
+authors = ["AlphaLudo Team"]
+description = "High-performance zero-allocation 4-Player Ludo core game engine"
+
+[dependencies]
+rand = "0.8"
+
+[dev-dependencies]

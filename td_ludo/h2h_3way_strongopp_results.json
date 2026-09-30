@@ -1,0 +1,42 @@
+{
+  "matchups": {
+    "V13.5_strong_vs_V13.5_base": {
+      "a_name": "V13.5_strong",
+      "b_name": "V13.5_base",
+      "a_wins": 851,
+      "b_wins": 1149,
+      "draws": 0,
+      "a_wr": 42.55,
+      "b_wr": 57.45,
+      "elapsed_sec": 694.4542229175568,
+      "avg_len": 159.4855,
+      "games": 2000
+    },
+    "V13.5_strong_vs_V15.1_strong": {
+      "a_name": "V13.5_strong",
+      "b_name": "V15.1_strong",
+      "a_wins": 915,
+      "b_wins": 1085,
+      "draws": 0,
+      "a_wr": 45.75,
+      "b_wr": 54.25,
+      "elapsed_sec": 596.4393692016602,
+      "avg_len": 160.991,
+      "games": 2000
+    },
+    "V13.5_base_vs_V15.1_strong": {
+      "a_name": "V13.5_base",
+      "b_name": "V15.1_strong",
+      "a_wins": 1028,
+      "b_wins": 972,
+      "draws": 0,
+      "a_wr": 51.4,
+      "b_wr": 48.6,
+      "elapsed_sec": 576.1681778430939,
+      "avg_len": 158.124,
+      "games": 2000
+    }
+  },
+  "games_per_orientation": 1000,
+  "elapsed_min": 31.11769711971283
+}

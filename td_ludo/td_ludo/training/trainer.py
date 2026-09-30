@@ -58,10 +58,18 @@ class ActorCriticTrainer:
         self.device = device
         self.model.to(device)
         
+        # Fused Adam on CUDA (2026-06-11 throughput fix): single-kernel
+        # update. The default multi-tensor impl runs a Python loop with
+        # per-parameter .item() syncs that py-spy measured at ~26% of total
+        # training wall time on the L4 (the model is tiny, so optimizer
+        # Python overhead dominated). Identical update rule. MPS/CPU keep
+        # the default implementation (fused unsupported there).
+        _use_fused_adam = str(device).startswith('cuda')
         self.optimizer = optim.Adam(
-            model.parameters(), 
-            lr=learning_rate, 
-            weight_decay=WEIGHT_DECAY
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=WEIGHT_DECAY,
+            fused=_use_fused_adam,
         )
         
         self.max_grad_norm = MAX_GRAD_NORM
@@ -529,7 +537,16 @@ class ActorCriticTrainer:
             stats['eval_win_rate'] = round(eval_wr * 100, 1)
         elif getattr(self, 'last_eval_wr', None) is not None:
             stats['eval_win_rate'] = round(self.last_eval_wr * 100, 1)
-        
+
+        # Optional run-specific labels for the dynamic dashboard. Trainers
+        # that want non-V15.1 dashboard headings (e.g. V12.3, V13.6) set
+        # `trainer.run_info = {...}` after construction. The dashboard
+        # HTML's updateRunInfo() consumes this to override hardcoded
+        # V15.1 fallback labels (see v13_dashboard.html updateRunInfo).
+        ri = getattr(self, 'run_info', None)
+        if isinstance(ri, dict) and ri:
+            stats['run_info'] = ri
+
         # Enrich with Elo data
         if elo_tracker is not None:
             stats['main_elo'] = round(elo_tracker.get_rating('Model'), 1)
@@ -658,9 +675,16 @@ class ActorCriticTrainer:
             if is_compiled:
                 state_dict = {'_orig_mod.' + k: v for k, v in state_dict.items()}
             
-            # Load mapped states
-            self.model.load_state_dict(state_dict)
-            
+            # Load mapped states. strict=False so a model that ADDED aux
+            # heads (e.g. V13.6 world-model capture/risk heads) can resume
+            # from a pre-heads checkpoint — the new heads stay random-init
+            # and train up. Real key mismatches are surfaced via the log.
+            _missing, _unexpected = self.model.load_state_dict(state_dict, strict=False)
+            if _missing or _unexpected:
+                print(f"[Trainer] load_checkpoint non-strict: "
+                      f"{len(_missing)} missing, {len(_unexpected)} unexpected "
+                      f"(missing e.g. {_missing[:3]})")
+
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                 # Full checkpoint
                 if 'optimizer_state_dict' in checkpoint:

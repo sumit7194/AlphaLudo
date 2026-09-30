@@ -210,14 +210,8 @@ class ExpectimaxBot:
             return int(legal_moves[0])
 
         me = self.player_id if self.player_id is not None else int(state.current_player)
-        # Pick the (in 2P mode) other active player. In our env this is (me+2) % 4.
         active = state.active_players
-        opp = None
-        for p in range(4):
-            if p != me and active[p]:
-                opp = p
-                break
-        if opp is None:
+        if not any(p != me and active[p] for p in range(4)):
             # Degenerate: no opponent active. Just take first legal.
             return int(legal_moves[0])
 
@@ -431,6 +425,39 @@ STRONG_BOT_REGISTRY = {
     "Expectimax": ExpectimaxBot,
     "MCTSPure":   MCTSPureBot,
 }
+
+# ─── Auto-aggregate sibling registries (added 2026-05-20) ────────────────
+#
+# Other strong-bot families were added in separate files for clarity:
+#   strong_bots_v2.py        — personality variants (Aggressive/Defensive/Racing/Minimax/Blockade)
+#   strong_bots_depth2.py    — Depth2{,Aggressive,Defensive}Expectimax
+#   strong_bots_mcts_prior.py — MCTSExpertPrior, MCTSExpectimaxPrior
+#   strong_bots_adaptive.py  — AdaptiveExpectimax, VoteExpectimax
+#   strong_bots_rule.py      — MaxCapture, TwoStack, HomeRush, StackHomeRush
+#
+# Each ships its own dict (EXPECTIMAX_V2_REGISTRY, DEPTH2_REGISTRY, etc.).
+# We merge them into STRONG_BOT_REGISTRY so downstream callers
+# (make_bot_picker in train_v15_rich.py, v15_bot_eval) see a single
+# unified namespace.
+def _merge_sibling_registry(module_name, attr_name):
+    try:
+        mod = __import__(f"td_ludo.game.{module_name}", fromlist=[attr_name])
+        reg = getattr(mod, attr_name, None)
+        if reg:
+            STRONG_BOT_REGISTRY.update(reg)
+    except ImportError:
+        # Sibling module missing — that's fine, we just skip those bots.
+        pass
+
+for _m, _n in [
+    ("strong_bots_v2",        "EXPECTIMAX_V2_REGISTRY"),
+    ("strong_bots_depth2",    "DEPTH2_REGISTRY"),
+    ("strong_bots_mcts_prior", "MCTS_PRIOR_REGISTRY"),
+    ("strong_bots_adaptive",  "ADAPTIVE_REGISTRY"),
+    ("strong_bots_rule",      "RULE_BOT_REGISTRY"),
+]:
+    _merge_sibling_registry(_m, _n)
+# After merge: STRONG_BOT_REGISTRY contains all ~17 strong-bot variants.
 
 
 def get_strong_bot(name: str, player_id: Optional[int] = None, **kwargs):

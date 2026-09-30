@@ -208,8 +208,12 @@ def compute_shaped_reward(state, next_state, player, context=None):
             reward += 0.40
             scored_this_move = True
 
-        # Standard forward progress
-        if p1 >= 0 and p2 > p1:
+        # Standard forward progress. Excludes the scoring move (p2 jumps to
+        # the 99 sentinel): without the p2 < SCORE_POSITION guard, a token
+        # scoring from pos 55 also earned a phantom 0.005×44 ≈ +0.22 on top
+        # of the +0.40 score reward. dense_rewards.py already excludes this;
+        # aligned 2026-06-10.
+        if p1 >= 0 and p2 > p1 and p2 < SCORE_POSITION:
             reward += 0.005 * (p2 - p1)
 
         # Got killed / sent to base

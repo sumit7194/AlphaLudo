@@ -1,0 +1,18 @@
+{
+  "result": {
+    "a_wins": 385,
+    "b_wins": 615,
+    "draws": 0,
+    "a_wr": 38.5,
+    "b_wr": 61.5,
+    "elapsed_sec": 517.7160062789917,
+    "avg_len": 164.945,
+    "games": 1000
+  },
+  "ckpt_strong": "/Users/sumit/Github/AlphaLudo/td_ludo_v15/checkpoints/h2h_compare/v151_rl_strong_G826K.pt",
+  "ckpt_pre": "/Users/sumit/Github/AlphaLudo/td_ludo_v15/checkpoints/h2h_compare/v151_rl_pre_strong.pt",
+  "games_per_orientation": 500,
+  "elapsed_sec": 517.7160089015961,
+  "std_err_pp": 1.5387494922826133,
+  "delta_pp": -23.0
+}

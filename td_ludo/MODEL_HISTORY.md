@@ -1356,3 +1356,61 @@ V15_DESIGN_PLAN.md as the next-step. Given V15's failure to break the
 plateau via architecture, V16 is **paused**. If a future GNN attempt
 happens, it should pair with a fundamental rethink of RL approach (not
 just swap the trunk).
+
+---
+
+## V15_4PW — Winner-Distilled GraphTransformer with 4-Way Standings Aux Head (September 2026)
+
+First 4-player model trained via native Rust in-RAM streaming (`alphaludo_rs`), distilling exclusively from the winning moves of `MaxNMCTS` and `Depth2Expectimax`.
+
+- **Input:** `(15, 15, 5)` tensor per turn from current player's POV:
+  - ch0: own token count (0–4)
+  - ch1: next player token count (P1)
+  - ch2: opposite player token count (P2)
+  - ch3: previous player token count (P3)
+  - ch4: dice roll one-hot (broadcast, $d \in \{1..6\}$)
+- **Backbone:** `V15_4PW_GraphTransformer` (593,281 parameters):
+  - 4 layers × 4 heads × $d_{\text{model}} = 128$, FFN = 256.
+  - Input projection: `Linear(5, 128) + 2D Positional Embeddings (15, 15)`.
+- **Heads:**
+  1. **Policy Head**: `Linear(128, 1)` mapped over 225 spatial cells + legal source-cell mask $\to$ 225 logits.
+  2. **Value Head**: `Linear(128, 4)` classification over winning relative seat.
+  3. **Standings Aux Head**: `MLP(128 → 64 → 4) + Sigmoid` trained with MSE against normalized 4-way progress fractions $[s_0, s_1, s_2, s_3]$.
+- **Training Strategy**:
+  - Filter: 100% of non-winning moves are discarded; student only learns from moves that led to victory.
+  - Teachers: `MaxNMCTS` (40 PUCT rollouts + 4D payoff vector) + `Depth2Expectimax` (2-ply chance tree).
+  - Dataset: 0 disk bytes used (in-RAM streaming via PyO3).
+- **Outcome**:
+  - Policy accuracy: 92.16%. Standings MSE: 0.0088.
+  - **Tournament**: 50.6% win rate across 1,000 seat-rotated games, defeating `V15_4P_RL` (18.6%) by 2.7×.
+
+---
+
+## V13.7 — Tabula Rasa AlphaZero 2-Player ResNet (September 2026)
+
+- **Philosophy:** 100% Pure AlphaZero tabula rasa: zero SL pretraining, zero heuristic reward shaping, strict zero-sum terminal rewards ($z \in \{+1.0, -1.0\}$), deep Expecti-MCTS search budget ($N = 3,000$ simulations/move).
+- **Engine:** Native compiled multi-threaded Rust searcher (`crates/ludo_search::TwoPlayerMCTSBot`, `crates/ludo_pyo3`). In-RAM Rayon generation with zero disk I/O.
+- **Representation:** 17 spatial input channels ($17 \times 15 \times 15$):
+  - ch0..ch3: Own 4 tokens (one-hot in canonical mover POV)
+  - ch4..ch7: Opponent 4 tokens (one-hot in canonical mover POV)
+  - ch8..ch13: Dice roll 1..6 (full plane one-hot)
+  - ch14: Safe squares (8 cells, 0.5)
+  - ch15: My home path (5 cells, 1.0)
+  - ch16: Opponent home path (5 cells, 1.0)
+- **Backbone:** `AlphaLudoV137` ResNet (1,809,026 parameters):
+  - Stem: `Conv2d(17, 128, 3, padding=1) + BatchNorm2d + ReLU`
+  - 6 Residual Blocks (each: $2 \times$ `Conv2d(128, 128, 3, padding=1) + BatchNorm2d + ReLU` with residual skip)
+- **Dual Heads:**
+  1. **Policy Head**: Spatial gathering via einsum over own token channels 0..3 $\to$ `Linear(128, 64) + ReLU + Linear(64, 1)` $\to$ (B, 4) logits with finite masking (-1e4). Target: MCTS visit distribution $\pi$.
+  2. **Value Head**: `AdaptiveAvgPool2d(1) → Linear(128, 64) + ReLU + Linear(64, 1) + Tanh` $\to$ scalar $v \in [-1.0, +1.0]$. Target: terminal game outcome $z \in \{+1.0, -1.0\}$.
+- **Loss Function:** $\mathcal{L} = (z - v)^2 - \sum_{a} \pi_a \log(p_a) + c \|\theta\|^2$.
+- **Training Setup:**
+  - Launch daemon: `launch_v137_alphazero.sh` (detached `nohup` + `disown`, PID tracked).
+  - Clean interruptability: `touch stop`.
+  - Replay Buffer: 60,000 transitions in RAM.
+  - Evaluation Suite: Dropped trivial `RandomBot`. Opponent mix: `Heuristic`, `Aggressive`, `Expert`, and native Rust `MCTS` (500-sim Expecti-MCTS).
+  - Evaluation Cadence: Every 20 iterations (`--eval-every 20`) across 80 seat-alternated games.
+  - Dashboard: Rich interactive UI at `http://localhost:8790/v13_dashboard.html`.
+- **Status:** Training live in background. Checkpoints saved to `checkpoints/v13_7/`. Loss dropping from 1.66 to 0.81 (Value loss dropped from 1.02 to 0.17).
+
+

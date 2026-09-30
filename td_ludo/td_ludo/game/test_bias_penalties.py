@@ -137,20 +137,31 @@ def t_capture_on_safe():
 # =============================================================================
 # Penalty 3: Missed finish
 # =============================================================================
-@test('P3: could finish, didn\'t → fires')
+@test('P3: could finish from home column, didn\'t → fires')
 def t_missed_finish():
-    # P0 has T0 at pos 95 (one off from 99), T1 at pos 20.
-    # Dice=4 → T0 could finish (95+4=99). Model picked T1.
-    pre = S([95, 20, -1, -1], [40, -1, -1, -1])
-    post = S([95, 24, -1, -1], [40, -1, -1, -1])
+    # REAL encoding: home column is 51-55, finish = exact landing on logical
+    # cell 56, stored by the engine as 99. T0 at 52, dice=4 → 52+4=56 =
+    # finish. Model picked T1 (20→24) instead.
+    pre = S([52, 20, -1, -1], [40, -1, -1, -1])
+    post = S([52, 24, -1, -1], [40, -1, -1, -1])
     ctx = {'dice': 4, 'legal_moves': [0, 1], 'action': 1, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
     assert_close(bd['missed_finish'], -P_MISS_FINISH, msg='missed_finish')
 
 
+@test('P3: could finish from track pos 50 with a 6, didn\'t → fires')
+def t_missed_finish_from_track():
+    # 50+6=56 — finishing straight off the main track is also a finish.
+    pre = S([50, 20, -1, -1], [40, -1, -1, -1])
+    post = S([50, 26, -1, -1], [40, -1, -1, -1])
+    ctx = {'dice': 6, 'legal_moves': [0, 1], 'action': 1, 'move_count': 100}
+    total, bd = compute_bias_penalties(pre, post, 0, ctx)
+    assert_close(bd['missed_finish'], -P_MISS_FINISH, msg='missed_finish (pos 50)')
+
+
 @test('P3: finish taken → no penalty')
 def t_took_finish():
-    pre = S([95, 20, -1, -1], [40, -1, -1, -1])
+    pre = S([52, 20, -1, -1], [40, -1, -1, -1])
     post = S([99, 20, -1, -1], [40, -1, -1, -1])
     ctx = {'dice': 4, 'legal_moves': [0, 1], 'action': 0, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
@@ -159,11 +170,20 @@ def t_took_finish():
 
 @test('P3: no finish was possible → no penalty')
 def t_no_finish_possible():
-    pre = S([90, 20, -1, -1], [40, -1, -1, -1])  # T0 at 90, dice=4 → 94, not 99
-    post = S([90, 24, -1, -1], [40, -1, -1, -1])
+    pre = S([51, 20, -1, -1], [40, -1, -1, -1])  # T0 at 51, dice=4 → 55, not 56
+    post = S([51, 24, -1, -1], [40, -1, -1, -1])
     ctx = {'dice': 4, 'legal_moves': [0, 1], 'action': 1, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
     assert_zero(bd['missed_finish'], 'missed_finish')
+
+
+@test('P3: overshoot past 56 is illegal → no penalty')
+def t_finish_overshoot():
+    pre = S([54, 20, -1, -1], [40, -1, -1, -1])  # T0 at 54, dice=4 → 58 > 56
+    post = S([54, 24, -1, -1], [40, -1, -1, -1])
+    ctx = {'dice': 4, 'legal_moves': [1], 'action': 1, 'move_count': 100}
+    total, bd = compute_bias_penalties(pre, post, 0, ctx)
+    assert_zero(bd['missed_finish'], 'missed_finish (overshoot)')
 
 
 # =============================================================================
@@ -248,22 +268,20 @@ def t_laggard_on_3score():
     post = S([99, 99, 99, 5], [40, -1, -1, -1], scores=[3, 0, 0, 0])
     ctx = {'dice': 1, 'legal_moves': [2], 'action': 2, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
-    raw = -P_LAGGARD_PER_CELL * (99 - 5)  # distance = 94
-    # P6 may exceed ABS_MAX_PENALTY at higher per-cell coefficients; the cap
-    # rescales the breakdown proportionally. With only laggard firing, the
-    # capped value equals -ABS_MAX_PENALTY exactly when |raw| > cap.
+    # Real-cell distance since 2026-06-10: 56 − 5 = 51.
+    raw = -P_LAGGARD_PER_CELL * (56 - 5)
     expected = max(raw, -ABS_MAX_PENALTY)
     assert_close(bd['laggard_on_3score'], expected, msg='laggard_on_3score (pos=5)')
 
 
 @test('P6: scoring 3rd with laggard close to home → small penalty')
 def t_laggard_close():
-    # Laggard at pos 95 → distance 4
-    pre = S([99, 99, 55, 95], [40, -1, -1, -1], scores=[2, 0, 0, 0])
-    post = S([99, 99, 99, 95], [40, -1, -1, -1], scores=[3, 0, 0, 0])
+    # Laggard at pos 53 (home column) → distance 56 − 53 = 3
+    pre = S([99, 99, 55, 53], [40, -1, -1, -1], scores=[2, 0, 0, 0])
+    post = S([99, 99, 99, 53], [40, -1, -1, -1], scores=[3, 0, 0, 0])
     ctx = {'dice': 1, 'legal_moves': [2], 'action': 2, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
-    expected = -P_LAGGARD_PER_CELL * (99 - 95)  # distance = 4
+    expected = -P_LAGGARD_PER_CELL * 3
     assert_close(bd['laggard_on_3score'], expected, msg='laggard close')
 
 
@@ -273,8 +291,9 @@ def t_laggard_at_base():
     post = S([99, 99, 99, -1], [40, -1, -1, -1], scores=[3, 0, 0, 0])
     ctx = {'dice': 1, 'legal_moves': [2], 'action': 2, 'move_count': 100}
     total, bd = compute_bias_penalties(pre, post, 0, ctx)
-    raw = -P_LAGGARD_PER_CELL * 99  # at-base treated as max distance
-    # Capped to -ABS_MAX_PENALTY when raw magnitude exceeds the cap.
+    raw = -P_LAGGARD_PER_CELL * 57  # at-base = spawn (1) + 56 cells
+    # 57 × 0.0025 = 0.1425 sits just under ABS_MAX_PENALTY; max() kept in
+    # case the coefficient is bumped later.
     expected = max(raw, -ABS_MAX_PENALTY)
     assert_close(bd['laggard_on_3score'], expected, msg='laggard at base')
 

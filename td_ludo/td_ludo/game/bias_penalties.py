@@ -33,6 +33,22 @@ Usage:
     )
 """
 
+import os
+
+# De-bias mode (Exp 56, 2026-06-17) — GAE + de-biased dense. When
+# LUDO_DEBIAS_DENSE=1, the "moved token into danger" penalty (Penalty 5) covers
+# ALL main-track positions instead of only advanced tokens (pos > 35), so
+# leaving the trailing 4th token (laggard) exposed actually costs. Default off.
+_DEBIAS_DENSE = os.environ.get('LUDO_DEBIAS_DENSE', '0').lower() in ('1', 'true', 'yes')
+# Min pre-move position for the danger penalty to apply. Canonical: 36 (advanced
+# tokens only). De-bias: 1 (any on-track token, incl. the laggard).
+_DANGER_MIN_POS = 1 if _DEBIAS_DENSE else 36
+# Multiplier on the NEWLY-COVERED laggard range (pos ≤ 35) only — lets us run a
+# lighter-touch laggard nudge. The Exp 56 full run used 1.0 (cost ~6-7pp eval);
+# the light run (Exp 57) uses 0.5. The proven advanced-token (>35) penalty is
+# never scaled. Default 1.0.
+_DEBIAS_DANGER_MULT = float(os.environ.get('LUDO_DEBIAS_DANGER_MULT', '1.0'))
+
 # =============================================================================
 # Constants — keep aligned with reward_shaping.py
 # =============================================================================
@@ -55,9 +71,10 @@ P_LEFT_SAFE = 0.03
 # alternatives). dice=6 discount intentionally retained.
 P_DANGER_ADVANCED_BASE = 0.12
 # Penalty 6: per-cell coefficient for laggard distance when scoring 3rd token.
-# Range: 0.0025 × 1 = -0.0025 (laggard 1 cell from home) to
-#        0.0025 × 99 = -0.2475 (laggard at base or spawn) — capped by
-#        ABS_MAX_PENALTY=0.15 in the worst cases. Fires once per game.
+# Distance is in REAL cells since 2026-06-10 (was 99 − pos, distorted by the
+# scored-99 sentinel). Range: 0.0025 × 1 = -0.0025 (laggard at pos 55) to
+#        0.0025 × 57 = -0.1425 (laggard at base) — just under the
+#        ABS_MAX_PENALTY=0.15 cap. Fires once per game.
 # Bumped 5× from 0.0005 on 2026-05-05 — earlier value was barely shifting
 # behavior; this makes a far-laggard 3rd-score cost ~7-15% of value swing.
 P_LAGGARD_PER_CELL = 0.0025
@@ -91,17 +108,26 @@ def _simulate_dest(state, player, token, dice):
     exactly). Returns None if move would be illegal (e.g. blockers, overshoot).
 
     Doesn't simulate captures or stack-block rules; caller checks those.
+
+    Engine encoding: track 0-50, home column 51-55, scored stored as the
+    99 sentinel (SCORE_POSITION). A token FINISHES by landing exactly on
+    logical cell 56 (from pos 50 with a 6, or from the home column) — the
+    engine then stores it as 99. The pre-2026-06-10 version compared
+    cur+dice against 99 directly, so the finish branch (and the
+    missed-finish penalty downstream) could never fire on real states.
     """
+    FINISH_LANDING = 56  # logical cell one past the home column
+
     cur = state.player_positions[player][token]
     if cur == BASE_POSITION:
         return 0 if dice == 6 else None     # spawn on 6 only
     if cur == SCORE_POSITION:
         return None                          # already scored
     new_p = cur + dice
-    if new_p == SCORE_POSITION:
-        return SCORE_POSITION
-    if new_p > SCORE_POSITION:
-        return None                          # overshoot
+    if new_p == FINISH_LANDING:
+        return SCORE_POSITION                # finish → engine's 99 sentinel
+    if new_p > FINISH_LANDING:
+        return None                          # overshoot — exact roll required
     return new_p
 
 
@@ -277,7 +303,7 @@ def compute_bias_penalties(state, next_state, player, context):
             breakdown['left_safe'] = -P_LEFT_SAFE * scale * bonus_factor
 
     # ── Penalty 5: moved advanced token into danger ──────────────────
-    if (_is_main_track(chosen_pre) and chosen_pre > 35
+    if (_is_main_track(chosen_pre) and chosen_pre >= _DANGER_MIN_POS
             and _is_main_track(chosen_post)
             and _in_capture_range(next_state, player, chosen_post)):
         # Was there a safer alternative? "Safer" = doesn't create danger
@@ -290,8 +316,8 @@ def compute_bias_penalties(state, next_state, player, context):
             dest = _simulate_dest(state, player, alt, dice)
             if dest is None:
                 continue
-            # Skip alts that ALSO move an advanced token into danger
-            if (_is_main_track(alt_pre) and alt_pre > 35
+            # Skip alts that ALSO move an in-scope token into danger
+            if (_is_main_track(alt_pre) and alt_pre >= _DANGER_MIN_POS
                     and _is_main_track(dest)
                     and _in_capture_range(state, player, dest)):
                 continue
@@ -301,7 +327,18 @@ def compute_bias_penalties(state, next_state, player, context):
             # Halved when dice == 6 because the bonus turn lets the player
             # immediately re-cover or counter-move the now-exposed token.
             bonus_factor = 0.5 if dice == 6 else 1.0
-            mag = P_DANGER_ADVANCED_BASE * (1 + (chosen_pre - 35) / 20) * bonus_factor
+            # Distance-from-base scale. For advanced tokens (>35) this grows the
+            # penalty; for low tokens it would go ≤0, so floor at 0.7 in de-bias
+            # mode (the laggard still costs ~0.084) and keep the original
+            # (unfloored, never reached below 36) behaviour otherwise.
+            scale = 1 + (chosen_pre - 35) / 20
+            if _DEBIAS_DENSE:
+                scale = max(0.7, scale)
+            mag = P_DANGER_ADVANCED_BASE * scale * bonus_factor
+            # Soften ONLY the newly-covered laggard range (pos ≤ 35); the proven
+            # advanced-token (>35) penalty is never scaled.
+            if _DEBIAS_DENSE and chosen_pre <= 35:
+                mag *= _DEBIAS_DANGER_MULT
             breakdown['advanced_into_danger'] = -mag
 
     # ── Penalty 6: laggard distance when scoring 3rd token ───────────
@@ -320,11 +357,16 @@ def compute_bias_penalties(state, next_state, player, context):
                 laggard_pos = int(own_pos_post[t])
                 break
         if laggard_pos is not None:
-            # Distance to home: at-base treated as max distance.
+            # Distance to home in REAL cells (finish = logical cell 56).
+            # The pre-2026-06-10 version used 99 − pos, which the scored
+            # sentinel distorted badly: a laggard at pos 55 (one roll from
+            # home) was charged distance 44 — nearly the same as a laggard
+            # at base after the ABS_MAX_PENALTY cap. At-base = 57 (spawn
+            # to pos 0, then 56 cells).
             if laggard_pos == BASE_POSITION:
-                distance = 99
+                distance = 57
             else:
-                distance = max(0, 99 - laggard_pos)
+                distance = max(0, 56 - laggard_pos)
             breakdown['laggard_on_3score'] = -P_LAGGARD_PER_CELL * distance
 
     # ── Cap total ────────────────────────────────────────────────────
