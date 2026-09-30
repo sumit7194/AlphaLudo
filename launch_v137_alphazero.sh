@@ -37,7 +37,7 @@ echo "==========================================================================
 echo "   Model:       V13.7 Minimal ResNet (6 ResBlocks x 128ch, ~1.8M params)"
 echo "   Search:      TwoPlayerExpectiMCTS (N=3,000 simulations/move)"
 echo "   Rewards:     Strict zero-sum terminal only: z in {-1.0, +1.0}"
-echo "   Buffer:      60,000 states in RAM (zero disk I/O wear)"
+echo "   Buffer:      120,000 states in RAM (zero disk I/O wear)"
 echo "   Dashboard:   http://localhost:$PORT/v13_dashboard.html"
 echo "   Logs:        $LOG_FILE"
 echo "   Interrupt:   touch stop"
@@ -45,13 +45,13 @@ echo "==========================================================================
 
 PYTHONUNBUFFERED=1 nohup "$PYTHON" -u python/alphaludo/train_v137_alphazero.py \
     --mcts-sims 3000 \
-    --states-per-iter 2000 \
-    --train-steps-per-iter 250 \
+    --states-per-iter 8000 \
+    --train-steps-per-iter 100 \
     --batch-size 256 \
-    --replay-capacity 60000 \
+    --replay-capacity 120000 \
     --temp-cutoff 20 \
     --lr 0.001 \
-    --eval-every 20 \
+    --eval-every 25 \
     --eval-games 80 \
     --checkpoint-dir checkpoints/v13_7 \
     --port $PORT \

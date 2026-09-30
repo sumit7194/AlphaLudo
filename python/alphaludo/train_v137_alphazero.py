@@ -347,6 +347,9 @@ def train(args):
     best_eval_wr = 0.0
     metrics_history = []
 
+    last_eval_wr = best_eval_wr
+    last_opp_breakdown = {}
+
     latest_ckpt = ckpt_dir / "model_latest.pt"
     if latest_ckpt.exists():
         print(f"[Resume] Loading existing checkpoint from {latest_ckpt}")
@@ -358,13 +361,26 @@ def train(args):
         total_states_seen = ckpt.get("total_states", 0)
         total_games_seen = ckpt.get("total_games", 0)
         best_eval_wr = ckpt.get("best_eval_wr", 0.0)
+        last_eval_wr = best_eval_wr
         if (ckpt_dir / "metrics.json").exists():
             try:
                 with open(ckpt_dir / "metrics.json") as f:
                     metrics_history = json.load(f)
+                    if metrics_history:
+                        last_eval_wr = metrics_history[-1].get("eval_win_rate", best_eval_wr)
+                        last_opp_breakdown = metrics_history[-1].get("opponents", {})
             except Exception:
                 pass
         print(f"[Resume] Resumed at iteration {start_iter}, states={total_states_seen:,}, best WR={best_eval_wr:.1%}")
+
+    initial_recent_opp = {
+        name: {
+            "win_rate": float(wr * 100.0),
+            "wins": int(round(wr * (args.eval_games // max(1, len(last_opp_breakdown))))),
+            "games": int(args.eval_games // max(1, len(last_opp_breakdown))),
+        }
+        for name, wr in last_opp_breakdown.items()
+    }
 
     # Write initial stats payload so dashboard connects immediately
     stats_payload = {
@@ -389,9 +405,10 @@ def train(args):
         "total_loss": 0.0,
         "policy_entropy": 0.70,
         "temperature": 1.0,
-        "main_elo": 1200,
-        "eval_win_rate": 0.0,
-        "opp_breakdown": {},
+        "main_elo": 1200 + int(last_eval_wr * 600),
+        "eval_win_rate": float(last_eval_wr),
+        "opp_breakdown": last_opp_breakdown,
+        "recent_opponent_stats": initial_recent_opp,
         "elo_rankings": [
             {"name": "MCTSBot", "elo": 1600},
             {"name": "ExpertBot", "elo": 1500},
@@ -459,9 +476,9 @@ def train(args):
         # ── 2. Training Optimization Phase ─────────────────────────────
         model.train()
         train_t0 = time.time()
-        running_policy_loss = 0.0
-        running_value_loss = 0.0
-        running_entropy = 0.0
+        running_pi_loss = torch.zeros((), device=device)
+        running_v_loss = torch.zeros((), device=device)
+        running_ent = torch.zeros((), device=device)
         num_steps = args.train_steps_per_iter
 
         for _ in range(num_steps):
@@ -489,14 +506,14 @@ def train(args):
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            running_policy_loss += policy_loss.item()
-            running_value_loss += value_loss.item()
-            running_entropy += entropy.item()
+            running_pi_loss += policy_loss.detach()
+            running_v_loss += value_loss.detach()
+            running_ent += entropy.detach()
 
         train_dt = time.time() - train_t0
-        avg_pi_loss = running_policy_loss / num_steps
-        avg_v_loss = running_value_loss / num_steps
-        avg_entropy = running_entropy / num_steps
+        avg_pi_loss = (running_pi_loss / num_steps).item()
+        avg_v_loss = (running_v_loss / num_steps).item()
+        avg_entropy = (running_ent / num_steps).item()
         total_loss = avg_pi_loss + avg_v_loss
 
         # ── 3. Periodic Evaluation Phase (Fast CPU Evaluation) ─────────
@@ -512,6 +529,8 @@ def train(args):
                 games_per_opponent=args.eval_games // 4,
             )
             eval_dt = time.time() - eval_t0
+            last_eval_wr = eval_wr
+            last_opp_breakdown = opp_breakdown
 
             print(
                 f"[Eval #{iteration}] WR: {eval_wr:.1%} | "
@@ -577,17 +596,17 @@ def train(args):
             {"name": "ExpertBot", "elo": 1500},
             {"name": "HeuristicBot", "elo": 1400},
             {"name": "AggressiveBot", "elo": 1350},
-            {"name": "Model", "elo": 1200 + int((eval_wr or best_eval_wr) * 600)},
+            {"name": "Model", "elo": 1200 + int(last_eval_wr * 600)},
         ]
         elo_rankings.sort(key=lambda x: x["elo"], reverse=True)
 
         recent_opp_stats = {
             name: {
                 "win_rate": float(wr * 100.0),
-                "wins": int(round(wr * (args.eval_games // max(1, len(opp_breakdown))))),
-                "games": int(args.eval_games // max(1, len(opp_breakdown))),
+                "wins": int(round(wr * (args.eval_games // max(1, len(last_opp_breakdown))))),
+                "games": int(args.eval_games // max(1, len(last_opp_breakdown))),
             }
-            for name, wr in opp_breakdown.items()
+            for name, wr in last_opp_breakdown.items()
         }
 
         stats_payload = {
@@ -612,14 +631,15 @@ def train(args):
             "total_loss": float(total_loss),
             "policy_entropy": float(avg_entropy),
             "temperature": 1.0 if iteration < 20 else 0.0,
-            "main_elo": 1200 + int((eval_wr or best_eval_wr) * 600),
-            "eval_win_rate": float(eval_wr if eval_wr is not None else best_eval_wr),
-            "opp_breakdown": opp_breakdown,
+            "main_elo": 1200 + int(last_eval_wr * 600),
+            "eval_win_rate": float(last_eval_wr),
+            "opp_breakdown": last_opp_breakdown,
             "recent_opponent_stats": recent_opp_stats,
             "elo_rankings": elo_rankings,
         }
         with open(stats_path, "w") as f:
             json.dump(stats_payload, f, indent=2)
+
 
         # ── 5. Memory Management & Logging ────────────────────────────
         if device.type == "mps":
