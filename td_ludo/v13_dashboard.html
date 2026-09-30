@@ -589,15 +589,15 @@ function updateFromStats(s) {
     document.getElementById("duration").textContent = fmtDuration((Date.now() / 1000) - startTime);
   }
 
-  document.getElementById("pol-loss").textContent = fmtNum(s.avg_policy_loss, 4);
-  document.getElementById("val-loss").textContent = fmtNum(s.avg_value_loss, 3);
-  document.getElementById("kl").textContent = fmtNum(s.approx_kl, 4);
-  document.getElementById("clip").textContent = fmtNum(s.clip_fraction, 3);
-  document.getElementById("adv").textContent = fmtNum(s.avg_advantage, 4);
+  document.getElementById("pol-loss").textContent = fmtNum(s.avg_policy_loss ?? s.policy_loss, 4);
+  document.getElementById("val-loss").textContent = fmtNum(s.avg_value_loss ?? s.value_loss, 3);
+  document.getElementById("kl").textContent = fmtNum(s.approx_kl ?? 0.0, 4);
+  document.getElementById("clip").textContent = fmtNum(s.clip_fraction ?? 0.0, 3);
+  document.getElementById("adv").textContent = fmtNum(s.avg_advantage ?? 0.0, 4);
 
   // Live WR + entropy chart points
   const last = liveWRHistory[liveWRHistory.length - 1];
-  const wr = (s.win_rate_100 || 0) / 100;
+  const wr = s.win_rate_100 != null ? s.win_rate_100 / 100 : (s.eval_win_rate || 0);
   if (!last || last.games !== games) {
     liveWRHistory.push({ games, wr });
     liveEntHistory.push({ games, ent });
