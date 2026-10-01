@@ -130,3 +130,4 @@ v62_gcp_snapshot/model_v6_2.py
 v62_gcp_snapshot/evaluate_v6_2.py
 v62_gcp_snapshot/train_v6_2_fast.py
 v62_gcp_snapshot/test_v62_rezero.py
+td_ludo/generator_stats.json

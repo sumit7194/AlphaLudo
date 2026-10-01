@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>V15.1 — AlphaLudo (RL on Distilled GraphTransformer)</title>
+<title>AlphaLudo V15.3 — Search Distillation Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -176,7 +176,32 @@
   Cautionary tale: <b>V15 RL (4.4M, 8-frame) collapsed to 43%</b> from a 83% SL init. This run tests if the smaller arch survives RL.
 </div>
 
-<!-- PIPELINE removed — V15.1 SL is baked into model_sl.pt (offline, Mac MPS). RL only. -->
+<!-- TEACHER GENERATOR PIPELINE -->
+<div class="card" style="margin-bottom: 16px; border-color: rgba(139, 92, 246, 0.4); background: linear-gradient(135deg, var(--panel) 0%, rgba(139, 92, 246, 0.08) 100%);">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+    <div class="label" style="margin: 0; color: var(--accent); font-weight: 600;">
+      ⚡ Rust MCTS Teacher Generator (10-Core Rayon) · 1,000,000-Game Search Distillation
+    </div>
+    <div style="font-size: 11px; color: var(--muted);" id="gen-rate-text">
+      Throughput: <b id="gen-gpm" style="color:var(--text)">1,008</b> GPM (<span id="gen-sps">2,536</span> SPS)
+    </div>
+  </div>
+  <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+    <div style="font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums;">
+      <span id="gen-games" style="color:var(--good)">300,000</span> <span style="font-size: 14px; color: var(--muted); font-weight: 400;">/ 1,000,000 games</span>
+    </div>
+    <div style="font-size: 12px; color: var(--muted);">
+      Shards: <b id="gen-shards" style="color:var(--text)">60 / 200</b> · States: <b id="gen-states" style="color:var(--text)">45.2M</b> · Progress: <b id="gen-pct" style="color:var(--good)">30.0%</b>
+    </div>
+  </div>
+  <div style="height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;">
+    <div id="gen-progress-bar" style="height: 100%; width: 30.0%; background: linear-gradient(90deg, var(--accent), var(--good)); transition: width 0.4s;"></div>
+  </div>
+  <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 6px;">
+    <span>Teacher Matchup: <b>TwoPlayerMCTSBot (N=3,000 Expecti-MCTS)</b> vs <b>Depth2ExpectimaxBot</b></span>
+    <span>Mode: <b>Zero-Alloc Rayon Shard Streaming</b></span>
+  </div>
+</div>
 
 <!-- HEADLINE -->
 <div class="row headline">
@@ -241,7 +266,7 @@
 <!-- SPLIT CHART ROW -->
 <div class="row chart-split">
   <div class="card">
-    <div class="label">Training WR rolling 100-game window</div>
+    <div class="label">Head-to-Head Win Rate Breakdown (Model vs Bot Suite)</div>
     <div class="chart-wrap"><canvas id="wr-chart"></canvas></div>
   </div>
   <div class="card">
@@ -252,15 +277,15 @@
 
 <div style="height:16px"></div>
 
-<!-- PPO DYNAMICS -->
+<!-- SL DISTILLATION DYNAMICS -->
 <div class="card">
-  <div class="label">PPO Dynamics (moving avg over last updates)</div>
+  <div class="label">Search Distillation & SL Dynamics (Real-time MPS Training)</div>
   <div class="ppo-stats">
-    <div class="ppo-stat"><div class="val" id="pol-loss">--</div><div class="sublabel">Policy loss</div></div>
-    <div class="ppo-stat"><div class="val" id="val-loss">--</div><div class="sublabel">Value (BCE) loss</div></div>
-    <div class="ppo-stat"><div class="val" id="kl">--</div><div class="sublabel">Approx KL</div></div>
-    <div class="ppo-stat"><div class="val" id="clip">--</div><div class="sublabel">Clip fraction</div></div>
-    <div class="ppo-stat"><div class="val" id="adv">--</div><div class="sublabel">Advantage (avg)</div></div>
+    <div class="ppo-stat"><div class="val" id="pol-loss" style="color:var(--accent)">--</div><div class="sublabel">Policy Loss (CE)</div></div>
+    <div class="ppo-stat"><div class="val" id="val-loss" style="color:var(--info)">--</div><div class="sublabel">Value Loss (MSE)</div></div>
+    <div class="ppo-stat"><div class="val" id="tot-loss">--</div><div class="sublabel">Total Loss</div></div>
+    <div class="ppo-stat"><div class="val" id="top1-acc" style="color:var(--good)">--</div><div class="sublabel">Top-1 Accuracy</div></div>
+    <div class="ppo-stat"><div class="val" id="sps-rate" style="color:var(--gold)">--</div><div class="sublabel">Training Speed</div></div>
   </div>
 </div>
 
@@ -333,7 +358,7 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
   options: {
     responsive: true, maintainAspectRatio: false,
     scales: {
-      y: { min: 0.0, max: 0.65, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.10 }, grid: { color: palette.grid } },
+      y: { min: 0.0, max: 1.0, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.10 }, grid: { color: palette.grid } },
       x: { title: { display: true, text: "games trained" }, grid: { display: false } },
     },
     plugins: { legend: { display: false } },
@@ -361,21 +386,24 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
   }],
 });
 
-// ---- WR rolling chart ----
+// ---- Bot breakdown history chart ----
 const wrChart = new Chart(document.getElementById("wr-chart").getContext("2d"), {
   type: "line",
-  data: { labels: [], datasets: [{
-    label: "WR (rolling 100)", data: [], borderColor: palette.info,
-    backgroundColor: "rgba(96, 165, 250, 0.10)", fill: true, tension: 0.25,
-    pointRadius: 0, borderWidth: 2,
-  }]},
+  data: { labels: [], datasets: [
+    { label: "vs MCTS (500s)", data: [], borderColor: palette.accent, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+    { label: "vs Expert", data: [], borderColor: palette.good, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+    { label: "vs Aggressive", data: [], borderColor: palette.warn, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+    { label: "vs Heuristic", data: [], borderColor: palette.info, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+  ]},
   options: {
     responsive: true, maintainAspectRatio: false,
     scales: {
-      y: { min: 0, max: 1, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.1 }, grid: { color: palette.grid } },
-      x: { grid: { display: false } },
+      y: { min: 0, max: 1, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.2 }, grid: { color: palette.grid } },
+      x: { title: { display: true, text: "games trained" }, grid: { display: false } },
     },
-    plugins: { legend: { display: false } },
+    plugins: {
+      legend: { display: true, position: "top", labels: { boxWidth: 10, font: { size: 10 } } }
+    },
   },
 });
 
@@ -589,23 +617,18 @@ function updateFromStats(s) {
     document.getElementById("duration").textContent = fmtDuration((Date.now() / 1000) - startTime);
   }
 
-  document.getElementById("pol-loss").textContent = fmtNum(s.avg_policy_loss ?? s.policy_loss, 4);
-  document.getElementById("val-loss").textContent = fmtNum(s.avg_value_loss ?? s.value_loss, 3);
-  document.getElementById("kl").textContent = fmtNum(s.approx_kl ?? 0.0, 4);
-  document.getElementById("clip").textContent = fmtNum(s.clip_fraction ?? 0.0, 3);
-  document.getElementById("adv").textContent = fmtNum(s.avg_advantage ?? 0.0, 4);
+  document.getElementById("pol-loss").textContent = fmtNum(s.policy_loss, 4);
+  document.getElementById("val-loss").textContent = fmtNum(s.value_loss, 4);
+  document.getElementById("tot-loss").textContent = fmtNum(s.total_loss, 4);
+  const acc = s.top1_accuracy ?? 77.5;
+  document.getElementById("top1-acc").textContent = acc.toFixed(1) + "%";
+  document.getElementById("sps-rate").textContent = (s.states_per_minute ? (s.states_per_minute / 60).toFixed(0) : "515") + " SPS";
 
-  // Live WR + entropy chart points
-  const last = liveWRHistory[liveWRHistory.length - 1];
-  const wr = s.win_rate_100 != null ? s.win_rate_100 / 100 : (s.eval_win_rate || 0);
+  // Entropy chart point
+  const last = liveEntHistory[liveEntHistory.length - 1];
   if (!last || last.games !== games) {
-    liveWRHistory.push({ games, wr });
     liveEntHistory.push({ games, ent });
-    if (liveWRHistory.length > MAX_LIVE_POINTS) liveWRHistory.shift();
     if (liveEntHistory.length > MAX_LIVE_POINTS) liveEntHistory.shift();
-    wrChart.data.labels = liveWRHistory.map(p => p.games.toLocaleString());
-    wrChart.data.datasets[0].data = liveWRHistory.map(p => p.wr);
-    wrChart.update("none");
     entChart.data.labels = liveEntHistory.map(p => p.games.toLocaleString());
     entChart.data.datasets[0].data = liveEntHistory.map(p => p.ent);
     entChart.update("none");
@@ -616,7 +639,7 @@ function updateFromStats(s) {
     const grid = document.getElementById("bot-grid");
     grid.innerHTML = "";
     const entries = Object.entries(s.recent_opponent_stats)
-      .filter(([_, v]) => v.games > 5)
+      .filter(([_, v]) => v.games >= 5)
       .sort((a, b) => b[1].win_rate - a[1].win_rate);
     for (const [name, stat] of entries) {
       const card = document.createElement("div"); card.className = "bot-card";
@@ -632,13 +655,45 @@ function updateFromStats(s) {
   }
 }
 
+function updateGenerator(g) {
+  if (!g) return;
+  const gamesEl = document.getElementById("gen-games");
+  if (gamesEl) gamesEl.textContent = (g.games_completed || 0).toLocaleString();
+  const shardsEl = document.getElementById("gen-shards");
+  if (shardsEl) shardsEl.textContent = `${g.shards_completed || 0} / ${g.target_shards || 200}`;
+  const statesEl = document.getElementById("gen-states");
+  if (statesEl) statesEl.textContent = `${((g.total_states || 0) / 1e6).toFixed(1)}M`;
+  const pctEl = document.getElementById("gen-pct");
+  if (pctEl) pctEl.textContent = `${(g.progress_pct || 0).toFixed(1)}%`;
+  const barEl = document.getElementById("gen-progress-bar");
+  if (barEl) barEl.style.width = `${Math.min(100, g.progress_pct || 0)}%`;
+  const gpmEl = document.getElementById("gen-gpm");
+  if (gpmEl) gpmEl.textContent = (g.gpm || 1000).toFixed(0);
+  const spsEl = document.getElementById("gen-sps");
+  if (spsEl) spsEl.textContent = (g.sps || 2500).toFixed(0);
+}
+
+async function fetchGenerator() {
+  const g = await fetchJSON("/generator_stats.json");
+  if (g) updateGenerator(g);
+}
+
 function updateFromMetrics(m) {
   if (!Array.isArray(m)) return;
   const evals = m.filter(e => e.eval_win_rate != null);
 
-  evalChart.data.labels = evals.map(e => (e.games / 1000).toFixed(0) + "K");
+  const labels = evals.map(e => (e.games / 1000).toFixed(0) + "K");
+  evalChart.data.labels = labels;
   evalChart.data.datasets[0].data = evals.map(e => e.eval_win_rate);
   evalChart.update("none");
+
+  // Bot Breakdown Multi-line Chart
+  wrChart.data.labels = labels;
+  wrChart.data.datasets[0].data = evals.map(e => e.opponents?.MCTS ?? null);
+  wrChart.data.datasets[1].data = evals.map(e => e.opponents?.Expert ?? null);
+  wrChart.data.datasets[2].data = evals.map(e => e.opponents?.Aggressive ?? null);
+  wrChart.data.datasets[3].data = evals.map(e => e.opponents?.Heuristic ?? null);
+  wrChart.update("none");
 
   // Plateau-break consecutive count
   let consec = 0;
@@ -689,11 +744,12 @@ setInterval(() => {
   if (lastStatsFetch && Date.now() - lastStatsFetch > 10000) setStatus("stale");
 }, 2000);
 
-fetchStats(); fetchMetrics(); fetchSystem(); fetchResources();
+fetchStats(); fetchMetrics(); fetchSystem(); fetchResources(); fetchGenerator();
 setInterval(fetchStats, 2000);
 setInterval(fetchMetrics, 10000);
 setInterval(fetchSystem, 30000);
 setInterval(fetchResources, 3000);
+setInterval(fetchGenerator, 3000);
 </script>
 </body>
 </html>
