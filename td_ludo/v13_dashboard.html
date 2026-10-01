@@ -323,17 +323,17 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
     pointBackgroundColor: (ctx) => {
       const v = ctx.raw;
       if (v == null) return palette.muted;
-      if (v >= PLATEAU_TARGET)   return palette.good;   // beat V13.5 family ceiling
-      if (v >= V151_SL_BASELINE) return palette.gold;   // at/above SL baseline (don't regress)
-      if (v >= 0.60)             return palette.warn;   // not regressing too badly
-      return palette.bad;                                // significant regression (V15-collapse territory)
+      if (v >= 0.50)   return palette.good;   // parity or above in 2-player zero-sum
+      if (v >= 0.35)   return palette.gold;   // strong competitive tier
+      if (v >= 0.20)   return palette.warn;   // learning phase
+      return palette.bad;
     },
     borderWidth: 2,
   }]},
   options: {
     responsive: true, maintainAspectRatio: false,
     scales: {
-      y: { min: 0.60, max: 0.95, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.05 }, grid: { color: palette.grid } },
+      y: { min: 0.0, max: 0.65, ticks: { callback: (v) => (v*100).toFixed(0) + "%", stepSize: 0.10 }, grid: { color: palette.grid } },
       x: { title: { display: true, text: "games trained" }, grid: { display: false } },
     },
     plugins: { legend: { display: false } },
@@ -675,10 +675,10 @@ function updateFromMetrics(m) {
     const latestEl = document.getElementById("latest-eval");
     latestEl.textContent = (latest*100).toFixed(1) + "%";
     latestEl.className = "big-number";
-    if (latest >= PLATEAU_TARGET)        latestEl.classList.add("good"); // ≥85% — beat V13.5 ceiling
-    else if (latest >= V151_SL_BASELINE) latestEl.classList.add("gold"); // at/above SL baseline
-    else if (latest >= 0.60)             latestEl.classList.add("warn"); // soft regression
-    else                                 latestEl.classList.add("bad");  // V15-collapse territory
+    if (latest >= 0.50)      latestEl.classList.add("good"); // ≥50% — parity or above
+    else if (latest >= 0.35) latestEl.classList.add("gold"); // ≥35% — competitive tier
+    else if (latest >= 0.20) latestEl.classList.add("warn"); // active learning
+    else                     latestEl.classList.add("bad");
 
     document.getElementById("latest-eval-detail").textContent =
       `at G=${(evals[evals.length-1].games/1000).toFixed(1)}K · best ${(best*100).toFixed(1)}% · ${evals.length} evals so far`;
