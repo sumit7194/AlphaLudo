@@ -45,12 +45,8 @@ fn test_full_game_simulation() {
     while !s.is_terminal && moves < 600 {
         let cp = s.current_player as usize;
         let d = rng.gen_range(1..=6);
-        s.set_dice(d);
-
-        let (_, count) = s.legal_moves();
-        if count == 0 {
-            s.pass_turn();
-            continue;
+        if !s.roll(d) {
+            continue; // no legal move or three-six forfeit: turn already passed
         }
 
         let a = bots[cp].select_move(&s);

@@ -210,3 +210,109 @@ pub fn encode_state_v17_into(state: &GameState, out: &mut [f32]) {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V15 2-player per-cell triplet encoder (15, 15, 3) — bit-exact port of
+// td_ludo_v15/game/encoder.py::encode_frame (verified against it on real
+// shard states). Lets search engines evaluate the V15 GraphTransformer
+// without a Python round-trip per position.
+// ─────────────────────────────────────────────────────────────────────────────
+pub const V15_FRAME_SIZE: usize = BOARD_SIZE * BOARD_SIZE * 3;
+const V15_MD: [u8; 2] = [0, 0];
+const V15_OD: [u8; 2] = [14, 14];
+const V15_MS: [u8; 2] = [7, 6];
+const V15_OS: [u8; 2] = [7, 8];
+/// Mover-POV cell of every own base token (the Python cell helper maps BASE to
+/// the canonical home counter (2, 2), regardless of token slot).
+pub const V15_BASE_CELL: usize = 2 * BOARD_SIZE + 2;
+
+#[inline(always)]
+fn v15_set(out: &mut [i8], r: u8, c: u8, v: [i8; 3]) {
+    let i = ((r as usize) * BOARD_SIZE + c as usize) * 3;
+    out[i] = v[0];
+    out[i + 1] = v[1];
+    out[i + 2] = v[2];
+}
+
+/// The other active seat (2-player).
+#[inline]
+pub fn v15_opp_2p(state: &GameState, pov: u8) -> u8 {
+    for p in 0..4u8 {
+        if p != pov && state.active_players[p as usize] {
+            return p;
+        }
+    }
+    pov
+}
+
+/// Mover-POV cell index (0..225) of `pov`'s own token at `pos` (not HOME).
+#[inline]
+pub fn v15_own_cell(pos: i8, pov: u8) -> usize {
+    if pos == BASE_POS {
+        return V15_BASE_CELL;
+    }
+    let (r, c) = position_to_cell_in_pov(pos, pov, pov, 0);
+    (r as usize) * BOARD_SIZE + c as usize
+}
+
+/// Encodes `state` from `pov`'s perspective into a (15, 15, 3) int8 buffer.
+pub fn encode_v15_2p_into(state: &GameState, pov: u8, out: &mut [i8]) {
+    debug_assert_eq!(out.len(), V15_FRAME_SIZE);
+    out.fill(-1);
+    let opp = v15_opp_2p(state, pov);
+
+    // 1. main path (own route): a=0, b=0, c=safe
+    for (pos, rc) in PATH_COORDS_P0.iter().enumerate() {
+        let safe = matches!(pos, 0 | 8 | 13 | 21 | 26 | 34 | 39 | 47);
+        v15_set(out, rc[0], rc[1], [0, 0, safe as i8]);
+    }
+    // 2-3. my home base + home stretch
+    for rc in HOME_BASE_CELLS_4P[0].iter() {
+        v15_set(out, rc[0], rc[1], [0, -1, 1]);
+    }
+    for rc in HOME_STRETCH_CELLS_4P[0].iter() {
+        v15_set(out, rc[0], rc[1], [0, -1, 1]);
+    }
+    // 4-5. opp home base + home stretch
+    for rc in HOME_BASE_CELLS_4P[2].iter() {
+        v15_set(out, rc[0], rc[1], [-1, 0, -1]);
+    }
+    for rc in HOME_STRETCH_CELLS_4P[2].iter() {
+        v15_set(out, rc[0], rc[1], [-1, 0, -1]);
+    }
+    // 6. tokens
+    let own = &state.positions[pov as usize];
+    let oppp = &state.positions[opp as usize];
+    let own_base = own.iter().filter(|&&p| p == BASE_POS).count();
+    let opp_base = oppp.iter().filter(|&&p| p == BASE_POS).count();
+    for (i, rc) in HOME_BASE_CELLS_4P[0].iter().enumerate() {
+        out[((rc[0] as usize) * BOARD_SIZE + rc[1] as usize) * 3] = (i < own_base) as i8;
+    }
+    for (i, rc) in HOME_BASE_CELLS_4P[2].iter().enumerate() {
+        out[((rc[0] as usize) * BOARD_SIZE + rc[1] as usize) * 3 + 1] = (i < opp_base) as i8;
+    }
+    for &pos in own.iter() {
+        if pos == HOME_POS || pos == BASE_POS {
+            continue;
+        }
+        let (r, c) = position_to_cell_in_pov(pos, pov, pov, 0);
+        let i = ((r as usize) * BOARD_SIZE + c as usize) * 3;
+        out[i] = out[i].max(0) + 1;
+    }
+    for &pos in oppp.iter() {
+        if pos == HOME_POS || pos == BASE_POS {
+            continue;
+        }
+        let (r, c) = position_to_cell_in_pov(pos, opp, pov, 0);
+        let i = ((r as usize) * BOARD_SIZE + c as usize) * 3 + 1;
+        out[i] = out[i].max(0) + 1;
+    }
+    // 7. special cells
+    let cp = state.current_player;
+    let dice = state.current_dice_roll as i8;
+    v15_set(out, V15_MD[0], V15_MD[1], [-1, -1, if cp == pov && dice > 0 { dice } else { -1 }]);
+    v15_set(out, V15_OD[0], V15_OD[1], [-1, -1, if cp == opp && dice > 0 { dice } else { -1 }]);
+    let scored = |p: u8| state.positions[p as usize].iter().filter(|&&x| x == HOME_POS).count() as i8;
+    v15_set(out, V15_MS[0], V15_MS[1], [scored(pov), -1, -1]);
+    v15_set(out, V15_OS[0], V15_OS[1], [scored(opp), -1, -1]);
+}

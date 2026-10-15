@@ -192,3 +192,59 @@ fn test_2player_game_transitions() {
     assert_eq!(s4.current_player, 2); // To P2!
 }
 
+
+/// Audit 2026-10-02: a third consecutive six must forfeit the turn to the
+/// opponent. The old caller pattern (set_dice -> legal_moves -> pass_turn) passed
+/// twice, handing the turn back to the player who rolled three sixes.
+#[test]
+fn three_six_forfeit_is_not_double_passed() {
+    let mut s = GameState::new_2p();
+    s.positions[0][0] = 10;
+    for _ in 0..2 {
+        assert!(s.roll(6));
+        let (lm, _) = s.legal_moves();
+        s = s.apply_move(lm[0]);
+        assert_eq!(s.current_player, 0, "a six grants a bonus turn");
+    }
+    assert!(!s.roll(6), "third six is a forfeit, not a decision");
+    assert_eq!(s.current_player, 2, "turn must pass to the opponent");
+    assert_eq!(s.current_dice_roll, 0);
+    assert_eq!(s.consecutive_sixes[0], 0, "counter resets after forfeit");
+}
+
+/// roll() passes exactly once when the roller has no legal move.
+#[test]
+fn roll_with_no_legal_move_passes_once() {
+    let mut s = GameState::new_2p(); // everyone in base
+    assert!(!s.roll(3));
+    assert_eq!(s.current_player, 2);
+    assert_eq!(s.current_dice_roll, 0);
+}
+
+/// 4-player: a forfeit must go to the NEXT seat, not skip it.
+#[test]
+fn three_six_forfeit_4p_goes_to_next_seat() {
+    let mut s = GameState::new_4p();
+    s.positions[0][0] = 10;
+    for _ in 0..2 {
+        assert!(s.roll(6));
+        let (lm, _) = s.legal_moves();
+        s = s.apply_move(lm[0]);
+    }
+    assert!(!s.roll(6));
+    assert_eq!(s.current_player, 1);
+}
+
+/// A 6 rolled with no legal move ends the turn; the next turn starts a fresh
+/// six streak (three-sixes forfeit counts sixes within one turn).
+#[test]
+fn six_with_no_legal_move_resets_streak() {
+    let mut s = GameState::new_2p();
+    // Player 0: all tokens home except one at relative 55 (needs exactly 1 to finish).
+    s.positions[0] = [99, 99, 99, 55];
+    s.scores[0] = 3;
+    s.current_player = 0;
+    assert!(!s.roll(6), "a 6 cannot move the token at 55");
+    assert_eq!(s.consecutive_sixes[0], 0, "streak must not carry into the next turn");
+    assert_eq!(s.current_player, 2);
+}

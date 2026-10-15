@@ -48,13 +48,10 @@ pub fn play_game_record(bot_types: [&str; 4]) -> (Vec<StepRecord>, i8) {
     while !state.is_terminal && moves_count < 800 {
         let cp = state.current_player;
         let d = rng.gen_range(1..=6);
-        state.set_dice(d);
-
-        let (legal, count) = state.legal_moves();
-        if count == 0 {
-            state.pass_turn();
-            continue;
+        if !state.roll(d) {
+            continue; // no legal move or three-six forfeit: turn already passed
         }
+        let (legal, count) = state.legal_moves();
 
         // Encode state in mover's POV
         let mut frame = [-1i8; BOARD_SIZE * BOARD_SIZE * 5];
@@ -204,13 +201,10 @@ pub fn play_alphazero_2p_game(
     while !state.is_terminal && move_count < 600 {
         let cp = state.current_player;
         let d = rng.gen_range(1..=6);
-        state.set_dice(d);
-
-        let (legal, count) = state.legal_moves();
-        if count == 0 {
-            state.pass_turn();
-            continue;
+        if !state.roll(d) {
+            continue; // no legal move or three-six forfeit: turn already passed
         }
+        let (legal, count) = state.legal_moves();
 
         let mut legal_mask = [0.0f32; 4];
         for &t in &legal[..count] {
@@ -307,30 +301,76 @@ pub fn generate_alphazero_2p_batch_py<'py>(
     Ok((py_frames, py_masks, py_pis, py_values, py_actions))
 }
 
+fn state_from_py(
+    positions: &Bound<'_, PyArray2<i8>>,
+    current_player: u8,
+    dice_roll: u8,
+    consecutive_sixes: u8,
+) -> PyResult<GameState> {
+    let pos_readonly = positions.readonly();
+    let pos_slice = pos_readonly.as_slice()?;
+    if pos_slice.len() != 16 {
+        return Err(pyo3::exceptions::PyValueError::new_err("positions array must have exactly 16 elements (4x4)"));
+    }
+    let mut state = GameState::new_2p();
+    for p in 0..4 {
+        for t in 0..4 {
+            state.positions[p][t] = pos_slice[p * 4 + t];
+        }
+        state.scores[p] = state.positions[p].iter().filter(|&&pos| pos == 99).count() as u8;
+    }
+    state.current_player = current_player;
+    state.current_dice_roll = dice_roll;
+    state.consecutive_sixes[current_player as usize] = consecutive_sixes.min(2);
+    Ok(state)
+}
+
+/// Single-state move selection for any native 2-player bot ("depth2",
+/// "expectimax", "mcts"), for fast evaluation against fixed references.
+pub fn select_bot_move_2p_py(
+    bot: &str,
+    positions: &Bound<'_, PyArray2<i8>>,
+    current_player: u8,
+    dice_roll: u8,
+    consecutive_sixes: u8,
+    num_simulations: usize,
+) -> PyResult<u8> {
+    let state = state_from_py(positions, current_player, dice_roll, consecutive_sixes)?;
+    let (legal, count) = state.legal_moves();
+    if count == 0 {
+        return Ok(0);
+    }
+    if count == 1 {
+        return Ok(legal[0]);
+    }
+    let seat = Some(current_player);
+    Ok(match bot {
+        "depth2" | "Depth2" => Depth2ExpectimaxBot::new(seat).select_move(&state),
+        "expectimax" | "Expectimax" => ExpectimaxBot::new(seat).select_move(&state),
+        "mcts" | "MCTS" => TwoPlayerMCTSBot::new(seat, num_simulations).search_with_temp(&state, 0.0).0,
+        "heuristic" | "Heuristic" | "expert" | "Expert" => {
+            let kind = if bot.eq_ignore_ascii_case("expert") { ludo_search::ScriptedKind::Expert } else { ludo_search::ScriptedKind::Heuristic };
+            let mut b = ludo_search::ScriptedBot::new(kind, seat);
+            b.noise = num_simulations != 0; // num_simulations=0 -> deterministic (tests)
+            b.select_move(&state)
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown bot {other:?} (depth2 | expectimax | mcts | heuristic | expert)"
+            )))
+        }
+    })
+}
+
 /// Single-state move selection using Expecti-MCTS in native Rust for evaluation.
 pub fn select_mcts_move_2p_py(
     positions: &Bound<'_, PyArray2<i8>>,
     current_player: u8,
     dice_roll: u8,
     num_simulations: usize,
+    consecutive_sixes: u8,
 ) -> PyResult<u8> {
-    let pos_readonly = positions.readonly();
-    let pos_slice = pos_readonly.as_slice()?;
-    if pos_slice.len() != 16 {
-        return Err(pyo3::exceptions::PyValueError::new_err("positions array must have exactly 16 elements (4x4)"));
-    }
-
-    let mut state = GameState::new_2p();
-    for p in 0..4 {
-        for t in 0..4 {
-            state.positions[p][t] = pos_slice[p * 4 + t];
-        }
-    }
-    state.current_player = current_player;
-    state.current_dice_roll = dice_roll;
-    for p in 0..4 {
-        state.scores[p] = state.positions[p].iter().filter(|&&pos| pos == 99).count() as u8;
-    }
+    let state = state_from_py(positions, current_player, dice_roll, consecutive_sixes)?;
 
     let (legal, count) = state.legal_moves();
     if count == 0 {

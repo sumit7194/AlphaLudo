@@ -56,12 +56,8 @@ fn main() {
             while !state.is_terminal && moves < 800 {
                 let cp = state.current_player as usize;
                 let d = rng.gen_range(1..=6);
-                state.set_dice(d);
-
-                let (_, count) = state.legal_moves();
-                if count == 0 {
-                    state.pass_turn();
-                    continue;
+                if !state.roll(d) {
+                    continue; // no legal move or three-six forfeit: turn already passed
                 }
 
                 let bot_id = seat_to_bot[cp];

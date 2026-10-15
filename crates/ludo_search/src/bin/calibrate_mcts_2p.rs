@@ -26,13 +26,10 @@ fn main() {
 
         while !state.is_terminal && move_count < target_depth {
             let d = rng.gen_range(1..=6);
-            state.set_dice(d);
-
-            let (legal, count) = state.legal_moves();
-            if count == 0 {
-                state.pass_turn();
-                continue;
+            if !state.roll(d) {
+                continue; // no legal move or three-six forfeit: turn already passed
             }
+            let (legal, count) = state.legal_moves();
 
             let pick = rng.gen_range(0..count);
             state = state.apply_move(legal[pick]);
@@ -138,12 +135,8 @@ fn main() {
             while !state.is_terminal && mc < 600 {
                 let cp = state.current_player;
                 let d = rng.gen_range(1..=6);
-                state.set_dice(d);
-
-                let (_, count) = state.legal_moves();
-                if count == 0 {
-                    state.pass_turn();
-                    continue;
+                if !state.roll(d) {
+                    continue; // no legal move or three-six forfeit: turn already passed
                 }
 
                 let action = if cp == seat_a {

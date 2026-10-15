@@ -112,9 +112,39 @@ impl GameState {
         self.current_dice_roll = dice;
     }
 
+    /// Rolls `dice` for the current player and resolves everything that follows
+    /// automatically. Returns `true` iff the current player now has at least one
+    /// legal move and must choose; otherwise the turn has ALREADY been passed.
+    ///
+    /// Use this instead of `set_dice` + `legal_moves` + `pass_turn`. That pattern
+    /// was used by every game loop in this workspace and is wrong after a third
+    /// consecutive six: `set_dice` already forfeits (passes the turn, dice = 0),
+    /// `legal_moves` then reports 0 moves because dice == 0, and the caller passes
+    /// AGAIN — in 2-player that hands the turn straight back to the player who
+    /// rolled three sixes; in 4-player it skips the next player. Found in the
+    /// 2026-10-02 audit; reproduced in `three_six_forfeit_is_not_double_passed`.
+    #[inline]
+    pub fn roll(&mut self, dice: u8) -> bool {
+        self.set_dice(dice);
+        if self.current_dice_roll == 0 {
+            return false; // three-six forfeit: set_dice already passed the turn
+        }
+        let (_, count) = self.legal_moves();
+        if count == 0 {
+            self.pass_turn();
+            return false;
+        }
+        true
+    }
+
     /// Passes turn to the next active player when no legal moves are available.
+    ///
+    /// The three-sixes forfeit counts sixes within ONE turn, so the passing
+    /// player's streak is cleared. (Before 2026-10-03 a 6 rolled with no legal
+    /// move kept the streak alive into that player's NEXT turn.)
     #[inline]
     pub fn pass_turn(&mut self) {
+        self.consecutive_sixes[self.current_player as usize] = 0;
         self.current_player = self.next_player();
         self.current_dice_roll = 0;
     }

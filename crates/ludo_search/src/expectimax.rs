@@ -54,7 +54,12 @@ impl LudoBot for ExpectimaxBot {
             let mut expected = 0.0;
             for d in 1..=6 {
                 let mut sim = after_mine;
-                sim.set_dice(d);
+                // roll() resolves a three-six forfeit / no-legal-move pass itself;
+                // either way no move is made and the position is unchanged.
+                if !sim.roll(d) {
+                    expected += score_position(me, &sim) / 6.0;
+                    continue;
+                }
                 let cp = sim.current_player;
 
                 if cp == me {
@@ -64,11 +69,6 @@ impl LudoBot for ExpectimaxBot {
                 }
 
                 let (opp_legal, opp_count) = sim.legal_moves();
-                if opp_count == 0 {
-                    sim.pass_turn();
-                    expected += score_position(me, &sim) / 6.0;
-                    continue;
-                }
 
                 // Opponent picks greedy best move
                 let mut best_opp_score = -f32::INFINITY;
@@ -141,20 +141,21 @@ impl LudoBot for AggressiveExpectimaxBot {
             let mut expected = 0.0;
             for d in 1..=6 {
                 let mut sim = after_mine;
-                sim.set_dice(d);
+                // roll() resolves a three-six forfeit / no-legal-move pass itself;
+                // either way no move is made and the position is unchanged.
+                if !sim.roll(d) {
+                    expected += score_aggressive(me, &sim) / 6.0;
+                    continue;
+                }
                 let cp = sim.current_player;
 
                 if cp == me {
+                    // Bonus turn for me!
                     expected += score_aggressive(me, &sim) / 6.0;
                     continue;
                 }
 
                 let (opp_legal, opp_count) = sim.legal_moves();
-                if opp_count == 0 {
-                    sim.pass_turn();
-                    expected += score_aggressive(me, &sim) / 6.0;
-                    continue;
-                }
 
                 // Opponent picks greedy response
                 let mut best_opp_score = -f32::INFINITY;
@@ -195,6 +196,13 @@ impl Depth2ExpectimaxBot {
     }
 }
 
+/// Terminal payoff for Depth2's expectation. Losing terminals were previously
+/// scored 0.0 while ordinary positions routinely score negative (every base
+/// token is -10), so "let the opponent win" could outrank a merely bad move.
+/// Fixed 2026-10-02 (audit): losses are -WIN_VALUE, and a loss on the second
+/// reply ply is now detected instead of being passed to score_position.
+const WIN_VALUE: f32 = 1e9;
+
 impl LudoBot for Depth2ExpectimaxBot {
     fn name(&self) -> &'static str {
         "Depth2Expectimax"
@@ -217,7 +225,7 @@ impl LudoBot for Depth2ExpectimaxBot {
             let after_mine = state.apply_move(a);
 
             if after_mine.is_terminal {
-                let val = if after_mine.winner == me as i8 { 1e9 } else { 0.0 };
+                let val = if after_mine.winner == me as i8 { WIN_VALUE } else { -WIN_VALUE };
                 if val > best_q {
                     best_q = val;
                     best_action = a;
@@ -229,17 +237,13 @@ impl LudoBot for Depth2ExpectimaxBot {
             let mut outer_expected = 0.0;
             for d1 in 1..=6 {
                 let mut sim1 = after_mine;
-                sim1.set_dice(d1);
+                // roll() owns forfeit/pass resolution. The old set_dice -> pass_turn
+                // pattern double-passed after a third six, so the WRONG player
+                // rolled in the inner ply.
+                let has_move1 = sim1.roll(d1);
                 let cp1 = sim1.current_player;
-
-                if sim1.is_terminal {
-                    outer_expected += (if sim1.winner == me as i8 { 1e9 } else { 0.0 }) / 6.0;
-                    continue;
-                }
-
                 let (legal1, count1) = sim1.legal_moves();
-                let after_opp1 = if count1 == 0 {
-                    sim1.pass_turn();
+                let after_opp1 = if !has_move1 {
                     sim1
                 } else {
                     let mut best_score1 = -f32::INFINITY;
@@ -256,7 +260,7 @@ impl LudoBot for Depth2ExpectimaxBot {
                 };
 
                 if after_opp1.is_terminal {
-                    outer_expected += (if after_opp1.winner == me as i8 { 1e9 } else { 0.0 }) / 6.0;
+                    outer_expected += (if after_opp1.winner == me as i8 { WIN_VALUE } else { -WIN_VALUE }) / 6.0;
                     continue;
                 }
 
@@ -264,17 +268,10 @@ impl LudoBot for Depth2ExpectimaxBot {
                 let mut inner_expected = 0.0;
                 for d2 in 1..=6 {
                     let mut sim2 = after_opp1;
-                    sim2.set_dice(d2);
+                    let has_move2 = sim2.roll(d2);
                     let cp2 = sim2.current_player;
-
-                    if sim2.is_terminal {
-                        inner_expected += (if sim2.winner == me as i8 { 1e9 } else { 0.0 }) / 6.0;
-                        continue;
-                    }
-
                     let (legal2, count2) = sim2.legal_moves();
-                    let after_opp2 = if count2 == 0 {
-                        sim2.pass_turn();
+                    let after_opp2 = if !has_move2 {
                         sim2
                     } else {
                         let mut best_score2 = -f32::INFINITY;
@@ -290,7 +287,13 @@ impl LudoBot for Depth2ExpectimaxBot {
                         sim2.apply_move(best_a2)
                     };
 
-                    inner_expected += score_position(me, &after_opp2) / 6.0;
+                    // A loss on the opponent's second reply used to fall straight
+                    // through to score_position, so it read as an ordinary position.
+                    inner_expected += if after_opp2.is_terminal {
+                        if after_opp2.winner == me as i8 { WIN_VALUE } else { -WIN_VALUE }
+                    } else {
+                        score_position(me, &after_opp2)
+                    } / 6.0;
                 }
 
                 outer_expected += inner_expected / 6.0;
