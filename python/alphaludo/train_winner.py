@@ -171,7 +171,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
 def start_dashboard(stats_getter, port: int = 8846):
     handler = lambda *args, **kwargs: DashboardHandler(*args, stats_getter=stats_getter, **kwargs)
-    server = http.server.HTTPServer(("0.0.0.0", port), handler)
+    server = http.server.HTTPServer(("127.0.0.1", port), handler)  # local only
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server

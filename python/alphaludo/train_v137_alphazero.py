@@ -147,7 +147,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self._send_json(b'{"games": []}')
             if self.path == "/api/system":
                 return self._serve_system()
-            return super().do_GET()
+            # Only the landing page and the /api routes (no static fallback over td_ludo/).
+            self.send_response(404)
+            self.end_headers()
         except (ConnectionResetError, BrokenPipeError):
             pass
 
@@ -180,7 +182,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _send_json(self, data: bytes):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
@@ -195,7 +196,7 @@ def start_dashboard(port: int, stats_path: str, metrics_path: str, dashboard_dir
         metrics_path=metrics_path,
         landing=landing,
     )
-    server = HTTPServer(("0.0.0.0", port), handler)
+    server = HTTPServer(("127.0.0.1", port), handler)  # local only
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"[Dashboard] Server live at http://localhost:{port}/{landing}")

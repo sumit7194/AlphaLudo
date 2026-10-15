@@ -92,7 +92,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self._send_json(b'{"games": []}')
             if self.path == "/api/system":
                 return self._serve_system()
-            return super().do_GET()
+            # Only the landing page and the /api routes are served (no static fallback:
+            # the handler's directory is all of td_ludo/, including checkpoints and logs).
+            self.send_response(404)
+            self.end_headers()
         except (ConnectionResetError, BrokenPipeError):
             pass
 
@@ -125,7 +128,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _send_json(self, data: bytes):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
@@ -136,7 +138,7 @@ def start_dashboard(port: int, stats_path: str, metrics_path: str, dashboard_dir
         DashboardHandler, directory=dashboard_dir, stats_path=stats_path, metrics_path=metrics_path,
     )
     try:
-        server = HTTPServer(("0.0.0.0", port), handler)
+        server = HTTPServer(("127.0.0.1", port), handler)  # local only, like the other dashboards
     except OSError as e:
         print(f"[Dashboard] could not bind port {port}: {e} — continuing without dashboard", flush=True)
         return
