@@ -1,0 +1,66 @@
+{
+ "note": "4P SL teacher and top 4P ladder rung (2026-10-07). Max^n MCTS, 3000 simulations, legacy leaf/rollouts, root prior = exact full-round search (round4.rs, 3 chance layers) on a linear me-vs-others utility over the eval4 features, SPSA-tuned for win rate (v17/tune_round4.py, iter 70). One seat vs 3 copies (fair 25%): 39.9% vs expectimax, 35.2% vs depth2 (n=1000); head to head vs legacy MaxN-3000: 26.3% as the lone seat vs 19.5% the other way round (n=600). Search scales: prior alone 33.7%, MaxN-1000 37.8%, MaxN-3000 39.9% vs expectimax (same seeds).",
+ "features": [
+  "progress",
+  "base",
+  "scored",
+  "lane",
+  "exposed",
+  "threats",
+  "progress_x_stage",
+  "all_in_base",
+  "laggard",
+  "order0",
+  "order1",
+  "order2",
+  "risk",
+  "risk_x_order0",
+  "threat_stake",
+  "progress_sq"
+ ],
+ "spec": {
+  "bot": "maxn",
+  "sims": 3000,
+  "prior": {
+   "bot": "round",
+   "leaf": "lin",
+   "weights": [
+    1.492448,
+    -1.076337,
+    0.262727,
+    -0.15406,
+    -0.529576,
+    0.319037,
+    -0.33365,
+    0.078162,
+    -0.228775,
+    0.526483,
+    0.540177,
+    -0.332631,
+    0.17523,
+    0.03068,
+    0.38639,
+    0.30619
+   ],
+   "opp": [
+    1.480911,
+    -0.628942,
+    1.587289,
+    0.158052,
+    -0.03381,
+    -0.17272,
+    0.246847,
+    0.163272,
+    0.287305,
+    0.442876,
+    -0.107867,
+    -0.056424,
+    -0.096918,
+    0.091734,
+    0.601896,
+    -0.062316
+   ],
+   "rolls": 3
+  }
+ }
+}

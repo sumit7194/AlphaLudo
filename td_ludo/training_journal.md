@@ -6276,3 +6276,683 @@ architecture hurts". Scripted and ready: `./launch_v16_mixed.sh`. A third arm
   - Iteration 8: +3,114 states generated in 2.97s. Total loss: **0.8791** (Policy: 0.6279, Value: **0.2512**). Total states: 24,968.
   - Value Loss halving reflects model learning accurate zero-sum terminal outcomes $z \in \{-1, +1\}$.
 
+
+---
+
+## AUDIT — V15.3 search distillation + the Rust MCTS teacher (2026-10-02)
+
+Full code review of the Rust search crate, the 1M-game teacher dataset and the
+V15.3 GraphTransformer SL trainer, with every claim below **measured**, not
+inferred. Run paused at step 123,065 (31.5M states) via `touch stop`; in-RAM
+model saved and archived as `checkpoints/v15_3/model_pre_fix_step123k.pt`
+(+ `model_best_pre_fix.pt`) as the baseline for the fixed run.
+
+### HEADLINE — the "MCTS teacher" is the weakest player in its own dataset
+
+Game boundaries recovered exactly from all 200 shards (5,000 games each;
+seat-0 sanity 50.35%). The generator alternates seats by `game_num` and Rayon's
+ordered `collect` keeps games in order, so each game's MCTS seat is known.
+
+```
+MCTS(3000) vs Depth2Expectimax, all 1,000,000 dataset games   15.23% ±0.04%
+same, independently re-measured with the real crates, n=400   16.2%  ±1.8%
+```
+
+The dataset is **48.6% MCTS moves / 51.4% Depth2 moves with no field saying
+which** — the student imitates a blend of a 15%-player and an 85%-player.
+
+**Student vs champion, 1,000 greedy games:** V15.3 `model_best.pt` (step 100k)
+**38.2% ±1.5** vs v15.2 (−7.7σ). Its training eval claimed **0.883** — *higher*
+than the champion's 0.8465. The in-training eval said V15.3 beat the champion;
+head-to-head says it is clearly worse. For scale: twosignal SL measured 0.380
+and the champion's own stage-1 RL init 0.408 vs the same opponent, so V15.3 is
+ordinary SL-from-scratch strength.
+
+### Why the Rust TwoPlayerMCTSBot is weak (crates/ludo_search/src/mcts_2p.rs)
+
+| cause | measurement |
+|---|---|
+| **Blind early game.** Leaf = uniform-random rollout capped at 60 moves, `use_pure_terminal=true` returns 0.0 on cutoff | exact replica of the rollout: **98.5%** of early-game sims return exactly 0.0 (0 scored), 64.8% mid (1–2 scored), 8.1% late (3+) |
+| **No chance nodes.** Each action edge samples ONE dice roll on first expansion and that child is reused for every later simulation — the subtree is conditioned on one frozen roll. Docstring claims "chance-node simulation across dice outcomes (1..6)"; it does not do that | same position, 8 independent searches, generator config: modal-action agreement **49.1% / 55.0% / 61.3%** (early/mid/late) — near coin-flip with 2–4 options |
+| **Dirichlet noise baked into teacher labels.** Generator sets `add_dirichlet=true` then takes argmax; with Q≈0 the noise decides | Dirichlet off lifts early agreement to 73.3% — likely PUCT index tie-breaking when every Q is 0, not better judgement; mid stays 58.6% |
+| **Pass nodes re-expand the parent edge.** A child with 0 legal moves ends selection on the parent's edge, which is re-expanded with a fresh roll and the old subtree orphaned. So outcomes where the next player has no move get re-rolled until one has a move | biases early-game trees toward "opponent rolled a 6" |
+| Rollout calls `set_dice` on a node that already has dice set | double-counts `consecutive_sixes` (spurious three-six forfeits) |
+
+**No flag combination rescues it** (vs Depth2, n=400): generator config 16.2%,
+Dirichlet off 19.5%, Dirichlet off + heuristic leaf 22.2%. Structural.
+
+### Generator (crates/ludo_search/src/bin/generate_sl_teacher.rs)
+
+- Records **both players' moves** with no bot label (see headline).
+- Stores **argmax only**; π is computed and discarded (`let (act, _) = …`), so
+  "distillation" is one-hot imitation.
+- Dirichlet on for teacher labels (above).
+
+### Trainer (python/alphaludo/train_v153_sl.py) — verified on the live checkpoint
+
+1. **Double softmax.** `V15GraphTransformer.forward()` returns probabilities;
+   the trainer applies `log_softmax` to them again. Logged policy loss **0.52**
+   vs true cross-entropy **1.08** (1.52 on multi-legal). The confident-wrong
+   penalty is capped near 1.3 (2 options: floor 0.313, 3: 0.551, 4: 0.744), so
+   above ~62% accuracy the loss *rewards* overconfidence → true entropy
+   **0.30** while the log reports **0.84**.
+2. **Value head cannot represent a loss.** Sigmoid output vs ±1 targets: mean
+   prediction on lost positions 0.085, can never go below 0; best achievable
+   MSE 0.463, so the logged ~0.74 could never approach 0.
+3. **Train/test skew in the scored cells.** The loader rebuilds a C++ state but
+   never sets `scores`; the encoder writes `state.scores` into (7,6)/(7,8). In
+   training those cells are always 0; in eval/play they show the true count.
+   **61.2%** of records contain a finished token.
+4. **Top-1 inflated by forced moves.** 25.9% of records have one legal move.
+   Real decision accuracy **69.2%**, not the logged 78–79%.
+5. **Shards reload only between full passes** — was on 36 of 200 shards. The
+   next pass would have been ~71 h with no intermediate save.
+6. **Checkpointing / resume.** `model_latest.pt` only written at pass end — it
+   was 13.5 h / ~99K steps stale when audited. No `--resume`: a restart begins
+   from random weights (violates AGENTS.md rule 4).
+7. **Eval cannot be trusted.** 15 games/bot (every WR a multiple of 6.67%;
+   Heuristic swung 86.7→60.0 between consecutive evals). Its "MCTS" opponent is
+   this weak engine yet the dashboard hard-codes it as the strongest bot
+   (Elo 1600). `model_best.pt` = max over ~119 noisy evals → selection-biased.
+   Eval loop also omits the three-six forfeit that the Rust data has.
+8. Dashboard game count uses `states // 50`; actual is ~150.7 states/game.
+
+### V13.7 is not AlphaZero
+
+Its targets come from `generate_alphazero_2p_batch` → the same network-free
+`TwoPlayerMCTSBot` (uniform priors + Dirichlet, random-rollout leaves). The
+network never supplies priors or values inside the search, so there is no
+self-improvement loop: it is SL on a fixed (weak) teacher. Same eval issues.
+
+### What is genuinely good
+
+- **Rust rules match the C++ engine exactly** — 0 of 200,000 sampled teacher
+  actions illegal under C++ rules; same spawn/exact-56/bonus/capture/blockade
+  semantics. Rust adds the three-six forfeit inside `set_dice` (C++ leaves it
+  to the Python loop) — consistent with how v15 was trained.
+- Shards are atomic (tmp + rename), seat alternation correct, game boundaries
+  exactly recoverable. Throughput excellent: 1,036 games/min with both bots.
+
+### Housekeeping noted
+
+`checkpoint_backups/` (2.3 GB) no longer exists. The champion survives as the
+serving copy `td_ludo/play/model_weights/v15_2/model_best.pt` (330,000 games,
+best_eval 0.8465, identical 2,373,237 bytes). Both v16 launchers still point at
+`checkpoint_backups/` for their v13.6 / v13.2 opponents.
+
+### Fixes — see the next section.
+
+
+## FIXES — V15.3 audit follow-up (2026-10-02)
+
+Every item from the audit above is fixed, with before/after measured. Nothing
+was launched; the old pipeline is retired (`launch_v153_pipeline.sh` exits with
+a pointer) and the new one is ready (`launch_v153b_pipeline.sh`, not started).
+
+### 1. Rules: the three-six double-pass (every Rust game loop)
+
+`set_dice` already forfeits a third six (turn passed, dice = 0). Every caller
+then did `legal_moves()` → 0 (because dice = 0) → `pass_turn()` AGAIN. In
+2-player that hands the turn straight back to the player who rolled three
+sixes (the forfeit became a free re-roll); in 4-player it skipped the next
+player's turn. Affected: the V15.3 generator, the V13.7 AlphaZero generator,
+the V15-4PW winner generator, Expectimax/Depth2 internal dice loops, MCTS
+rollouts, benchmarks and tests. ~0.46% of turns (1/216).
+
+Fix: `GameState::roll(dice) -> bool` owns forfeit + no-move resolution; all
+call sites use it. Tests: `three_six_forfeit_is_not_double_passed`,
+`roll_with_no_legal_move_passes_once`, `three_six_forfeit_4p_goes_to_next_seat`.
+
+### 2. Depth2Expectimax scored a forced loss as 0.0
+
+A move that let the opponent win was valued 0.0 — the same as an ordinary
+position. Now ±1e9 (`WIN_VALUE`), and second-ply losses are detected.
+
+### 3. A calibrated leaf evaluator (crates/ludo_search/src/evaluator.rs)
+
+9-feature logistic model (`leaf_features`, `LEAF_WEIGHTS`), fitted on
+5,079,506 pre-roll states from 30,000 Depth2-vs-Depth2 games, split by GAME
+(27k/3k): val log-loss **0.5748** vs 0.6929 constant, AUC **0.7615**,
+calibrated within ~0.01 per decile. `leaf_value = tanh(logit/2)` in [-1, 1].
+
+### 4. 2-player Expecti-MCTS rewritten (crates/ludo_search/src/mcts_2p.rs)
+
+Real chance nodes (a child per dice face, fresh roll each simulation); pass /
+forfeit outcomes resolve to the next roller's chance node; leaves = 10-move
+greedy rollout then the evaluator; thread-local arena (no per-sim allocation);
+public API unchanged. vs Depth2Expectimax, seat-alternated:
+
+| engine / leaf | N | win % |
+|---|---|---|
+| pre-audit (random rollout, frozen dice) | 3000 | **15.2** (1M games) |
+| new tree, random-rollout leaf | 3000 | 30.0 |
+| evaluator leaf | 3000 | 58.1 ±1.1 |
+| **greedy rollout d=10 + evaluator (default)** | 3000 | **63.1 ±1.1** |
+| greedy d=5 / d=20 | 3000 | 60.6 / 63.3 |
+| greedy d=10 | 1000 / 10000 | 58.4 / 61.2 |
+| evaluator | 10000 / 30000 | 58.7 / 64.0 |
+| heuristic root prior on | 3000 | 50.8 (hurts; off by default) |
+
+Self-agreement of 8 independent searches on the same position: 49/55/61% →
+**84/91/86%** (early/mid/late). Speed **1.08 ms/search** at N=3000 (~7.7×
+faster; the 60-move random rollouts were the cost).
+
+### 5. 4-player Max^n MCTS ported to the same design (mcts.rs)
+
+Same frozen-dice / pass-re-expansion / double-roll bugs, plus the cutoff
+payoff `max(score,0)+1` per seat was exactly uniform while tokens sat in base.
+Now chance nodes + greedy rollout + a softmax over each seat's leaf logit
+(caveat: that model was fitted on 2-player games, so the 4P payoffs are not
+calibrated probabilities). One MaxN seat vs 3× ExpectimaxBot (fair share 25%):
+
+| | N=40 | N=1000 | N=3000 |
+|---|---|---|---|
+| pre-audit | 24.9 | **21.1** (more search was worse) | — |
+| new, c_puct 0.5 | 26.7 (c=1.414) | **32.6** | **38.5** |
+
+c_puct sweep at N=1000: 0.35 → 31.3, 0.5 → 32.6, 0.7 → 32.2, 1.414 → 28.3,
+3 → 25.8. vs 3× Depth2 at N=1000: 31.4%. NOTE the pyo3 4P generator still
+builds MaxN with **40** simulations — essentially an ExpectimaxBot echo.
+
+### 6. Generator v2 (generate_sl_teacher.rs) — format v2
+
+16-byte header + 32-byte records: mover bot id, teacher-seat flag, forced
+flag, legal count, consecutive-six count, the **visit distribution π**
+(u8×4), game id. Dirichlet OFF by default; `--teacher/--opponent
+mcts|depth2|expectimax`; optional `--explore-moves K` (sampled play, argmax
+label); `manifest.json` pins the config and a resume with a different config
+— or into a directory of unmanifested v1 shards — is refused.
+Throughput: ~1,850 games/min (MCTS 3000 vs Depth2) → 1M games ≈ 9 h.
+
+### 7. Loader (td_ludo/sl_dataset_v153.py)
+
+Reads v1 and v2. **Scores now set** from positions (MS/OS cells were always 0
+in training). `movers=` filter (teacher / opponent / mcts / depth2 / all):
+for v1 the mover is recovered from game boundaries — validated against v2
+ground truth: **100.0%** agreement. `skip_forced`, π targets mapped to cells
+(stacked tokens add), explicit `shard_files` for game-level splits. The
+"label must be legal" safety net is now an error.
+
+On the old v1 dataset the split is: MCTS 367,834 / Depth2 388,475 records per
+shard (271,662 / 287,804 non-forced).
+
+### 8. Trainer (train_v153_sl.py) + eval (v153_eval.py)
+
+- `V15GraphTransformer.forward_logits` added (forward = softmax of it, bit-
+  identical; champion loads strictly). Loss: soft CE on logits vs π / one-hot.
+- Value: BCE-with-logits on (z+1)/2, unfinished games masked.
+- Game-level validation (first shard held out): CE, multi-option top-1, true
+  entropy, value BCE / accuracy.
+- Data re-indexed every 2,000 steps (new shards join in minutes).
+- Atomic saves every 10 min + every eval + on stop; `--resume` restores
+  model/optimizer/step/counters/best/metrics; refuses to overwrite an existing
+  run without `--resume`. Warmup + cosine LR. No per-step `.item()` syncs.
+- Eval: batched concurrent games (fixed padded batch → no MPS graph-cache
+  growth), three-six rule, common random numbers, student seat alternated.
+  Suite = **H2H vs v15.2 champion** (selects model_best), the champion's own
+  Expert+Heuristic protocol (headline "eval WR", comparable to 0.8465), and
+  native Depth2 via the new `alphaludo_rs.select_bot_move_2p`.
+- Removed the fabricated Elo table; game counts come from the data.
+- `select_mcts_move_2p` gained `consecutive_sixes` (default 0, compatible).
+
+Harness validated on the champion itself: Expert+Heuristic **84.9%**
+(410/500 + 439/500; its logged eval 0.8465) and **59.0% ±1.6 vs Depth2**
+(n=1000). Pre-fix V15.3 best on the same suite: H2H 37.2% ±2.4, Expert
+72.5%, Heuristic 79.5%, Depth2 46.5% — consistent with the audit's 38.2%.
+
+### Reference points for the next decision
+
+```
+v15.2 champion vs Depth2              59.0% ±1.6   (n=1000)
+fixed MCTS(3000) vs Depth2            63.1% ±1.1   (n=2000)
+fixed MCTS(3000) vs v15.2 champion    48.7% ±2.0   (n=600; seat0 50.0, seat2 47.3)
+```
+
+**The fixed teacher is at parity with the champion, not above it.** Distilling
+it can at best approach v15.2. To beat the champion, the search has to get
+stronger than the network, and the obvious lever is putting the network
+INSIDE the search (champion policy as priors, champion value at leaves),
+which is real AlphaZero / expert iteration rather than distilling a
+network-free search.
+
+### Not changed (documented)
+
+- **V13.7** now automatically uses the fixed engine, but its search still
+  never calls the network (uniform priors, no value net) — it remains SL on a
+  fixed teacher, not AlphaZero. Needs a network-in-the-loop search to be what
+  its name says.
+- **v16 launchers** reference `checkpoint_backups/` (deleted) AND an init
+  checkpoint `td_ludo_v15/checkpoints/h2h_compare/...` that no longer exists.
+  `play/model_weights/v13_6_gae/model_best.pt` (200,001 games, 0.851) is the
+  likely V136 opponent but identity can't be verified, so they were left alone.
+
+## STEP 3 — does search on top of the v15.2 champion add strength? (2026-10-02)
+
+Question before building an AlphaZero loop: is (champion network + search)
+stronger than the bare champion? Everything local (Apple M4).
+
+### Infrastructure built
+- `ludo_core::encode_v15_2p_into` — Rust port of the V15 encoder,
+  **bit-exact** vs Python `encode_frame` on 200,000 real shard states (both
+  POVs, with/without dice).
+- `ludo_search::net_mcts` — network-guided Expecti-MCTS + `NetFarm`: K
+  concurrent games, Rust owns games/dice/trees/records, Python answers
+  batched (policy, value) requests. pyo3 `alphaludo_rs.NetFarm`; driver
+  `python/alphaludo/net_farm.py`. Records self-play in shard format v2.
+- `ludo_search::net_expecti` — Expectimax-PUCT: chance nodes fully expanded
+  (all 6 faces, identical results merged, no-move chains followed), exact
+  dice expectations, budget in network evals.
+- `python/alphaludo/fast_v15.py` — inference path (precomputed edge bias +
+  fused SDPA); max |Δpolicy| 1.5e-6, argmax agreement 1.0. CPU 800 → 1,270
+  evals/s; MPS unchanged ~1,300–1,600 (M4 limit: attention over 226 nodes,
+  ~97 ms/layer at batch 1024). MPS+CPU split in one process: ~1,800/s.
+- Sanity: greedy vs greedy 51.5%; net-MCTS with 1 sim vs greedy 51.4%;
+  native farm tests (fake net) pass; farm end-of-run game-loss bug fixed.
+
+### Results vs the bare champion (greedy), seat-alternated
+| searcher | budget / decision | win % |
+|---|---|---|
+| net-MCTS, sampled dice (PUCT, c 1.5) | 50 sims | 51.7 ±2.9 (n=300) |
+| net-Expecti, pick by value | 100 evals (≈ exact 1-ply) | **35.0 ±2.8** (n=300) |
+| independent Python 1-ply by VALUE (no Rust code) | ~20 evals | **34.5 ±3.4** (n=200) |
+| net-Expecti, pick by value | 400 evals (deeper) | 36.0 ±3.9 (n=150) |
+| net-Expecti, pick by VISITS (prior-guided PUCT) | 400 evals | 48.0 ±4.1 (n=150) |
+
+The independent Python implementation reproduces the Rust result, so the
+search is correct. **The champion's value head cannot rank sibling moves**:
+1-ply-by-value disagrees with the policy argmax on 31.9% of decisions, and
+those swaps lose badly. The value is good at "who is winning" (AUC 0.867,
+calibrated, measured on 12,000 states) but the differences between sibling
+moves are far smaller than its per-state error. The PPO-trained policy is
+much stronger than the PPO value baseline. Sampled MCTS only matched the
+policy because, with dice noise, its visits just follow the prior.
+
+More budget does not help: by value, 100 → 400 evals is 35 → 36%; by visits
+(the policy keeps control) it returns to parity, 48%. Likely root cause, from
+the earlier mech-interp: the value head reads ONLY the CLS token, and the CLS
+encodes capture danger poorly (R² ≈ 0.35) — so it cannot tell a safe move from
+one that walks into a capture.
+
+Implication: search on THIS network cannot add strength; an AlphaZero loop
+started from it would be steered by a value that makes play worse. The value
+function has to be fixed first.
+
+### Next: a dedicated value network (launched 2026-10-02)
+`gen_selfplay.py` — champion greedy self-play via NetFarm, every position
+recorded with z (data/selfplay_v152, 200k games). Then `train_value.py`:
+separate value net, champion-initialised, value loss only (the champion stays
+the move proposer). Success test: 1-ply-by-value with the NEW value vs the
+champion policy, 35% → ≥ 50% (`net_farm.py h2h --a-kind expecti --max-evals 100
+--value-model ...`). Only then does search add strength and the AlphaZero loop
+(`expert_iteration.py`, ready) make sense.
+
+### Value phase — data, throughput, memory, early result (2026-10-02/03)
+
+**Self-play data.** `data/selfplay_v152`: 200,052 champion greedy self-play
+games, 31,847,593 positions (format v2, outcome z per position).
+
+**Throughput work (all exact — same moves/values as the fp32 reference):**
+- PyTorch used only 4 CPU threads by default (4 P-cores); 10 threads +15%.
+- My first CPU/GPU batch split never ran the CPU (rounded its share down to
+  whole 128-blocks) — fixed.
+- Shard-boundary drain: a farm per 5k-game shard ends with shrinking batches;
+  now a continuous farm per worker (games always in flight), shard written
+  every 5,000 finished games, dynamic O_EXCL shard claiming between workers.
+- MLX port (`python/alphaludo/mlx_v15.py`), fp32: 1,850 evals/s vs PyTorch-MPS
+  1,500, max |Δpolicy| 5e-6, argmax-identical on 2,048 real positions.
+  Profiling: the GPU worker spends 99.8% of its time in the network.
+- Second worker process on the CPU (PyTorch fp32, 6 threads): +~300 games/min,
+  costs the GPU worker ~15% (CPU and GPU share one memory bus).
+- REJECTED (owner's rule: no degradation at any cost): fp16 (2,950 evals/s,
+  argmax 99.81%), mixed fp16 (2,600, max|Δp| 2.4e-3), bf16 (99.26%), Neural
+  Engine (fp16 only).
+- Net: ~780 → ~1,100 games/min.
+
+**Memory investigation (owner asked, training paused at step 6,623).** No
+leak. 400 instrumented steps: live tensors flat at ~109 MB; the ~7.3 GB MPS
+pool is the genuine peak working set of one batch-512 step (hand-rolled
+attention stores 512×4×226×226 logits AND softmax per layer for backward),
+cached between steps; empty_cache drops it to 1.5 GB wired and the next step
+needs it all again; fully released at process exit. Fix: gradient
+accumulation (`--micro-batch 256`) normalised by the FULL batch's finished
+count — gradient identical to full batch within 1.3e-7 (rel 4.6e-6, float
+summation order). Peak wired ~9 GB → ~5.8 GB, speed 600 → 549 samples/s.
+Also fixed: resuming restarted the epoch's sample order from the beginning
+(repeating data, never reaching the tail); now skips exactly the batches
+already used (`epoch_step` in the checkpoint).
+
+**Value net so far** (held-out shard 0, 50,000 positions):
+| step | log-loss | AUC |
+|---|---|---|
+| 0 (champion value head) | 0.5907 | 0.7416 |
+| 6,000 | 0.5873 | 0.7431 |
+
+**Early decisive test, value_best @ step 6,000:** 1-ply by the NEW value vs the
+champion = **34.7% ±2.7** (n=300) — the same as with the champion's own value
+(35.0%). Two value nets, 200k games: the failure is the problem, not the data.
+Ludo sibling moves differ by ~1–2% win probability while single-position
+outcome noise is far larger; an outcome-regression value cannot resolve that.
+The policy can because PPO trained it on ADVANTAGES (outcome minus baseline),
+which cancels most of the dice noise. Training resumed (owner's call) to get
+the full-run data point; the decisive test runs automatically at the end.
+
+**Next options (to discuss):** (1) rollout policy improvement with COMMON
+RANDOM NUMBERS — compare candidate moves by playing each forward with the
+champion policy under identical dice sequences, distil the improved choices,
+iterate (TD-Gammon-style; improvement guaranteed in expectation over the base
+policy); (2) train an advantage head on those shared-dice comparisons; (3)
+accept v15.2 as near this architecture's limit. Feasibility check before (1):
+on a few hundred close-call positions, do shared-dice rollouts disagree with
+the policy, and do their choices win more?
+
+### Value phase — FINAL (2026-10-03)
+Full run: 15,238 steps (2 epochs × ~3.9M sampled positions, cosine LR 1e-4 →
+1e-5, micro-batch 256 ×2). Held-out: log-loss 0.5907 → **0.5867**, AUC 0.7416 →
+**0.7441** (tiny). Decisive test, 1-ply exact-dice search by the NEW value vs
+the champion policy, n=300: **43.0% ±2.9** (seat0 43.3, seat2 42.7).
+
+| value used by 1-ply search | win % vs champion |
+|---|---|
+| champion's own value head | 35.0 ±2.8 |
+| new value net @ step 6,000 | 34.7 ±2.7 |
+| new value net, full run | **43.0 ±2.9** |
+
+Lessons: (1) sibling-move ranking improved by +8 pp (~2.8σ) although
+log-loss/AUC barely moved — aggregate value metrics do NOT measure what
+search needs; the 1-ply strength test is the metric. (2) The step-6,000
+"no gain" read was premature — the gain came in the second half (LR decay).
+(3) Still below 50%: value-driven choice is not yet better than the policy,
+but the trend says the value path has headroom (more data / epochs / an
+advantage-style target).
+
+---
+
+## V17 — clean from-scratch pipeline: build (2026-10-03/04)
+
+Plan: `docs/V17_CLEAN_PIPELINE_PLAN.md`. Owner's goal: improve the pipeline and
+train again from random weights — no reward shaping, unified 2P/4P model, infinite
+safely-interruptible runs, local M4 at full power. The value-judge work on v15.2
+(above) was a detour from this; v15.2 is now only a benchmark.
+
+### Built (all tested before any long run)
+- **Rules fix** (`GameState::pass_turn`): a 6 rolled with no legal move kept the
+  six-streak into the player's next turn; now cleared (three-sixes forfeit counts
+  sixes within one turn). Test added.
+- **Unified encoder** `ludo_core::unified` (15×15×5, relative seats; inactive seats
+  absent instead of "4 tokens in base"; slot-agnostic base action cell; six streak
+  visible). Rust tests: 2P absence, 4-seat rotation invariance, token counts,
+  base-cell geometry. **Bit-exact** vs an independent Python reference on 40,000
+  random 2P/4P configurations.
+- **V17 graph** (`v17/graph.py`): every route cell links to home with the exact
+  roll; all base cells ↔ start square; per-seat special-cell links.
+- **V17Net** (587,691 params, v15.2-size backbone, 4-way value head masked to the
+  active seats — in 2P exactly P(win)). MLX fp32 port equal to PyTorch within 2e-5.
+- **Rust scripted bots** (Heuristic, Expert): move-for-move identical to the Python
+  originals (noise off) on >3,000 positions each, 2P and 4P.
+- **SlStream** (Rust threads, MCTS-3000 vs MCTS-3000, keep 1 in 4 decisions, π over
+  source cells, winner seat, back-pressured queue): 785 games/min, ~520 kept
+  positions/s with 10 threads.
+- **GameFarm** (Rust, 2P/4P, weighted matchups, nets with either encoder, native
+  bots resolved in parallel, PPO records). Fixed during tests: removing a finished
+  game mid-pass invalidated pending request indices (panic) → compact at safe point.
+- **Evaluator** validated on the champion: vs Depth2 61.6 ±1.5 (earlier 59.0 ±1.6),
+  Expert 81.4, Heuristic 82.8 ±0.8 (Python harness 83.7 ±0.8 — the old 87.8 was
+  500-game noise).
+- **SL trainer** (streaming replay buffer, soft-π CE + 4-way value CE, exact
+  micro-batching, auto-stop with LR drops, resume) and **RL trainer** (PPO + GAE,
+  win/loss reward, self/league/bot-ladder mix, greedy ladder windows, isolated
+  evaluations, resume). Smoke tests: full SL lifecycle incl. stop/resume, LR drop,
+  "SL done"; RL updates, ladder, snapshots, stop/resume.
+- **Value head learnability check** (it looked flat in the tiny smoke run): plateau
+  for ~800 steps, then 0.693 → 0.591 CE / 67% accuracy by step 1,500 — fine.
+- **MLX + PyTorch-MPS in one process** hung once (6th strength check, with farm
+  threads + generator threads live). Design rule adopted: one Metal framework per
+  process — MLX evaluations run in a separate process; training processes use
+  PyTorch only.
+- Throughput at real settings: RL update ≈ 63 s play + 149 s train per 512 games
+  (~145 games/min, ~210k games/day). Fused attention in training is exact
+  (rel 1e-7) but 7% slower on M4 → not used. Play/train overlap with CPU actors is
+  a possible later +~40%.
+- Dashboard `v17/dashboard.py`; launcher `start_v17.sh` (presets full/background),
+  chain `run_v17.sh` (SL → RL).
+
+---
+
+## V17 run — results so far, RL fixes (2026-10-03 → 10-07)
+
+- **SL** (MCTS-3000 self-play teacher, streamed): auto-stopped at **744k teacher games**
+  (44M samples, ~27 h active; LR 3e-4 → 9e-5 → 2.7e-5). Final, no search: **54.8% vs
+  MCTS-3000, 53.5% vs v15.2**, top-1 agreement with the teacher 81%. Parity with v15.2
+  was reached by ~70k games; the remaining 670k added ~2–3 pp.
+- **RL** (PPO, win/loss only, ladder heuristic→expert→depth2→MCTS-3000 + self + league):
+  climbed every rung in 30 updates each; on MCTS-3000 since update 90.
+  Evals (1000 games each, no search):
+
+  | games | v15.2 | MCTS-3000 | depth2 | expert | heuristic |
+  |---|---|---|---|---|---|
+  | 25k | 54.2 | 53.7 | 66.2 | 87.6 | 88.7 |
+  | 50k | 54.0 | 55.2 | 65.8 | 85.6 | 86.2 |
+  | 75k | 54.0 | 53.4 | 67.6 | 87.4 | 85.6 |
+  | 100k* | 56.1 | 54.6 | 68.0 | 88.4 | 87.5 |
+  | 125k | 54.9 | 57.4 | 67.3 | 88.2 | 85.1 |
+
+  *entropy coefficient 0.003 → 0.01 at 79.5k games (evals 1–3 flat, entropy sliding
+  0.78 → 0.22). Afterwards entropy held at 0.23–0.27, KL/clip unchanged, and the four
+  strongest references rose ~1.5–2 pp on average (individually within noise).
+- **Inference padding fix** (`v17/inference.py`): every network call was padded to 256
+  rows; league snapshots answer ~5 rows per call → 87% of play-phase GPU work was
+  padding. Now padded to power-of-two buckets 8..256 (≤ 6 shapes → no MPS graph-cache
+  growth). Outputs equal to 1e-7; play round 1529 → 224 ms; RL **57 → ~115 games/min**.
+
+## V17 2P+4P extension — build (2026-10-07), not started
+
+Design and operations: `docs/V17_4P_EXTENSION.md`. Same network, warm-started from the
+frozen 2P model; SL 4P-heavy (85/15) → 50/50, RL 80/20 → 50/50; 2P never below 15%.
+
+### 4P bots measured (one seat vs 3 copies; fair share 25%)
+- vs 3× random: heuristic 63.8, expert 61.9, expectimax 77.2, depth2 77.5.
+- expert vs 3× heuristic 25.1 / heuristic vs 3× expert 25.4 → **equal in 4P**.
+- expectimax vs 3× expert 45.0, vs 3× heuristic 44.3; heuristic/expert vs 3× expectimax 9.2.
+- depth2 vs 3× expectimax 28.6; expectimax vs 3× depth2 20.7.
+- **Legacy Max^n MCTS did not scale**: vs 3× expectimax 29.3 (300 sims), 34.3 (1k),
+  34.1 (3k), 34.8 (10k). Exploration-constant and prior sweeps: all 30–34%.
+- **V17-2P zero-shot in 4P**: 49.2 vs random, 22.5 vs heuristic, 9.9 vs expectimax,
+  8.7 vs depth2 — the never-exercised next/previous seat channels confuse it.
+
+### Why Max^n stalled, and the fix
+- Its leaf (`leaf_logit`, fitted on 2P) compares "me" with the SUM of the three
+  opponents: "their tokens all in base" fires whenever the three together have 4 in
+  base, the stage term saturates at half the game, softmax ~2× overconfident. 4P
+  validation log-loss **1.413 — worse than uniform (1.386)**, mid-game 1.77.
+- `eval4.rs`: per-seat features, conditional logit over seats (anything seat-constant
+  cancels). Fitted on 4.9M states from 40k bot games (split by game): log-loss **1.105**,
+  calibrated within ~0.01–0.02 per decile. Stake-weighted risk/threat features barely
+  moved it (1.1047) — whole-game outcome is dominated by dice.
+- But calibrated ≠ good move ranking: greedy 1-ply on eval4 shares 18.3% vs 3×
+  expectimax (score_position greedy 22.8%); Max^n with the eval4 leaf ≈ 30–32%.
+- `round4.rs`: exact full-round expectimax — every dice face of every opponent until my
+  next turn (plus bonus rolls up to N chance layers), each opponent greedy for itself,
+  no sampling. With score_position leaf: 29.7% vs 3× expectimax (+7 over its own 1-ply).
+- Leaf = linear "me vs the others" `w·φ_me − Σ u·φ_j` (score_position is one point),
+  **SPSA-tuned for win rate** (`v17/tune_round4.py`, 150 iters, objective = mean vs 3×
+  expectimax and 3× depth2, common random numbers): 25.5% → 32.3% (iter 70).
+  Fresh-seed validation: 57.8 vs heuristic, 34.3 vs expectimax, 29.2 vs depth2, 28.3
+  vs legacy MaxN-1000; but head to head legacy MaxN-3000 is stronger (27.8 vs 22.7).
+  Note: as the lone seat both directions can sit < 25% (three identical deterministic
+  copies gain a little collectively) — always measure head-to-heads both ways.
+- **Final 4P teacher = Max^n-3000 with the tuned round search as root prior**
+  (`v17/teacher4.json`): **39.9% vs 3× expectimax, 35.2% vs 3× depth2**, head to head vs
+  legacy MaxN-3000 **26.3% vs 19.5%**. Search scales again (same seeds): prior alone
+  33.7 → MaxN-1000 37.8 → MaxN-3000 39.9. Strength ratio vs depth2 ≈ 1.6 (the 2P
+  teacher MCTS-3000 had ≈ 1.7).
+- Mixed SL stream: ~230 positions/s with 8 threads (85% 4P) — teacher-bound.
+
+### Pipeline changes (defaults = old 2P behaviour; verified)
+- `SlStream(frac4=, teacher4=)` mixes by POSITIONS, `set_frac4` live; records carry
+  `n_players`. `sl_train`: `--init`, `--frac4-stages`, 4P validation set and 4P
+  strength; early stages track 4P metrics only and switch at a 4P plateau.
+- `rl_train`: `--frac4-stages` by TRAINING DECISIONS (game weights re-balanced from
+  measured decisions/game), 4P matchups (4× learner / learner+3 bots / learner+3×
+  snapshot), 4P ladder heuristic→expectimax→depth2→teacher with Luce-equivalent
+  thresholds (promote 33.3%, demote 21.4%), stage switch at 4P top rung or 150k games.
+- `evaluate`: `4p:<bot>` references, FOURP_SUITE. Dashboard shows 4P panels for mixed
+  runs. `start_v17_4p.sh` / `run_v17_4p.sh` (refuses while the 2P run trains; freezes
+  `checkpoints/v17/v17_2p_frozen.pt`).
+- Tests: 6 new Rust tests (seat-rotation symmetry of eval4, blockade/safe-square
+  exposure, distributions, round/MaxN/stream) + full workspace suite green; CPU smoke
+  runs of the whole SL lifecycle (stage switch, LR drop, auto-stop, sl_final) and RL
+  (both ladders, stage switch, 9-opponent eval, stop/resume).
+
+### 2026-10-07 18:38 — 2P run paused, 2P+4P run started
+- 2P RL paused cleanly at update 297 / 152,034 games. Eval 6 (150k): v15.2 54.6, MCTS-3000
+  55.0, depth2 66.5, expert 86.5, heuristic 85.7 — plateau at ~55% vs v15.2/MCTS-3000
+  (evals 1–3 avg 54.1/54.1 → evals 4–6 avg 55.2/55.7 after the entropy bump).
+- Backup: `checkpoints/v17/backups/rl_final_2p_u297_20261007_1838` (checkpoint, league,
+  evals, metrics, log; verified). Frozen 2P model: `checkpoints/v17/v17_2p_frozen.pt`.
+- **Frozen 2P model vs v15.2, 2,000 games, fresh seed 2026: 54.3% ±1.1 (1086/2000)**.
+- 2P+4P run started 18:39 with PRESET=medium (6 teacher threads), run dir
+  `checkpoints/v17_4p`, dashboard :8791. First steps at ~410 samples/s (LR warm-up).
+- Fix during start: the chain "already running" check matched the dashboard's own
+  `--chain run_v17_4p.sh` argument; now matches `bash ./run_v17_4p.sh` only.
+
+### 2026-10-07 22:19 — 2P+4P SL, first checks (paused for the overnight full-power restart)
+| check | 2P CE | 2P top-1 | 4P CE | 4P top-1 | 4P value acc | vs MCTS-3000 (2P) | vs 3× teacher | vs 3× expectimax |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0.7975 | 77.2% | 0.4381 | 87.5% | 36.3% | – | – | – |
+| 2 | 0.7934 | 78.1% | 0.4215 | 88.4% | 43.2% | 53.3% | 22.5% | 34.3% |
+
+- Before training, the frozen 2P model scored 0.781 / 81% on the same 2P set. The 15% anchor
+  keeps 2P close (small dip, recovering), and 2P strength stays at 53% vs MCTS-3000.
+- 4P: from 9.9% zero-shot to **34.3% vs 3× expectimax** (the teacher itself: 39.9%); 22.5% vs
+  3× teacher. Still stage 0 (85% 4P), 34k teacher games, ~320 samples/s on PRESET=medium.
+- Paused cleanly at 22:19, to be resumed with PRESET=full from a terminal.
+
+### 2026-10-08 10:57 — overnight 2P+4P SL (PRESET=full since 22:22)
+| check | 2P top-1 | 4P CE | 4P top-1 | vs MCTS-3000 (2P) | vs 3× teacher | vs 3× expectimax |
+|---|---|---|---|---|---|---|
+| 2 | 78.1% | 0.4215 | 88.4% | 53.3 | 22.5 | 34.3 |
+| 4 | 78.6% | 0.4076 | 89.1% | 51.8 | 24.2 | 33.5 |
+| 6 | 78.8% | 0.4017 | 89.4% | 50.5 | 25.5 | 40.3 |
+| 8 | 79.1% | 0.3966 | 90.0% | 50.0 | 24.0 | 35.2 |
+| 10 | 79.0% | 0.3946 | 90.0% | 52.0 | 26.0 | 39.3 |
+| 11 | 79.0% | 0.3915 | 90.2% | – | – | – |
+(strength: 600 games each, ±~2 pp)
+- 204k teacher games, ~456 samples/s at full. Still stage A (85% 4P); first non-improving
+  check at 10, gains now ~0.5%/check → stage switch to 50/50 likely within a few checks.
+- **4P: level with the 3× teacher (24–26%, fair 25%)**; vs 3× expectimax 35–40% (teacher 39.9%).
+- **2P watch:** vs MCTS-3000 drifted from ~55% (frozen) to 50–53% under the 15% anchor, while
+  2P agreement with the teacher keeps improving (78.1 → 79.0% top-1; frozen 81%). Stage B
+  (50/50) should pull it back; if not, raise the anchor.
+- 2026-10-08 12:10: paused and resumed with 4 teacher threads (PRESET=background SL_THREADS=4) for daytime use.
+
+### 2026-10-08 16:30 — SL stage A, checks 12–15 (4 threads since 12:10)
+- check 12: vs MCTS-3000 52.8 | vs 3× teacher 24.5 | vs 3× expectimax 35.7
+- check 14: vs MCTS-3000 **48.7** | vs 3× teacher **27.0** | vs 3× expectimax 38.8
+- 4P CE 0.3899 → 0.3867, top-1 90.5%; 256k teacher games; checks 13 and 15 "no improvement (1/3)" → stage A
+  is close to its plateau switch.
+- 2P strength keeps sliding under the 15% anchor (frozen ~55 → 53, 52, 50, 52, 53, 49) even though 2P
+  teacher agreement still improves (top-1 79.2%). Likely the shared trunk shifting towards 4P
+  priorities; stage B (50/50) is the planned correction.
+
+### 2026-10-08 — RL plan changed (no pause): 50/50 from the start, 4P ladder at depth2
+- Reason: after SL stage A the model already plays 4P at teacher level (27% vs 3× teacher), and
+  15% 2P in SL let 2P strength slip ~5 pp; an 80/20 RL stage would likely repeat that.
+- Mechanism: `rl_train` now applies `<run>/rl_overrides.json` over its command line on every
+  start (`checkpoints/v17_4p/rl_overrides.json` = {"frac4_stages": "0.5", "start_rung4": 2}),
+  because the running chain passes the old values. `run_v17_4p.sh` was atomically replaced with
+  the same defaults for future restarts (a running bash keeps reading its old copy). Tested.
+
+### 2026-10-08 21:00 — SL stage A still running (checks 16–17)
+- check 16: vs MCTS-3000 51.5 | vs 3× teacher 25.7 | vs 3× expectimax 40.0; 4P CE 0.3850, top-1 90.6%.
+- 292k teacher games. Stage A alternates "improving"/"no improvement (1/3)": 4P CE still drops
+  ~0.2–0.4% per check, just over the 0.2% tolerance, so the plateau switch keeps resetting.
+  4P strength has been flat at teacher level (24–27% vs 3× teacher) since check 6.
+- 2026-10-08 23:08: paused (user done with office work); resume pending user's go.
+- 2026-10-08 23:11: moved SL to stage B (50/50) by hand (stage A was creeping past its plateau test; 2P at 49-52% vs MCTS-3000); resumed PRESET=full. Backup of stage-A checkpoint kept.
+- 2026-10-09 01:09: stage B running at full power (~510 samples/s, 352k teacher games). check 19: 2P CE 0.7864 / top-1 79.6% (best since the switch began), 4P CE 0.3856 / top-1 90.5%. No errors.
+
+### 2026-10-09 11:00 — SL stage B overnight (full power), first LR drop
+| check | vs MCTS-3000 (2P) | vs 3× teacher | vs 3× expectimax | 2P top-1 | 4P top-1 |
+|---|---|---|---|---|---|
+| 20 | 55.7 | 24.5 | 37.8 | 79.7% | 90.6% |
+| 22 | 51.0 | 20.8 | 38.7 | 79.7% | 90.8% |
+| 24 | 54.0 | 28.3 | 35.7 | 79.9% | 90.6% |
+| 26 | 50.2 | 25.5 | 39.5 | 79.9% | 90.7% |
+| 28 | 53.8 | 22.8 | 37.3 | 80.1% | 90.7% |
+- Stage B average vs MCTS-3000 **53.0** (stage A checks 10–16: 50.5) → 2P partly recovered
+  (frozen 2P ~55); 2P teacher agreement best yet (80.1%, frozen 81%). 4P steady: 24.4 vs 3×
+  teacher, 37.8 vs 3× expectimax (600 games each, ±2 pp).
+- 560k teacher games. Plateau at check 28 → **LR ×0.3 (drop 1/2), now 3e-5**. One more drop,
+  then the plateau at the lowest LR ends SL and RL starts automatically (50/50, 4P ladder
+  from depth2).
+
+**2026-10-09 — SL finished, RL 2P+4P started; restart at 4 threads.**
+- Check 30 hit the 40M-position cap → SL done (12:34): 2P vs MCTS-3000 **57.2%**, 4P vs 3× teacher
+  27.5%, vs 3× expectimax 40.3%; top-1 2P 80.5% / 4P 91.2%.
+- RL (50/50, 2P ladder at mcts3000, 4P ladder from depth2): upd 10 → ladder mcts3000 0.520,
+  4p:depth2 0.330; upd 20 → 0.537 / 0.353. ~90 g/min at full power.
+- 14:24 paused for office hours (4 threads). The restart got killed together with the old Claude
+  session (exit 137), so only the dashboard survived and nothing trained 14:24–14:35. Restarted
+  detached (PPID 1) with `PRESET=background SL_THREADS=4 RAYON_NUM_THREADS=4 CONCURRENCY=128
+  ./start_v17_4p.sh`; resumed cleanly at update 22 (upd 23 at 98 g/min).
+- **RL eval 1 @ 25k games (2P+4P run):** 2P — v15.2 53.4, mcts3000 56.8, depth2 65.1, expert 85.2,
+  heuristic 86.3 (≈ the 2P-only V17's evals 1–2, so 4P training has not hurt 2P). 4P vs 3× —
+  teacher 27.7, depth2 40.0, expectimax 41.9, heuristic 66.3 (fair share 25). Ladder windows:
+  upd 30/40/50 mcts3000 0.567/0.570/0.543, 4p:depth2 0.340/0.310/0.347 (no 4P promotion yet;
+  note the 300-game windows run ~6 pp below the 1000-game eval vs depth2 — watch).
+- 4P promoted to 4p:teacher at upd 70; teacher windows upd 80/90: 0.333 / 0.273.
+- **RL eval 2 @ 50k games:** 2P — v15.2 56.1, mcts3000 53.5, depth2 65.7, expert 86.5, heuristic
+  86.3. 4P vs 3× — teacher 26.7, depth2 35.9, expectimax 42.9, heuristic 64.9. Flat vs eval 1
+  overall (moves within ±2σ both ways; 4p:depth2 −4.1 is the largest).
+- **2026-10-09 22:09 paused** at update ~99 (50k RL games) so the owner can play a few games
+  by hand before deciding next steps. Resume: `./start_v17_4p.sh` (PRESET as needed).
+
+### 2026-10-15 12:40 — 2P+4P: SL finished, RL at 200k games
+- **SL ended 2026-10-09 12:34** at the 40M-position cap (check 30, after the first LR drop):
+  2P top-1 80.5%, **vs MCTS-3000 57.2%** (2P fully recovered; frozen ~55), 4P top-1 91.2%,
+  vs 3× teacher 27.5, vs 3× expectimax 40.3.
+- RL (50/50, overrides applied) started 12:34; 4P ladder depth2 → **teacher at update 70**.
+  Paused 2026-10-09 22:09 → resumed 2026-10-14 02:09; running since, ~80 g/min.
+- RL evals (1000 games each; 4P = one seat vs 3 copies, fair 25%):
+
+  | games | v15.2 | MCTS-3000 | depth2 | 4P teacher | 4P depth2 | 4P expectimax | 4P heuristic |
+  |---|---|---|---|---|---|---|---|
+  | 25k | 53.4 | 56.8 | 65.1 | 27.7 | 40.0 | 41.9 | 66.3 |
+  | 50k | 56.1 | 53.5 | 65.7 | 26.7 | 35.9 | 42.9 | 64.9 |
+  | 75k | 55.2 | 54.5 | 65.0 | 26.4 | 39.7 | 42.8 | 66.4 |
+  | 100k | 52.6 | 56.4 | 64.8 | 29.7 | 39.0 | 42.8 | 65.2 |
+  | 125k | 55.6 | 55.5 | 66.5 | 29.3 | 39.9 | 43.0 | 67.1 |
+  | 150k | 55.3 | 54.9 | 66.4 | **31.0** | 40.5 | 42.3 | 68.0 |
+  | 175k | 55.2 | 55.6 | 64.6 | 27.0 | 41.2 | 43.3 | 65.2 |
+- 2P held at the V17 level (~55 vs v15.2 and MCTS-3000). 4P vs 3× teacher: evals 1–3 avg 26.9 →
+  evals 4–7 avg 29.3 (beats its MaxN-3000 teacher with no search); ladder windows vs teacher
+  24–31%, not yet 3 × ≥33.3%. Entropy 0.23, KL/clip steady.
+- 2026-10-15 14:39: RL paused for discussion (search in training); backup backups/rl_u408_20261015_1439.
+- 2026-10-15 14:48: search-headroom test started (net-guided Max^n, v17/search_headroom.py; network throughput ceiling ~1.6-1.7k evals/s on M4 regardless of batch).
+
+### 2026-10-15 — Search headroom test (net-guided Max^n on the V17 2P+4P network, RL u408)
+Engine `crates/ludo_search/src/net_maxn.rs` (policy priors + full 4-way value, exact dice chance
+nodes, batched farm), script `v17/search_headroom.py`. Model + search vs its own bare network,
+240 games each, c_puct 1.0, fpu 0.1 (untuned):
+
+| mode | 0 sims | 64 sims | 256 sims |
+|---|---|---|---|
+| 2P (fair 50%) | 49.2 ±3.2 | 54.2 ±3.2 | 52.5 ±3.2 |
+| 4P, 1 vs 3 bare (fair 25%) | 27.1 ±2.9 | 22.9 ±2.7 | 24.6 ±2.8 |
+
+- **No usable headroom**: at best +4 pp in 2P (1.3σ), none in 4P, and 4× more search does not
+  help. Search with this value head is no better than the policy alone — the same lesson as the
+  v15.2 value-search work. The value head predicts winners (2P 67% acc, 4P CE 1.17) but does not
+  rank sibling positions well enough to guide search.
+- Network throughput ceiling on M4: ~1.6–1.7k evals/s (MLX and MPS, any batch size) → search-based
+  training would cost 3–15× more time per game than the current RL.
+- Implication: expert iteration from this checkpoint would have no fuel until the value head is
+  improved (and verified with a 1-ply sibling-ranking test / a repeated headroom test).
+
+### 2026-10-15 — V17 closed
+- Owner's call after play-testing the live model on alphaludo.in: V17 is at its natural stopping
+  point (RL plateaued, no search headroom). Run left paused at RL u408 (backup
+  `checkpoints/v17_4p/backups/rl_u408_20261015_1439`).
+- Exported weights-only `model_v17_rl_u408.pt` to `~/Github/AlphaLudo-WebPlay/model_checkpoints/v17_final/`
+  with a README (site still serves eval-2 weights `evals/model_0000050239.pt`; switch steps in the README).
+- Next (to discuss): RL without SL (pure self-play, V17.1-style) or similar.
