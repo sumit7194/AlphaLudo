@@ -390,9 +390,9 @@ const evalChart = new Chart(document.getElementById("eval-chart").getContext("2d
 const wrChart = new Chart(document.getElementById("wr-chart").getContext("2d"), {
   type: "line",
   data: { labels: [], datasets: [
-    { label: "vs MCTS (500s)", data: [], borderColor: palette.accent, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+    { label: "vs v15.2 Champion (H2H)", data: [], borderColor: palette.accent, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
     { label: "vs Expert", data: [], borderColor: palette.good, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
-    { label: "vs Aggressive", data: [], borderColor: palette.warn, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
+    { label: "vs Depth2", data: [], borderColor: palette.warn, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
     { label: "vs Heuristic", data: [], borderColor: palette.info, backgroundColor: "transparent", tension: 0.2, pointRadius: 3, borderWidth: 2 },
   ]},
   options: {
@@ -689,9 +689,9 @@ function updateFromMetrics(m) {
 
   // Bot Breakdown Multi-line Chart
   wrChart.data.labels = labels;
-  wrChart.data.datasets[0].data = evals.map(e => e.opponents?.MCTS ?? null);
+  wrChart.data.datasets[0].data = evals.map(e => e.opponents?.Champion ?? e.opponents?.MCTS ?? null);
   wrChart.data.datasets[1].data = evals.map(e => e.opponents?.Expert ?? null);
-  wrChart.data.datasets[2].data = evals.map(e => e.opponents?.Aggressive ?? null);
+  wrChart.data.datasets[2].data = evals.map(e => e.opponents?.Depth2 ?? e.opponents?.Aggressive ?? null);
   wrChart.data.datasets[3].data = evals.map(e => e.opponents?.Heuristic ?? null);
   wrChart.update("none");
 

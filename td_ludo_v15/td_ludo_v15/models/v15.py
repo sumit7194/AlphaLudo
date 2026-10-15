@@ -125,6 +125,23 @@ class V15GraphTransformer(nn.Module):
         legal_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
+        Returns:
+            policy: (B, 225) — masked softmax over board cells
+            value: (B,) — sigmoid scalar (win probability)
+
+        See forward_logits for the arguments. Training code should use
+        forward_logits: feeding these PROBABILITIES into log_softmax/CE
+        applies softmax twice (the V15.3 SL trainer did; 2026-10-02 audit).
+        """
+        policy_logits, value_logit = self.forward_logits(x, legal_mask)
+        return F.softmax(policy_logits, dim=-1), torch.sigmoid(value_logit)
+
+    def forward_logits(
+        self,
+        x: torch.Tensor,
+        legal_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
         Args:
             x: (B, T, 15, 15, 3) float — per-cell triplet × T frames in
                current-player POV. T must equal self.history_len.
@@ -133,8 +150,8 @@ class V15GraphTransformer(nn.Module):
                 their policy logit masked to -inf before softmax.
 
         Returns:
-            policy: (B, 225) — masked softmax over board cells
-            value: (B,) — sigmoid scalar (win probability)
+            policy_logits: (B, 225) — illegal cells set to -1e9
+            value_logit: (B,) — pre-sigmoid win logit
         """
         B = x.shape[0]
         # (B, T, 15, 15, 3) → (B, 225, T*3)
@@ -174,12 +191,11 @@ class V15GraphTransformer(nn.Module):
             # very-large-negative bias instead of literal -inf for fp16/bf16
             # compatibility.
             policy_logits = policy_logits.masked_fill(mask_f < 0.5, -1e9)
-        policy = F.softmax(policy_logits, dim=-1)
 
-        # Value: CLS → scalar sigmoid
-        value = torch.sigmoid(self.value_mlp(cls_node)).squeeze(-1)  # (B,)
+        # Value: CLS → scalar logit (sigmoid applied in forward)
+        value_logit = self.value_mlp(cls_node).squeeze(-1)  # (B,)
 
-        return policy, value
+        return policy_logits, value_logit
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

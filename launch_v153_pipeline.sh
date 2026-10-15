@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# RETIRED 2026-10-02 (audit: teacher MCTS lost 85% of games to Depth2, three-six
+# double-pass bug, double-softmax trainer). Use ./launch_v153b_pipeline.sh.
+echo "launch_v153_pipeline.sh is retired — use ./launch_v153b_pipeline.sh (see training_journal.md)."
+exit 1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 

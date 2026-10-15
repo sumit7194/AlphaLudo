@@ -1,26 +1,45 @@
-"""AlphaLudo V15.3 — Supervised Learning from Rust Search Teacher.
+"""AlphaLudo V15.3 — Supervised distillation of a Rust search teacher.
 
-Trains a V15 GraphTransformer (history_len=1, ~588K params) tabula rasa from
-random weights on 1 Million games of high-depth teacher play (Expecti-MCTS N=3,000
-vs Depth-2 Expectimax).
+Trains a V15 GraphTransformer (history_len=1, 587,306 params) from teacher
+shards written by `generate_sl_teacher` (formats v1 and v2).
 
-Features:
-  - Random weights initialization (tabula rasa).
-  - Masked cross-entropy on 225-cell source-cell policy.
-  - Balanced MSE on terminal outcome (+1.0 / -1.0).
-  - Streaming shard loader: consumes new binary shards as Rust produces them.
-  - Periodic head-to-head evaluation against bot suite (Heuristic, Aggressive, Expert, MCTS).
-  - Live rich interactive web dashboard on port 8790.
-  - Clean interruptability via 'stop' file.
+REWRITTEN in the 2026-10-02 audit. What the first version got wrong:
+  1. DOUBLE SOFTMAX. V15GraphTransformer.forward returns probabilities; the
+     loss applied log_softmax to them again. Gradients were squashed (the
+     "policy loss" could never fall much below log(n_legal) - small), and the
+     logged loss / entropy / accuracy were all of the wrong distribution.
+     -> forward_logits + cross-entropy on logits.
+  2. VALUE LOSS. MSE between a sigmoid output in (0,1) and targets ±1: the
+     optimum is "always 0 or 1" and -1 is unreachable. -> BCE-with-logits on
+     (z + 1) / 2, unfinished games (z = 0) masked out.
+  3. EVAL. 15 games per bot every 1000 steps, no three-six rule, model_best
+     chosen by the max of that noise (0.883 "best" = 38% vs the champion).
+     -> v153_eval.evaluate_suite: batched, rule-correct, head-to-head vs the
+     v15.2 champion plus the champion's own Expert/Heuristic protocol and
+     native Depth2, with common random numbers. model_best is chosen by the
+     head-to-head score.
+  4. NO RESUME, RARE SAVES. model_latest was written only after a full pass
+     over every shard (hours) and never read back. -> atomic time-based saves
+     (model, optimizer, step, counters, best, metrics) and --resume.
+  5. NEW SHARDS IGNORED until a full pass ended. -> data is re-indexed every
+     --round-steps steps, so new shards join within minutes.
+  6. DISHONEST METRICS. Top-1 counted forced moves (one legal option); a
+     hard-coded "Elo" table; games = states // 50. -> forced moves excluded
+     (default), top-1 on multi-option decisions, real game counts from the
+     data, no fabricated Elo.
+  7. NO VALIDATION. -> the first --val-shards shards are held out (a
+     game-level split) and scored every eval.
+  8. Unlabeled teacher/opponent mix and missing scores in the input: fixed in
+     sl_dataset_v153 (--movers, scores from positions).
 """
 from __future__ import annotations
 
 import argparse
 import functools
 import json
+import math
 import os
 from pathlib import Path
-import random
 import sys
 import threading
 import time
@@ -30,30 +49,23 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, Subset
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 TD_LUDO_DIR = ROOT_DIR / "td_ludo"
 PYTHON_DIR = ROOT_DIR / "python"
 V15_ROOT = ROOT_DIR / "td_ludo_v15"
-for p in (str(TD_LUDO_DIR), str(PYTHON_DIR), str(V15_ROOT)):
+for p in (str(TD_LUDO_DIR), str(PYTHON_DIR), str(V15_ROOT), str(Path(__file__).resolve().parent)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import alphaludo_rs
-import td_ludo_cpp as ludo_cpp
-import td_ludo_v15_cpp as v15_cpp
-from sl_dataset_v153 import V153TeacherDataset
-from td_ludo.game.heuristic_bot import get_bot
-from td_ludo_v15.game.cells import NUM_BOARD_CELLS, cell_to_index, position_to_cell_in_pov
-from td_ludo_v15.game.encoder import encode_frame
+from sl_dataset_v153 import MOVER_CHOICES, V153TeacherDataset, open_shard
 from td_ludo_v15.models.v15 import V15GraphTransformer
-
-_BASE_POS = v15_cpp.BASE_POS
+from v153_eval import CHAMPION_PATH, evaluate_suite, load_v15_model
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Dashboard HTTP Server
+# Dashboard HTTP server
 # ─────────────────────────────────────────────────────────────────────────────
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory=None, stats_path=None, metrics_path=None, landing="v13_dashboard.html", **kw):
@@ -120,400 +132,374 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 
 def start_dashboard(port: int, stats_path: str, metrics_path: str, dashboard_dir: str):
-    landing = "v13_dashboard.html"
     handler = functools.partial(
-        DashboardHandler,
-        directory=dashboard_dir,
-        stats_path=stats_path,
-        metrics_path=metrics_path,
-        landing=landing,
+        DashboardHandler, directory=dashboard_dir, stats_path=stats_path, metrics_path=metrics_path,
     )
-    server = HTTPServer(("0.0.0.0", port), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print(f"[Dashboard] Server live at http://localhost:{port}/{landing}")
+    try:
+        server = HTTPServer(("0.0.0.0", port), handler)
+    except OSError as e:
+        print(f"[Dashboard] could not bind port {port}: {e} — continuing without dashboard", flush=True)
+        return
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"[Dashboard] Server live at http://localhost:{port}/v13_dashboard.html", flush=True)
+
+
+def write_json_atomic(path: Path, obj) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+    os.replace(tmp, path)
+
+
+def save_atomic(obj, path: Path) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. Benchmark Evaluation (Zero-Search Greedy Policy)
+# Losses / metrics
 # ─────────────────────────────────────────────────────────────────────────────
-class RustMCTSBot:
-    def __init__(self, player_id: int, num_simulations: int = 500):
-        self.player_id = player_id
-        self.num_simulations = num_simulations
+def compute_losses(model, batch, device, value_coef: float):
+    x = batch["x"].to(device, non_blocking=True)
+    legal_mask = batch["legal_mask"].to(device, non_blocking=True)
+    target_pi = batch["target_pi"].to(device, non_blocking=True)
+    target = batch["target"].to(device, non_blocking=True)
+    z = batch["target_value"].to(device, non_blocking=True)
+    legal_count = batch["legal_count"].to(device, non_blocking=True)
 
-    def select_move(self, state, legal_moves):
-        if not legal_moves:
-            return 0
-        if len(legal_moves) == 1:
-            return legal_moves[0]
-        pos = np.ascontiguousarray(state.player_positions, dtype=np.int8)
-        act = alphaludo_rs.select_mcts_move_2p(
-            pos,
-            int(self.player_id if self.player_id is not None else state.current_player),
-            int(state.current_dice_roll),
-            self.num_simulations,
-        )
-        if act not in legal_moves:
-            return legal_moves[0]
-        return act
+    logits, v_logit = model.forward_logits(x, legal_mask)  # illegal cells = -1e9
+    log_p = F.log_softmax(logits, dim=-1)
+    # Soft cross-entropy against the target distribution (one-hot or the
+    # search's visit distribution). Illegal cells have target 0.
+    policy_loss = -(target_pi * log_p).sum(dim=-1).mean()
+
+    finished = z != 0
+    v_target = (z + 1.0) * 0.5
+    v_terms = F.binary_cross_entropy_with_logits(v_logit, v_target, reduction="none")
+    value_loss = (v_terms * finished).sum() / finished.sum().clamp(min=1)
+
+    total = policy_loss + value_coef * value_loss
+
+    with torch.no_grad():
+        p = log_p.exp()
+        legal = legal_mask > 0
+        entropy = -(torch.where(legal, p * log_p, torch.zeros_like(p))).sum(-1)
+        multi = legal_count >= 2
+        correct = (logits.argmax(-1) == target) & multi
+        v_correct = ((v_logit > 0) == (z > 0)) & finished
+        m = {
+            "policy_loss": policy_loss.detach(),
+            "value_loss": value_loss.detach(),
+            "entropy_sum": entropy[multi].sum(),
+            "n_multi": multi.sum(),
+            "correct": correct.sum(),
+            "v_correct": v_correct.sum(),
+            "n_finished": finished.sum(),
+        }
+    return total, m
 
 
-def evaluate_model(model: nn.Module, device: torch.device, games_per_bot: int = 15):
-    """Evaluates greedy model policy (zero search) with cyclic seat rotation."""
-    model.eval()
-    bot_names = ["Heuristic", "Aggressive", "Expert", "MCTS"]
-    results = {}
-    total_wins = 0
-    total_games = 0
+@torch.no_grad()
+def validate(model, loader, device, value_coef: float) -> dict:
+    was = model.training
+    model.train(False)
+    agg = {"policy_loss": 0.0, "value_loss": 0.0, "entropy_sum": 0.0, "n_multi": 0, "correct": 0,
+           "v_correct": 0, "n_finished": 0}
+    n_batches = 0
+    for batch in loader:
+        _, m = compute_losses(model, batch, device, value_coef)
+        n_batches += 1
+        for k in agg:
+            agg[k] += float(m[k])
+    model.train(was)
+    nb = max(1, n_batches)
+    return {
+        "val_policy_ce": agg["policy_loss"] / nb,
+        "val_value_bce": agg["value_loss"] / nb,
+        "val_top1": agg["correct"] / max(1, agg["n_multi"]),
+        "val_entropy": agg["entropy_sum"] / max(1, agg["n_multi"]),
+        "val_value_acc": agg["v_correct"] / max(1, agg["n_finished"]),
+    }
 
-    for bot_name in bot_names:
-        bot_wins = 0
-        for g_idx in range(games_per_bot):
-            model_seat = 0 if (g_idx % 2 == 0) else 2
-            opp_seat = 2 if model_seat == 0 else 0
 
-            if bot_name == "MCTS":
-                bot = RustMCTSBot(player_id=opp_seat, num_simulations=500)
-            else:
-                bot = get_bot(bot_name, player_id=opp_seat)
-
-            state = ludo_cpp.create_initial_state_2p()
-            move_count = 0
-
-            while not state.is_terminal and move_count < 350:
-                cp = int(state.current_player)
-                d = random.randint(1, 6)
-                state.current_dice_roll = d
-
-                legal = ludo_cpp.get_legal_moves(state)
-                if not legal:
-                    nxt = 2 if cp == 0 else 0
-                    state.current_player = nxt
-                    state.current_dice_roll = 0
-                    continue
-
-                if cp == model_seat:
-                    if len(legal) == 1:
-                        action = legal[0]
-                    else:
-                        v15_x = np.zeros((1, 15, 15, 3), dtype=np.float32)
-                        v15_x[0] = encode_frame(state, pov_player=cp)
-                        v15_legal = np.zeros(NUM_BOARD_CELLS, dtype=np.float32)
-                        legal_cells = []
-                        for t in legal:
-                            pos = int(state.player_positions[cp][t])
-                            c = position_to_cell_in_pov(_BASE_POS if pos == _BASE_POS else pos, cp, cp)
-                            v15_legal[cell_to_index(*c)] = 1.0
-                            legal_cells.append((t, c))
-                        with torch.no_grad():
-                            xt = torch.from_numpy(v15_x).unsqueeze(0).to(device)
-                            mt = torch.from_numpy(v15_legal).unsqueeze(0).to(device)
-                            pol, _ = model(xt, mt)
-                            chosen_idx = int(pol.argmax(dim=-1).item())
-                        chosen_cell = divmod(chosen_idx, 15)
-                        action = legal[0]
-                        for t, c in legal_cells:
-                            if c == chosen_cell:
-                                action = t
-                                break
-                else:
-                    action = bot.select_move(state, list(legal))
-
-                state = ludo_cpp.apply_move(state, int(action))
-                move_count += 1
-
-            if state.is_terminal and ludo_cpp.get_winner(state) == model_seat:
-                bot_wins += 1
-
-        wr = bot_wins / max(1, games_per_bot)
-        results[bot_name] = wr
-        total_wins += bot_wins
-        total_games += games_per_bot
-
-    overall_wr = total_wins / max(1, total_games)
-    model.train()
-    return overall_wr, results
+def count_games(shard_files) -> int:
+    """Real game count: v2 from game_id, v1 from all-base game starts."""
+    total = 0
+    for sf in shard_files:
+        try:
+            version, recs = open_shard(sf)
+        except ValueError:
+            continue
+        if len(recs) == 0:
+            continue
+        if version == 2:
+            total += len(np.unique(recs["game_id"]))
+        else:
+            total += int(np.all(recs["positions"].reshape(len(recs), 16) == -1, axis=1).sum())
+    return total
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Main SL Training Loop
+# Main
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--shard-dir", type=str, default="data/sl_teacher_v153")
-    parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/v15_3")
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--eval-every-steps", type=int, default=1000)
-    parser.add_argument("--eval-games", type=int, default=60)
-    parser.add_argument("--port", type=int, default=8790)
-    parser.add_argument("--device", type=str, default="mps")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--shard-dir", type=str, default="data/sl_teacher_v2")
+    ap.add_argument("--checkpoint-dir", type=str, default="checkpoints/v15_3b")
+    ap.add_argument("--resume", action="store_true", help="continue from <checkpoint-dir>/model_latest.pt")
+    ap.add_argument("--init-from", type=str, default=None, help="initialise weights (not optimizer) from a checkpoint")
+    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--min-lr", type=float, default=3e-5)
+    ap.add_argument("--warmup-steps", type=int, default=1000)
+    ap.add_argument("--total-steps", type=int, default=400_000, help="cosine horizon; training continues at min-lr after")
+    ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument("--value-coef", type=float, default=0.5)
+    ap.add_argument("--movers", choices=MOVER_CHOICES, default="teacher")
+    ap.add_argument("--keep-forced", action="store_true", help="train on single-legal-move records too")
+    ap.add_argument("--policy-target", choices=("pi", "action"), default="pi")
+    ap.add_argument("--round-steps", type=int, default=2000, help="steps between data re-indexing (new shards)")
+    ap.add_argument("--val-shards", type=int, default=1, help="first N shards held out (game-level split)")
+    ap.add_argument("--val-records", type=int, default=20_000)
+    ap.add_argument("--eval-every-steps", type=int, default=5000)
+    ap.add_argument("--eval-games-champion", type=int, default=400)
+    ap.add_argument("--eval-games-bots", type=int, default=400)
+    ap.add_argument("--eval-games-depth2", type=int, default=200)
+    ap.add_argument("--save-every-min", type=float, default=10.0)
+    ap.add_argument("--log-every", type=int, default=100)
+    ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--port", type=int, default=8790)
+    ap.add_argument("--device", type=str, default="mps")
+    ap.add_argument("--max-steps", type=int, default=0, help="stop after this many steps (0 = run until stop file)")
+    args = ap.parse_args()
 
-    device = torch.device(args.device if torch.backends.mps.is_available() and args.device == "mps" else "cpu")
-    print(f"[Device] Using {device}")
+    if args.device == "mps" and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif args.device == "cuda" and torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"[Device] {device}", flush=True)
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    stats_path = str(ckpt_dir / "stats.json")
-    metrics_path = str(ckpt_dir / "metrics.json")
-    stop_file = ROOT_DIR / "stop"
+    stats_path = ckpt_dir / "stats.json"
+    metrics_path = ckpt_dir / "metrics.json"
+    latest_path = ckpt_dir / "model_latest.pt"
+    best_path = ckpt_dir / "model_best.pt"
+    stop_files = [ROOT_DIR / "stop", ckpt_dir / "stop"]
+    shard_dir = Path(args.shard_dir)
 
-    start_dashboard(port=args.port, stats_path=stats_path, metrics_path=metrics_path, dashboard_dir=str(TD_LUDO_DIR))
-
-    # Initialize V15 GraphTransformer tabula rasa from random weights
     model = V15GraphTransformer(d_model=128, n_heads=4, n_layers=4, ffn_dim=256, history_len=1).to(device)
-    param_count = sum(p.numel() for p in model.parameters())
-    print(f"[Model] Initialized V15.3 Graph Transformer: {param_count:,} params (Random Weights)")
-
+    n_params = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # Initialize stats
-    stats_payload = {
-        "run_info": {
-            "model_name": "AlphaLudo V15.3 (Search-Distilled GraphTransformer)",
-            "badge": "MCTS Teacher (N=3000) -> GraphTransformer",
-            "arch_summary": f"V15.3 GraphTransformer (4x128) · {param_count:,} params · Zero Search",
-            "description": "Distilling 1,000,000 games of MCTS (3,000 sims) vs Depth-2 Expectimax into GraphTransformer.",
-            "target_wr": 0.85,
-            "target_label": "Mastery Target (85% WR)",
-            "baseline_wr": 0.50,
-            "baseline_label": "Parity Baseline (50% WR)",
-            "eval_games": args.eval_games,
-        },
-        "timestamp": time.time(),
-        "total_games": 0,
-        "total_states": 0,
-        "games_per_minute": 0.0,
-        "states_per_minute": 0.0,
-        "policy_loss": 0.0,
-        "value_loss": 0.0,
-        "total_loss": 0.0,
-        "policy_entropy": 0.69,
-        "temperature": 0.0,
-        "main_elo": 1200,
-        "eval_win_rate": 0.0,
-        "opp_breakdown": {"Heuristic": 0.0, "Aggressive": 0.0, "Expert": 0.0, "MCTS": 0.0},
-        "recent_opponent_stats": {},
-        "elo_rankings": [
-            {"name": "MCTSBot", "elo": 1600},
-            {"name": "ExpertBot", "elo": 1500},
-            {"name": "HeuristicBot", "elo": 1400},
-            {"name": "AggressiveBot", "elo": 1350},
-            {"name": "Model", "elo": 1200},
-        ],
-    }
-    with open(stats_path, "w") as f:
-        json.dump(stats_payload, f, indent=2)
-
+    step = 0
+    states_trained = 0
+    best_h2h = -1.0
     metrics_history = []
-    total_states_trained = 0
-    total_steps = 0
-    best_eval_wr = 0.0
+    if args.resume and latest_path.exists():
+        ck = torch.load(latest_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state_dict"])
+        optimizer.load_state_dict(ck["optimizer_state_dict"])
+        step = int(ck["step"])
+        states_trained = int(ck["states"])
+        best_h2h = float(ck.get("best_h2h", -1.0))
+        if metrics_path.exists():
+            with open(metrics_path) as f:
+                metrics_history = json.load(f)
+        print(f"[Resume] step {step:,}, {states_trained:,} states, best h2h {best_h2h:.3f}", flush=True)
+    elif args.resume:
+        print(f"[Resume] no {latest_path} — starting fresh", flush=True)
+    elif latest_path.exists():
+        raise SystemExit(f"{latest_path} exists. Pass --resume to continue it, or use a new --checkpoint-dir.")
+    if args.init_from and step == 0:
+        ck = torch.load(args.init_from, map_location=device, weights_only=False)
+        model.load_state_dict(ck.get("model_state_dict", ck))
+        print(f"[Init] weights from {args.init_from}", flush=True)
 
-    print("\n" + "=" * 80)
-    print("🚀 V15.3 GRAPH TRANSFORMER SL TRAINING PIPELINE LAUNCHED")
-    print(f"   Architecture: GraphTransformer (~588K params, d=128, 4 layers)")
-    print(f"   Teacher Data: Shards from {args.shard_dir}")
-    print(f"   Dashboard:    http://localhost:{args.port}/v13_dashboard.html")
-    print("=" * 80 + "\n")
+    champion = load_v15_model(CHAMPION_PATH, device) if args.eval_games_champion > 0 else None
 
-    t_start = time.time()
-    loaded_shards = 0
-    last_pi_loss = 0.0
-    last_v_loss = 0.0
-    last_entropy = 0.69
+    def lr_at(s: int) -> float:
+        if s < args.warmup_steps:
+            return args.lr * (s + 1) / args.warmup_steps
+        t = min(1.0, (s - args.warmup_steps) / max(1, args.total_steps - args.warmup_steps))
+        return args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * t))
 
-    while True:
-        if stop_file.exists() or (ckpt_dir / "stop").exists():
-            print("\n[Stop] 'stop' file detected! Gracefully saving checkpoint and exiting...", flush=True)
-            if stop_file.exists(): stop_file.unlink(missing_ok=True)
-            if (ckpt_dir / "stop").exists(): (ckpt_dir / "stop").unlink(missing_ok=True)
+    run_info = {
+        "model_name": "AlphaLudo V15.3b (search-distilled GraphTransformer)",
+        "badge": f"teacher shards: {shard_dir.name} · movers={args.movers}",
+        "arch_summary": f"V15 GraphTransformer 4x128 · {n_params:,} params · zero search",
+        "description": "Eval WR = champion protocol (Expert + Heuristic, champion scored 0.8465). "
+                       "Head-to-head vs v15.2 champion is the 'vs Champion' line (0.50 = parity).",
+        "target_wr": 0.8465,
+        "target_label": "v15.2 champion on this protocol (84.65%)",
+        "baseline_wr": 0.50,
+        "baseline_label": "Parity",
+        "eval_games": args.eval_games_bots,
+    }
+    stats = {"run_info": run_info, "timestamp": time.time(), "total_games": 0, "total_states": states_trained,
+             "games_per_minute": 0.0, "states_per_minute": 0.0, "policy_loss": 0.0, "value_loss": 0.0,
+             "total_loss": 0.0, "policy_entropy": 0.0, "temperature": 0.0, "main_elo": None,
+             "eval_win_rate": metrics_history[-1]["eval_win_rate"] if metrics_history else 0.0,
+             "opp_breakdown": {}, "recent_opponent_stats": {}, "elo_rankings": []}
+    write_json_atomic(stats_path, stats)
+    start_dashboard(args.port, str(stats_path), str(metrics_path), str(TD_LUDO_DIR))
+
+    print("=" * 80)
+    print(f"V15.3b SL | {n_params:,} params | shards {shard_dir} | movers={args.movers} "
+          f"| forced={'kept' if args.keep_forced else 'skipped'} | target={args.policy_target}")
+    print("=" * 80, flush=True)
+
+    def save_latest(reason: str):
+        save_atomic({
+            "step": step, "states": states_trained, "best_h2h": best_h2h,
+            "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
+            "args": vars(args), "saved_at": time.time(),
+        }, latest_path)
+        print(f"[Save] model_latest.pt @ step {step:,} ({reason})", flush=True)
+
+    def stop_requested() -> bool:
+        return any(p.exists() for p in stop_files)
+
+    val_loader = None
+    val_files: list = []
+    t_session = time.time()
+    states_session = 0
+    last_save = time.time()
+    done = False
+
+    while not done:
+        if stop_requested():
             break
-
-        # Check for new shards
-        shard_path = Path(args.shard_dir)
-        current_shards = sorted(list(shard_path.glob("shard_*.bin")))
-
-        if not current_shards:
-            print(f"[Waiting] Waiting for first teacher shard in {args.shard_dir}...", flush=True)
-            time.sleep(5)
+        all_files = sorted(shard_dir.glob("shard_*.bin"))
+        if len(all_files) <= args.val_shards:
+            print(f"[Waiting] {len(all_files)} shard(s) in {shard_dir}; need > {args.val_shards}", flush=True)
+            time.sleep(30)
             continue
 
-        dataset = V153TeacherDataset(args.shard_dir)
-        loaded_shards = len(dataset.shard_files)
-        total_records = len(dataset)
+        if val_loader is None:
+            val_files = all_files[: args.val_shards]
+            val_ds = V153TeacherDataset(shard_files=val_files, movers=args.movers,
+                                        skip_forced=not args.keep_forced, policy_target=args.policy_target)
+            rng = np.random.default_rng(0)
+            pick = rng.choice(len(val_ds), size=min(args.val_records, len(val_ds)), replace=False)
+            n_keep = (len(pick) // args.batch_size) * args.batch_size
+            val_loader = DataLoader(Subset(val_ds, np.sort(pick[:n_keep]).tolist()), batch_size=args.batch_size,
+                                    shuffle=False, num_workers=args.num_workers, drop_last=True)
+            print(f"[Val] held out {[f.name for f in val_files]}: {n_keep:,} records", flush=True)
 
-        loader = DataLoader(
-            dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=2,
-            drop_last=True,
-        )
+        train_files = all_files[args.val_shards:]
+        train_ds = V153TeacherDataset(shard_files=train_files, movers=args.movers,
+                                      skip_forced=not args.keep_forced, policy_target=args.policy_target)
+        n_games = count_games(train_files)
+        sampler = RandomSampler(train_ds, replacement=False,
+                                num_samples=min(len(train_ds), args.round_steps * args.batch_size))
+        loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, num_workers=args.num_workers,
+                            drop_last=True, persistent_workers=False)
+        print(f"[Data] {len(train_files)} train shards · {n_games:,} games · {len(train_ds):,} records "
+              f"(of {train_ds.n_raw:,})", flush=True)
 
-        running_pi_loss = 0.0
-        running_v_loss = 0.0
-        running_entropy = 0.0
-        correct_top1 = 0
-        total_samples = 0
-        t_batch_start = time.time()
+        acc = {"policy_loss": 0.0, "value_loss": 0.0, "entropy_sum": 0.0, "n_multi": 0, "correct": 0,
+               "v_correct": 0, "n_finished": 0, "batches": 0}
+        t_log = time.time()
 
         for batch in loader:
-            if stop_file.exists() or (ckpt_dir / "stop").exists():
+            if stop_requested():
+                done = True
                 break
-
-            total_steps += 1
-            x = batch["x"].to(device)
-            target = batch["target"].to(device)
-            legal_mask = batch["legal_mask"].to(device)
-            target_val = batch["target_value"].to(device)
-
+            for g in optimizer.param_groups:
+                g["lr"] = lr_at(step)
+            loss, m = compute_losses(model, batch, device, args.value_coef)
             optimizer.zero_grad(set_to_none=True)
-            policy_logits, val_pred = model(x, legal_mask)
-
-            # Masked Cross-Entropy Loss
-            masked_logits = policy_logits.masked_fill(legal_mask == 0, -1e9)
-            log_p = F.log_softmax(masked_logits, dim=-1)
-            policy_loss = -log_p.gather(1, target.unsqueeze(1)).squeeze(1).mean()
-
-            # Value MSE Loss
-            value_loss = F.mse_loss(val_pred.squeeze(-1), target_val)
-
-            # Entropy over valid legal actions
-            with torch.no_grad():
-                probs = F.softmax(masked_logits, dim=-1)
-                log_probs_safe = torch.where(legal_mask > 0, log_p, torch.zeros_like(log_p))
-                step_entropy = -(probs * log_probs_safe).sum(dim=-1).mean().item()
-
-            total_loss = policy_loss + 0.5 * value_loss
-            total_loss.backward()
-
+            loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            # Metrics
-            pred_cell = policy_logits.argmax(dim=-1)
-            correct_top1 += (pred_cell == target).sum().item()
-            total_samples += target.size(0)
-            total_states_trained += target.size(0)
+            step += 1
+            bs = batch["x"].shape[0]
+            states_trained += bs
+            states_session += bs
+            acc["batches"] += 1
+            for k in ("policy_loss", "value_loss", "entropy_sum", "n_multi", "correct", "v_correct", "n_finished"):
+                acc[k] += m[k]  # tensors; synced only at log time (no per-step .item() stalls)
 
-            running_pi_loss += policy_loss.item()
-            running_v_loss += value_loss.item()
-            running_entropy += step_entropy
-
-            if total_steps % 100 == 0:
-                elapsed = time.time() - t_batch_start
-                sps = total_samples / max(0.1, elapsed)
-                top1_acc = correct_top1 / max(1, total_samples) * 100
-                last_pi_loss = running_pi_loss / 100
-                last_v_loss = running_v_loss / 100
-                last_entropy = running_entropy / 100
-
-                print(
-                    f"Step {total_steps:5d} | {loaded_shards} Shards ({total_records:,} st) | "
-                    f"Top-1 Acc: {top1_acc:5.1f}% | Pi Loss: {last_pi_loss:.4f} | V Loss: {last_v_loss:.4f} | "
-                    f"Entropy: {last_entropy:.3f} | Speed: {sps:.0f} SPS",
-                    flush=True
-                )
-                running_pi_loss = 0.0
-                running_v_loss = 0.0
-                running_entropy = 0.0
-                correct_top1 = 0
-                total_samples = 0
-                t_batch_start = time.time()
-
-                # Frequent dashboard stats update
-                stats_payload.update({
-                    "timestamp": time.time(),
-                    "total_games": total_states_trained // 50,
-                    "total_states": total_states_trained,
-                    "games_per_minute": (total_states_trained // 50) / max(0.1, (time.time() - t_start) / 60.0),
-                    "states_per_minute": total_states_trained / max(0.1, (time.time() - t_start) / 60.0),
-                    "policy_loss": last_pi_loss,
-                    "value_loss": last_v_loss,
-                    "total_loss": last_pi_loss + last_v_loss,
-                    "policy_entropy": last_entropy,
+            if step % args.log_every == 0:
+                nb = acc["batches"]
+                pl = float(acc["policy_loss"]) / nb
+                vl = float(acc["value_loss"]) / nb
+                ent = float(acc["entropy_sum"]) / max(1, int(acc["n_multi"]))
+                top1 = int(acc["correct"]) / max(1, int(acc["n_multi"]))
+                vacc = int(acc["v_correct"]) / max(1, int(acc["n_finished"]))
+                sps = nb * args.batch_size / max(1e-6, time.time() - t_log)
+                print(f"Step {step:7d} | lr {lr_at(step):.2e} | CE {pl:.4f} | top1 {top1:6.1%} | H {ent:.3f} "
+                      f"| V-BCE {vl:.4f} | V-acc {vacc:5.1%} | {sps:,.0f} st/s", flush=True)
+                elapsed_min = max(1e-6, (time.time() - t_session) / 60)
+                stats.update({
+                    "timestamp": time.time(), "total_games": n_games, "total_states": states_trained,
+                    "states_per_minute": states_session / elapsed_min,
+                    "games_per_minute": 0.0,
+                    "policy_loss": pl, "value_loss": vl, "total_loss": pl + args.value_coef * vl,
+                    "policy_entropy": ent, "train_top1": top1, "train_value_acc": vacc,
+                    "lr": lr_at(step), "step": step,
                 })
-                with open(stats_path, "w") as f:
-                    json.dump(stats_payload, f, indent=2)
+                write_json_atomic(stats_path, stats)
+                acc = {k: 0 if k != "policy_loss" else 0.0 for k in acc}
+                t_log = time.time()
 
-            # Periodic Evaluation
-            if total_steps % args.eval_every_steps == 0:
-                print(f"\n[Eval @ Step {total_steps}] Evaluating zero-search policy against bot suite...", flush=True)
-                eval_wr, opp_breakdown = evaluate_model(model, device, games_per_bot=args.eval_games // 4)
-                print(
-                    f"[Eval #{total_steps}] Overall WR: {eval_wr:.1%} | "
-                    f"Heuristic: {opp_breakdown.get('Heuristic', 0):.1%}, "
-                    f"Aggressive: {opp_breakdown.get('Aggressive', 0):.1%}, "
-                    f"Expert: {opp_breakdown.get('Expert', 0):.1%}, "
-                    f"MCTS: {opp_breakdown.get('MCTS', 0):.1%}\n",
-                    flush=True
-                )
+            if time.time() - last_save > args.save_every_min * 60:
+                save_latest("timer")
+                last_save = time.time()
 
-                if eval_wr > best_eval_wr:
-                    best_eval_wr = eval_wr
-                    torch.save(
-                        {
-                            "step": total_steps,
-                            "states": total_states_trained,
-                            "best_eval_wr": best_eval_wr,
-                            "model_state_dict": model.state_dict(),
-                        },
-                        ckpt_dir / "model_best.pt",
-                    )
-                    print(f"🌟 New best model saved to {ckpt_dir / 'model_best.pt'} (WR: {best_eval_wr:.1%})!")
+            if step % args.eval_every_steps == 0:
+                print(f"\n[Eval @ step {step:,}]", flush=True)
+                t_e = time.time()
+                val = validate(model, val_loader, device, args.value_coef)
+                suite = evaluate_suite(model, device, champion, args.eval_games_champion,
+                                       args.eval_games_bots, args.eval_games_depth2)
+                ex, he = suite.get("Expert"), suite.get("Heuristic")
+                if ex and he:
+                    protocol_wr = (ex["wins"] + he["wins"]) / max(1, ex["games"] + he["games"])
+                else:
+                    protocol_wr = None
+                h2h = suite.get("Champion_v15_2", {}).get("win_rate")
+                line = " | ".join(f"{k} {r['win_rate']:.3f}±{r['stderr']:.3f}" for k, r in suite.items())
+                print(f"[Val] CE {val['val_policy_ce']:.4f} | top1 {val['val_top1']:.1%} | H {val['val_entropy']:.3f} "
+                      f"| V-BCE {val['val_value_bce']:.4f} | V-acc {val['val_value_acc']:.1%}", flush=True)
+                print(f"[Eval] {line} | protocol {protocol_wr} | {time.time() - t_e:.0f}s\n", flush=True)
 
-                # Update stats & metrics
-                model_elo = 1200 + int(eval_wr * 600)
-                stats_payload.update({
-                    "timestamp": time.time(),
-                    "total_games": total_states_trained // 50,
-                    "total_states": total_states_trained,
-                    "games_per_minute": (total_states_trained // 50) / max(0.1, (time.time() - t_start) / 60.0),
-                    "states_per_minute": total_states_trained / max(0.1, (time.time() - t_start) / 60.0),
-                    "policy_loss": last_pi_loss,
-                    "value_loss": last_v_loss,
-                    "total_loss": last_pi_loss + last_v_loss,
-                    "policy_entropy": last_entropy,
-                    "main_elo": model_elo,
-                    "eval_win_rate": float(eval_wr),
-                    "opp_breakdown": opp_breakdown,
-                    "recent_opponent_stats": {k: {"win_rate": v * 100, "wins": int(v * (args.eval_games // 4)), "games": args.eval_games // 4} for k, v in opp_breakdown.items()},
-                    "elo_rankings": [
-                        {"name": "MCTSBot", "elo": 1600},
-                        {"name": "ExpertBot", "elo": 1500},
-                        {"name": "HeuristicBot", "elo": 1400},
-                        {"name": "Model", "elo": model_elo},
-                        {"name": "AggressiveBot", "elo": 1350},
-                    ],
+                opponents = {"Champion": h2h, "Expert": ex and ex["win_rate"], "Heuristic": he and he["win_rate"],
+                             "Depth2": suite.get("Depth2", {}).get("win_rate")}
+                entry = {"step": step, "games": n_games, "states": states_trained,
+                         "eval_win_rate": protocol_wr, "h2h_champion": h2h, "opponents": opponents,
+                         "suite": suite, **val, "time": time.time()}
+                metrics_history.append(entry)
+                write_json_atomic(metrics_path, metrics_history)
+                stats.update({
+                    "eval_win_rate": protocol_wr, "opp_breakdown": opponents,
+                    "recent_opponent_stats": {k: {"win_rate": 100 * r["win_rate"], "wins": r["wins"],
+                                                  "games": r["games"]} for k, r in suite.items()},
+                    **val,
                 })
-                with open(stats_path, "w") as f:
-                    json.dump(stats_payload, f, indent=2)
+                write_json_atomic(stats_path, stats)
 
-                metrics_history.append({
-                    "step": total_steps,
-                    "games": total_states_trained // 50,
-                    "states": total_states_trained,
-                    "eval_win_rate": float(eval_wr),
-                    "opponents": opp_breakdown,
-                })
-                with open(metrics_path, "w") as f:
-                    json.dump(metrics_history, f, indent=2)
+                if h2h is not None and h2h > best_h2h:
+                    best_h2h = h2h
+                    save_atomic({"step": step, "states": states_trained, "best_h2h": best_h2h, "suite": suite,
+                                 "val": val, "model_state_dict": model.state_dict()}, best_path)
+                    print(f"🌟 model_best.pt: h2h vs champion {h2h:.3f} @ step {step:,}", flush=True)
+                save_latest("eval")
+                last_save = time.time()
 
-        # Save checkpoint after processing shards
-        torch.save(
-            {
-                "step": total_steps,
-                "states": total_states_trained,
-                "best_eval_wr": best_eval_wr,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-            },
-            ckpt_dir / "model_latest.pt",
-        )
+            if args.max_steps and step >= args.max_steps:
+                done = True
+                break
+
+    save_latest("stop" if stop_requested() else "end")
+    # The stop file is shared with the generator (it checks between shards),
+    # so it is NOT deleted here; the launcher clears it on the next start.
+    print("[Exit] clean", flush=True)
 
 
 if __name__ == "__main__":
